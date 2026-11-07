@@ -99,6 +99,8 @@ export interface CaseRunContext {
   lockedAppPackage: string | null;
   /** 可选 APK/IPA 路径或 URL；透传 mobile_run_task.app_path（由 Artemis 安装）。 */
   appPath?: string | null;
+  /** 回归任务 id；用于失败证据上传，手动 suite run 可为空。 */
+  regressionTaskId?: string | null;
   quarantined: boolean;
   failOnApiErrors: boolean;
   apiCatalog: ApiCatalog;
@@ -108,6 +110,8 @@ export interface CaseRunContext {
   now: () => number;
   pollIntervalMs: number;
   pollTimeoutMs: number;
+  /** 停止请求：轮询期间检查，命中即停止等待并尝试终止 Artemis 子进程。 */
+  shouldAbort?: () => boolean;
   collectLogcat: (request: {
     serial: string | null;
     windowStartMs: number;
@@ -122,6 +126,37 @@ export interface CaseRunOutcome {
   /** 提交失败消息（调用方取首个作为报告 error）。 */
   submitError: string | null;
   terminal: boolean;
+}
+
+function uploadFailureEvidence(
+  context: CaseRunContext,
+  caseId: string,
+  traceId: string
+): void {
+  const taskId = context.regressionTaskId ?? null;
+  const upload = context.runtime.store.uploadTaskEvidence;
+  if (taskId === null || upload === undefined) return;
+  const files: Array<{ name: string; contentBase64: string }> = [];
+  for (const name of ["status.json", "stderr.log", "stdout.log"]) {
+    try {
+      const buffer = fs.readFileSync(path.join(context.runtime.traceDir(traceId), name));
+      if (buffer.length <= 256 * 1024) {
+        files.push({ name, contentBase64: buffer.toString("base64") });
+      }
+    } catch {
+      /* 缺文件不阻断 */
+    }
+  }
+  if (files.length === 0) return;
+  void upload
+    .call(context.runtime.store, {
+      rootPath: context.runtime.project.rootDir,
+      taskId,
+      caseId,
+      traceId,
+      files
+    })
+    .catch(() => undefined);
 }
 
 export async function executeCase(
@@ -246,6 +281,11 @@ export async function executeCase(
       ? null
       : status?.error?.trim() || traceTerminalError(traceDir);
   while (!isTerminal(status?.status) && terminalError === null && now() < deadline) {
+    if (context.shouldAbort?.() === true) {
+      terminalError = "任务已取消，停止等待 Artemis 终态";
+      await context.runtime.proxy.markForRestart().catch(() => undefined);
+      break;
+    }
     await sleep(context.pollIntervalMs);
     status = await runtime.traceStatus(traceId);
     if (!isTerminal(status?.status)) {
@@ -402,5 +442,8 @@ export async function executeCase(
     reset
   };
 
+  if (caseResult.status !== "passed") {
+    uploadFailureEvidence(context, testCase.id, traceId);
+  }
   return { result: caseResult, submitted: true, submitError: null, terminal };
 }

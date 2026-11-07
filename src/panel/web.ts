@@ -2723,7 +2723,27 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         : `<p>应用包名：<code>${escapeHtml(task.appPackage)}</code> · 执行前锁定并启动</p>`,
       task.progress === null || task.progress === undefined
         ? ""
-        : `<p>进度：<strong>${escapeHtml(taskProgressLabel(task.progress) ?? "—")}</strong> · 更新 ${relativeTime(task.progress.at)}</p>`,
+        : `<p>进度：<strong>${escapeHtml(taskProgressLabel(task.progress) ?? "—")}</strong> · 更新 ${relativeTime(task.progress.at)}${
+            task.progress.traceId !== null &&
+            task.progress.traceId !== undefined &&
+            task.progress.errorCode !== null &&
+            task.progress.errorCode !== undefined
+              ? ` · <a href="${escapeHtml(
+                  artifactHref(
+                    view.rootPath,
+                    path.join(
+                      view.rootPath,
+                      ".artemis",
+                      "remote-evidence",
+                      task.id,
+                      task.progress.traceId,
+                      "stderr.log"
+                    ),
+                    view.hostId
+                  )
+                )}">查看失败证据</a>`
+              : ""
+          }</p>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个设备运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });

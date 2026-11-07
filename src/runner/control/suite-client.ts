@@ -1,4 +1,4 @@
-import type { ProjectStore } from "../../db/types.js";
+import type { ProjectStore, TaskEvidenceUpload } from "../../db/types.js";
 import { leaseTokenFor } from "./lease-token.js";
 
 export interface SuiteStoreClientOptions {
@@ -293,6 +293,16 @@ export class SuiteStoreClient {
     ...args: Parameters<ProjectStore["claimRegressionTask"]>
   ): Promise<Awaited<ReturnType<ProjectStore["claimRegressionTask"]>>> {
     return await this.request("POST", "/tasks/claim", this.rewriteRoot(args[0]));
+  }
+
+  async uploadTaskEvidence(
+    input: TaskEvidenceUpload
+  ): Promise<{ saved: string[] }> {
+    return await this.request(
+      "POST",
+      `/tasks/${encodeURIComponent(input.taskId)}/evidence`,
+      this.rewriteRoot(input)
+    );
   }
 
   async beginExecution(

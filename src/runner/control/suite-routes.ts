@@ -138,6 +138,7 @@ export function resolveSuiteResource(
       return { op: "finalizeCancellation", args: { input } };
     }
     if (action === "cancel") return { op: "cancelTask", args: { input } };
+    if (action === "evidence") return { op: "uploadEvidence", args: { input } };
     return null;
   }
   if (parts[0] === "runs" && parts.length === 1) return { op: "recordRun", args: { input } };

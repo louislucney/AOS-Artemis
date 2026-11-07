@@ -413,6 +413,14 @@ export type RegressionTaskStatus =
   | "partial"
   | "failed";
 
+export interface TaskEvidenceUpload {
+  rootPath: string;
+  taskId: string;
+  caseId: string;
+  traceId: string;
+  files: Array<{ name: string; contentBase64: string }>;
+}
+
 export interface TaskProgress {
   seq: number;
   phase:
@@ -1023,12 +1031,15 @@ export interface ProjectStore {
       claimedHostId?: string | null;
       claimedInstanceId?: string | null;
       startedAt?: string | null;
+      progress?: TaskProgress | null;
       /** CAS 守卫：仅当 `device_serial IS NULL` 时写入（自动选机防重复绑定）。 */
       expectDeviceSerialEmpty?: boolean;
       /** CAS 守卫：仅当当前状态在此列表内才写入（空数组＝永不命中）；不满足返回 false。 */
       expectStatuses?: RegressionTaskStatus[];
     }
   ): Promise<boolean>;
+  /** runner 主动上传失败证据（status/stderr/stdout 小文件）；缺省 store 不支持。 */
+  uploadTaskEvidence?(input: TaskEvidenceUpload): Promise<{ saved: string[] }>;
   /** 原子领取：任务端 ⊆ runner 端且 status='pending' 的最旧任务 → claimed（竞争失败 → null）。
    * `allowPartial === true && onlineBefore 提供` 时，无完全覆盖候选则按交集≥1 部分领取
    * （仅当无他者在线 runner 完全覆盖该任务端时）；否则严格旧行为。

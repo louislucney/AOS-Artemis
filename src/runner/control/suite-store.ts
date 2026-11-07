@@ -33,6 +33,7 @@ export function createHybridSuiteStore(
     markRunnerStopped: (input) => client.markRunnerStopped(input),
     claimRegressionTask: (input) => client.claimRegressionTask(input),
     beginExecution: (input) => client.beginExecution(input),
+    uploadTaskEvidence: (input) => client.uploadTaskEvidence(input),
     releaseRegressionTasks: (input) => client.releaseRegressionTasks(input),
     releaseRegressionTask: (input) => client.releaseRegressionTask(input),
     listStoppingTasks: (input) => client.listStoppingTasks(input),

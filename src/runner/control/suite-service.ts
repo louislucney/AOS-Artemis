@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { ProjectStore } from "../../db/types.js";
+import type { ProjectStore, TaskEvidenceUpload } from "../../db/types.js";
 import { configDirAbs } from "../../artemis/assembly.js";
 import { loadProject } from "../../config/loader.js";
 import { designFlowsPath } from "../../figma/design-source.js";
 import { leaseTokenMatches } from "./lease-token.js";
+import { writeFileAtomic } from "../../util.js";
 import { RunnerControlError } from "./errors.js";
 import { assertLlmProject, resolveCenterLlm } from "./llm-resolver.js";
 
@@ -226,6 +227,37 @@ export class SuiteControlService {
     await this.assertTaskInstance(rootPath, taskId);
     const patch = requireObject<Parameters<ProjectStore["updateRegressionTask"]>[2]>(args, "patch");
     return await this.store.updateRegressionTask(rootPath, taskId, patch);
+  }
+
+  async uploadEvidence(args: Record<string, unknown>): Promise<{ saved: string[] }> {
+    const input = requireObject<TaskEvidenceUpload>(args, "input");
+    await this.assertRunnerProject(input.rootPath, this.hostId);
+    await assertTaskVisible(this.store, input.rootPath, input.taskId, this.hostId);
+    if (!/^[A-Za-z0-9._-]+$/.test(input.traceId)) {
+      throw new RunnerControlError("invalid-state", "traceId 含非法字符");
+    }
+    const allowed = new Set(["status.json", "stderr.log", "stdout.log", "error.txt"]);
+    const dir = path.join(input.rootPath, ".artemis", "remote-evidence", input.taskId, input.traceId);
+    fs.mkdirSync(dir, { recursive: true });
+    const saved: string[] = [];
+    let total = 0;
+    for (const file of input.files) {
+      if (!allowed.has(file.name)) {
+        throw new RunnerControlError("invalid-state", `不允许上传证据文件：${file.name}`);
+      }
+      const buffer = Buffer.from(file.contentBase64, "base64");
+      if (buffer.length > 256 * 1024) {
+        throw new RunnerControlError("invalid-state", `证据文件超过 256KB：${file.name}`);
+      }
+      total += buffer.length;
+      if (total > 1024 * 1024) {
+        throw new RunnerControlError("invalid-state", "证据包超过 1MB");
+      }
+      const target = path.join(dir, file.name);
+      writeFileAtomic(target, buffer);
+      saved.push(path.relative(input.rootPath, target));
+    }
+    return { saved };
   }
 
   async listCaseSets(args: Record<string, unknown>): Promise<unknown> {
@@ -511,6 +543,8 @@ export class SuiteControlService {
         return await this.getTaskApp(args);
       case "updateTask":
         return await this.updateTask(args);
+      case "uploadEvidence":
+        return await this.uploadEvidence(args);
       case "listCaseSets":
         return await this.listCaseSets(args);
       case "recordRun":

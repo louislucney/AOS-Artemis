@@ -21,9 +21,8 @@ function caseEntry(index, overrides = {}) {
   };
 }
 
-async function setup({ cases = [caseEntry(1)], statuses = {}, runError = null, reset } = {}) {
+async function setup({ cases = [caseEntry(1)], statuses = {}, runError = null, reset, store = new MemoryStore() } = {}) {
   const dir = makeTempProject({ config: baseConfig() });
-  const store = new MemoryStore();
   const proxy = new SuiteProxy({ statuses, runError });
   const crashCollector = { collect: async () => ({ status: "skipped", reason: "disabled" }) };
   const { runtime } = await loadTestRuntime(dir, { proxy, store, crashCollector });
@@ -75,6 +74,28 @@ test("suite runner: Android 提交前剔除 iOS 脚本断言块，iOS 保留", a
     "iOS 真机保留脚本断言"
   );
   assert.ok(!taskDescForTarget(taskDesc, null).includes("【AOS-EXPECT】"), "无设备缺省按 Android 剔除");
+});
+
+test("suite runner: uploads failure evidence when the store supports it", async () => {
+  const store = new MemoryStore();
+  const uploads = [];
+  const { runtime, run } = await setup({
+    store,
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "failed", error: "assert mismatch" } }
+  });
+  runtime.store.uploadTaskEvidence = async (input) => {
+    uploads.push(input);
+    return { saved: [] };
+  };
+  const traceDir = runtime.traceDir("trace-1");
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(path.join(traceDir, "stderr.log"), "assert mismatch", "utf-8");
+  await run({ regressionTaskId: "task-1", pollTimeoutMs: 200 });
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].taskId, "task-1");
+  assert.equal(uploads[0].caseId, "case-1");
+  assert.deepEqual(uploads[0].files.map((file) => file.name), ["stderr.log"]);
 });
 
 test("suite runner: CRITICAL ERROR in stderr fails fast instead of waiting for timeout", async () => {
