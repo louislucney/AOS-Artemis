@@ -57,6 +57,8 @@ export interface CTableInput {
   caption?: string;
   /** 固定列宽（百分比/px）；提供时启用 table-layout:fixed，避免宽屏列被内容摊薄。 */
   columnWidths?: string[];
+  /** 窄屏改为卡片行（td 带 data-label）；适合设备/对比等宽表。 */
+  mobileCards?: boolean;
 }
 
 export function cTable(input: CTableInput): string {
@@ -74,8 +76,21 @@ export function cTable(input: CTableInput): string {
   const body =
     rows.length === 0
       ? `<tr><td class="c-empty-cell" colspan="${input.columns.length}">${input.emptyHtml ?? escapeHtml(input.empty ?? "暂无数据")}</td></tr>`
-      : rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
-  return `<div class="c-table-scroll-hint" aria-hidden="true">左右滑动查看完整表格</div><div class="c-table-wrap"><table class="c-table${fixed}">${caption}${widths}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+      : rows
+          .map(
+            (row) =>
+              `<tr>${row
+                .map(
+                  (cell, index) =>
+                    input.mobileCards === true
+                      ? `<td data-label="${escapeHtml(input.columns[index] ?? "")}">${cell}</td>`
+                      : `<td>${cell}</td>`
+                )
+                .join("")}</tr>`
+          )
+          .join("");
+  const classes = `c-table-wrap${input.mobileCards === true ? " c-table-mobile-cards" : ""}`;
+  return `<div class="c-table-scroll-hint" aria-hidden="true">左右滑动查看完整表格</div><div class="${classes}"><table class="c-table${fixed}">${caption}${widths}<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 export interface CStatInput {

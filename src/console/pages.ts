@@ -933,6 +933,7 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
         </section>`
       : cTable({
           columns: ["执行机", "设备", "型号/系统", "状态", "操作", "当前任务", "租约", "最后心跳", "工具"],
+          mobileCards: true,
           rows,
           caption: `设备列表（${data.devices.length}）`,
           emptyHtml:
@@ -1304,6 +1305,9 @@ export function renderAuditPage(data: AuditPageData): string {
     }
     if (event.action === "action.quarantine") {
       return `<a href="/panel?${base}&amp;section=assets&amp;tab=case-sets">去隔离</a>`;
+    }
+    if (event.action === "action.config") {
+      return `<a href="/panel?${base}&amp;section=ops">去项目配置</a>`;
     }
     return '<span class="muted">—</span>';
   };

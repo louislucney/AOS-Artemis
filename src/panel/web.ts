@@ -74,6 +74,7 @@ import {
   type PanelBatchSummary,
   type PanelDeps,
   type PanelImprovementItem,
+  type PanelMachineRow,
   type PanelOverview,
   type PanelProjectDetail,
   type PanelProjectRow,
@@ -1615,7 +1616,25 @@ function renderMachinesSection(view: PanelOverview): string {
       "</section>"
     ].join("\n");
   }
-  const rows = view.machines.map((machine) => {
+  const grouped = new Map<string, { machine: PanelMachineRow; history: number }>();
+  const machineScore = (machine: PanelMachineRow): number =>
+    (machine.clientOnline || machine.runnerOnline ? 4 : 0) + (machine.registered ? 2 : 0);
+  for (const machine of view.machines) {
+    const key = machine.hostname.toLowerCase();
+    const current = grouped.get(key);
+    if (current === undefined) {
+      grouped.set(key, { machine, history: 0 });
+      continue;
+    }
+    const better =
+      machineScore(machine) > machineScore(current.machine) ||
+      (machineScore(machine) === machineScore(current.machine) &&
+        machine.lastSeenAt > current.machine.lastSeenAt);
+    if (better) grouped.set(key, { machine, history: current.history + 1 });
+    else current.history += 1;
+  }
+  const machines = [...grouped.values()];
+  const rows = machines.map(({ machine, history }) => {
     const system = [machineKindLabel(machine.kind), machine.osPlatform, machine.osVersion, machine.arch]
       .filter((part) => part !== null && part !== "")
       .join(" · ");
@@ -1657,7 +1676,9 @@ function renderMachinesSection(view: PanelOverview): string {
     return [
       `<code>${escapeHtml(machine.id)}</code> <span class="muted">${escapeHtml(
         machine.hostname
-      )}${machine.label === null ? "" : ` · ${escapeHtml(machine.label)}`}</span> ${registration}`,
+      )}${machine.label === null ? "" : ` · ${escapeHtml(machine.label)}`}</span> ${
+        history > 0 ? `<span class="chip" title="同 hostname 的旧记录已合并">+${history} 历史</span> ` : ""
+      }${registration}`,
       escapeHtml(system),
       `${ide} / ${runner}`,
       ip,
@@ -3579,6 +3600,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
         body: `<div class="c-table-scroll">${cTable({
           columns: ["项目", "主机", "最近批次", "趋势", "质量", "待办", "执行"],
           columnWidths: ["16%", "10%", "20%", "12%", "18%", "14%", "10%"],
+          mobileCards: true,
           rows,
           caption: "项目对比矩阵",
           empty: "暂无项目"

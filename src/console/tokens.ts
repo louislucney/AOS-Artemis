@@ -361,6 +361,13 @@ body.c-shortcuts-open #console-shortcuts{display:block}
   .c-card{min-width:0;max-width:100%}
   .c-table-wrap{max-width:100%}
   .c-table-scroll-hint{display:block}
+  .c-table-mobile-cards thead{display:none}
+  .c-table-mobile-cards tbody tr{display:block;border-bottom:1px solid var(--color-border-subtle);padding:6px 0}
+  .c-table-mobile-cards tbody tr:last-child{border-bottom:0}
+  .c-table-mobile-cards tbody td{display:flex;gap:12px;justify-content:space-between;border:0;padding:7px 16px;text-align:right}
+  .c-table-mobile-cards tbody td::before{content:attr(data-label);flex:0 0 36%;text-align:left;font-weight:var(--font-weight-semibold);color:var(--color-text-secondary)}
+  .c-table-mobile-cards tbody td.c-empty-cell{display:block;text-align:center}
+  .c-table-mobile-cards tbody td.c-empty-cell::before{display:none}
   .c-topbar-meta{width:100%;max-width:100%;margin-left:0;overflow-wrap:anywhere}
   .c-button{min-height:44px}
   .c-nav-item{padding:10px 8px}

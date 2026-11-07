@@ -2276,7 +2276,7 @@ test("panel web: compare 降级行（读取失败标注 + 其余列 —）", asy
 
   const rowChunk = html.body.split("<tr>").find((chunk) => chunk.includes("读取失败"));
   assert.ok(rowChunk, "降级行存在");
-  const cells = [...rowChunk.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((match) => match[1]);
+  const cells = [...rowChunk.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((match) => match[1]);
   assert.equal(cells.length, 7, "七个列组");
   assert.match(cells[1], /未归属主机/, "降级行仍显示主机列");
   assert.deepEqual(
