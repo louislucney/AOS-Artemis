@@ -614,7 +614,6 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
   const assetsHref = `/panel?${projectQuery}&section=assets${hostQuery}`;
   const suiteHref = `/panel?${projectQuery}&section=create&type=suite${hostQuery}`;
   const suiteReady = data.caseSetCount > 0;
-  const webReady = data.excelCount > 0 && data.packageCount > 0;
   const canCreateProject =
     data.capabilities?.role === undefined || data.capabilities.role === "admin";
   const registrationNotice =
@@ -635,17 +634,17 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
         )}">先去导入用例集</a></p>`,
     `<p class="muted">执行机与设备在下一步选择。</p>`
   ].join("");
+  const mcpBody = [
+    `<p><strong>MCP 原生接入</strong>不经过网页测试表单：单条用 <code>mobile_run_task</code>，Excel 用 <code>run_regression</code>，已有用例集用套件回归。</p>`,
+    `<p class="muted">执行机需在线并已接入 Android 设备；LLM 由中心配置。</p>`,
+    `<p><a class="c-button c-button-primary" href="/panel?section=devices#runner-guide">查看执行机与设备</a> <a class="c-button" href="${escapeHtml(
+      assetsHref
+    )}">上传资产</a></p>`
+  ].join("");
   const webBody = [
-    `<p>Maestro 网页测试已移除；Android 真机请用 MCP 原生 <code>run_regression</code> / <code>mobile_run_task</code>。</p>`,
-    `<p class="muted">Excel ${data.excelCount} 份 · 安装包 ${data.packageCount} 个${
-      webReady ? "" : " · 还缺 Excel 或安装包"
-    }</p>`,
-    webReady
-      ? `<p><a class="c-button c-button-primary" href="/panel?section=devices#runner-guide">MCP 原生接入</a></p>`
-      : `<p><a class="c-button c-button-primary" href="${escapeHtml(
-          `/panel?${projectQuery}&section=assets${hostQuery}`
-        )}">先去上传资产</a></p>`,
-    `<p class="muted">安装包、测试资料、参考图都在测试资产里统一管理。</p>`
+    `<p>Maestro 网页测试已移除；历史任务只读。</p>`,
+    `<p class="muted">Excel ${data.excelCount} 份 · 安装包 ${data.packageCount} 个</p>`,
+    `<p class="muted">Android 真机请走上方「MCP 原生执行」；安装包、测试资料、参考图都在测试资产里统一管理。</p>`
   ].join("");
   return renderConsoleShell({
     title: "新建测试",
@@ -666,6 +665,11 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
         title: "套件回归",
         subtitle: "用例集 + 设备；设备预装 App",
         body: suiteBody
+      }),
+      cCard({
+        title: "MCP 原生执行",
+        subtitle: "mobile_run_task / run_regression；不需要网页测试表单",
+        body: mcpBody
       }),
       cCard({
         title: "网页测试（历史）",
