@@ -44,7 +44,8 @@ export const PEN_ENV_PASSTHROUGH = [
   "AOS_PEN_VERSION",
   "AOS_PEN_TIMEOUT_MS",
   "AOS_PEN_INSTALL_TIMEOUT_MS",
-  "AOS_PEN_NO_INSTALL"
+  "AOS_PEN_NO_INSTALL",
+  "AOS_PEN_SKIP"
 ] as const;
 
 /** pen 子进程 env：项目 .env 白名单键，进程 env 优先，extra（如 agent 派生凭证）最后覆盖。 */

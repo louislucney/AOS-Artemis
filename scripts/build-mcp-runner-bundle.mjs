@@ -97,6 +97,10 @@ function writeProject(staging) {
       "AOS_LLM_BASE_URL=https://api.deepseek.com/v1",
       "AOS_LLM_API_KEY=",
       "",
+      "# runner 不需要 pen CLI（启动脚本已设置）",
+      "# AOS_PEN_SKIP=1",
+      "# AOS_PEN_NO_INSTALL=1",
+      "",
       "# iOS 真机（仅 macOS；模拟器不需要）",
       "# AOS_IOS_XCODE_ORG_ID=",
       "# AOS_IOS_XCODE_SIGNING_ID=Apple Development",
@@ -120,6 +124,8 @@ function writeWindowsLaunchers(staging) {
       'cd /d "%~dp0"',
       `set "AOS_PROJECT_DIR=${project}"`,
       pathLine,
+      'set "AOS_PEN_SKIP=1"',
+      'set "AOS_PEN_NO_INSTALL=1"',
       'if not exist "project\\.env" copy "project\\.env.example" "project\\.env" >nul',
       "echo [1/2] 检查环境并安装 Artemis 依赖（首次较慢，需要网络）...",
       "node dist\\cli.js doctor --install-deps",
@@ -138,6 +144,8 @@ function writeWindowsLaunchers(staging) {
       'cd /d "%~dp0"',
       `set "AOS_PROJECT_DIR=${project}"`,
       pathLine,
+      'set "AOS_PEN_SKIP=1"',
+      'set "AOS_PEN_NO_INSTALL=1"',
       'if not exist "project\\.env" (',
       "  echo [提示] 缺少 project\\.env：先运行 setup.cmd，再填入 AOS_LLM_API_KEY。",
       "  exit /b 2",
@@ -156,6 +164,8 @@ function writeWindowsLaunchers(staging) {
       'cd /d "%~dp0"',
       `set "AOS_PROJECT_DIR=${project}"`,
       pathLine,
+      'set "AOS_PEN_SKIP=1"',
+      'set "AOS_PEN_NO_INSTALL=1"',
       'set "DEVICE=%~1"',
       'if "%DEVICE%"=="" set "DEVICE="',
       'set "TASK=%~2"',
@@ -178,6 +188,8 @@ function writeWindowsLaunchers(staging) {
       'cd /d "%~dp0"',
       `set "AOS_PROJECT_DIR=${project}"`,
       pathLine,
+      'set "AOS_PEN_SKIP=1"',
+      'set "AOS_PEN_NO_INSTALL=1"',
       'if "%MOBILE_TESTING_HOST_ID%"=="" set "MOBILE_TESTING_HOST_ID=win-runner-01"',
       'node dist\\cli.js suite runner --project "%AOS_PROJECT_DIR%" --name "%MOBILE_TESTING_HOST_ID%"',
       ""
@@ -193,6 +205,8 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$ROOT"
 export AOS_PROJECT_DIR="$ROOT/project"
 export PATH="$ROOT/tools/platform-tools:$PATH"
+export AOS_PEN_SKIP=1
+export AOS_PEN_NO_INSTALL=1
 [ -f "$ROOT/project/.env" ] || cp "$ROOT/project/.env.example" "$ROOT/project/.env"
 node dist/cli.js doctor --install-deps
 echo
@@ -204,6 +218,8 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$ROOT"
 export AOS_PROJECT_DIR="$ROOT/project"
 export PATH="$ROOT/tools/platform-tools:$PATH"
+export AOS_PEN_SKIP=1
+export AOS_PEN_NO_INSTALL=1
 if [ ! -f "$ROOT/project/.env" ]; then
   echo "[提示] 缺少 project/.env：先运行 setup.command，再填入 AOS_LLM_API_KEY。"
   exit 2
@@ -216,6 +232,8 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$ROOT"
 export AOS_PROJECT_DIR="$ROOT/project"
 export PATH="$ROOT/tools/platform-tools:$PATH"
+export AOS_PEN_SKIP=1
+export AOS_PEN_NO_INSTALL=1
 DEVICE="\${1:-}"
 TASK="\${2:-打开应用，截图并报告当前页面}"
 if [ -z "$DEVICE" ]; then
@@ -233,6 +251,8 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$ROOT"
 export AOS_PROJECT_DIR="$ROOT/project"
 export PATH="$ROOT/tools/platform-tools:$PATH"
+export AOS_PEN_SKIP=1
+export AOS_PEN_NO_INSTALL=1
 : "\${MOBILE_TESTING_HOST_ID:=mac-runner-01}"
 export MOBILE_TESTING_HOST_ID
 node dist/cli.js suite runner --project "$AOS_PROJECT_DIR" --name "$MOBILE_TESTING_HOST_ID"
@@ -267,6 +287,8 @@ function writeBundleReadme(staging, target) {
       "",
       "这个包在**执行机本机**运行 MCP 执行代码：中心只下发任务，runner 领取后用本机设备执行并回传结果。",
       "不需要 Maestro、JDK，也不需要中心反向连本机 adb。",
+      "",
+      "包里保留了 MCP 服务的 pen 设计集成代码（`dist/pen/`），但 runner 不需要 pen CLI；启动脚本设置 `AOS_PEN_SKIP=1` 与 `AOS_PEN_NO_INSTALL=1`，doctor 不会检查或安装 pen。",
       "",
       "## 前置",
       "",

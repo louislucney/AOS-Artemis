@@ -307,39 +307,49 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
     }
 
     const penEnv = penEnvFrom(project.dotenvValues, process.env);
-    const pen = await ensurePenCli({
-      env: penEnv,
-      allowInstall: installDeps,
-      log: (line) => console.log(`    ${line}`)
-    });
-    if (!pen.ok) {
-      degraded = true;
+    if ((penEnv.AOS_PEN_SKIP ?? "").trim() === "1") {
       lines.push({
-        icon: "WARN",
-        title: "pen CLI 未就绪（可选：pen_export / pen_apply_tokens / pen_apply_strings / pen_agent）",
-        details: [
-          pen.error ?? "未安装",
-          ...(penNodeTooOld() ? [`当前 Node ${process.versions.node} 低于 pen CLI 要求的 22.19。`] : []),
-          installDeps
-            ? "自动安装未成功：可手动 npm install -g @pen.dev/cli，或设置 AOS_PEN_CLI_PATH。"
-            : "Run: node dist/cli.js doctor --install-deps（首次调用 pen CLI 工具时也会自动安装）",
-          "登录：pen login，或在项目 .env 设置 PEN_CLI_KEY（pen.dev 组织 Developer Keys）。"
-        ]
+        icon: "OK",
+        title: "pen CLI 检查已跳过（AOS_PEN_SKIP=1，仅移动执行）"
       });
     } else {
-      const status = await penCliStatus(undefined, { cliPath: pen.path ?? undefined, env: penEnv });
-      if (status.installed && status.authenticated) {
-        lines.push({
-          icon: "OK",
-          title: `pen CLI ${status.version ?? ""}（${status.email ?? "已登录"}）`
-        });
-      } else {
+      const pen = await ensurePenCli({
+        env: penEnv,
+        allowInstall: installDeps,
+        log: (line) => console.log(`    ${line}`)
+      });
+      if (!pen.ok) {
         degraded = true;
         lines.push({
           icon: "WARN",
-          title: "pen CLI 已安装但未登录（可选）",
-          details: ["Run: pen login，或在项目 .env 设置 PEN_CLI_KEY（pen.dev 组织 Developer Keys）。"]
+          title: "pen CLI 未就绪（可选：pen_export / pen_apply_tokens / pen_apply_strings / pen_agent）",
+          details: [
+            pen.error ?? "未安装",
+            ...(penNodeTooOld() ? [`当前 Node ${process.versions.node} 低于 pen CLI 要求的 22.19。`] : []),
+            installDeps
+              ? "自动安装未成功：可手动 npm install -g @pen.dev/cli，或设置 AOS_PEN_CLI_PATH。"
+              : "Run: node dist/cli.js doctor --install-deps（首次调用 pen CLI 工具时也会自动安装）",
+            "登录：pen login，或在项目 .env 设置 PEN_CLI_KEY（pen.dev 组织 Developer Keys）。"
+          ]
         });
+      } else {
+        const status = await penCliStatus(undefined, {
+          cliPath: pen.path ?? undefined,
+          env: penEnv
+        });
+        if (status.installed && status.authenticated) {
+          lines.push({
+            icon: "OK",
+            title: `pen CLI ${status.version ?? ""}（${status.email ?? "已登录"}）`
+          });
+        } else {
+          degraded = true;
+          lines.push({
+            icon: "WARN",
+            title: "pen CLI 已安装但未登录（可选）",
+            details: ["Run: pen login，或在项目 .env 设置 PEN_CLI_KEY（pen.dev 组织 Developer Keys）。"]
+          });
+        }
       }
     }
   }
