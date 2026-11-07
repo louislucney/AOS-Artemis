@@ -403,6 +403,8 @@ $env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 也可用阿里云 `https://mirrors.aliyun.com/pypi/simple/` 或公司内部镜像。成功标志是 `artemis\.venv\.aos-deps.json` 存在；`runner.cmd` 用它判断依赖就绪，安装失败不会启动。
 
+**Windows 离线依赖包**：公司网络完全无法访问 PyPI 时，使用 `mobile-testing-mcp-runner-<version>-win32-x64-offline.zip`（约 300MB，内置 Windows x64 / CPython 3.12 的 Artemis site-packages）。解压后跑 `configure.cmd`，再跑 `runner.cmd`；首次会自动创建 venv 并解压 `deps\win32-site-packages.zip`，不需要访问 PyPI。解压后约 850MB，需要本机有 Python 3.12。
+
 ### Jira 接入（读取 / 回写 / CLI）
 
 `jira_issue_get` / `jira_issue_search`：从 Jira Cloud 读取 issue 上下文（描述纯文本 + 启发式验收标准 + 原始 ADF）与 JQL 搜索结果，供 agent 直接生成/圈定测试用例；`jira_issue_comment` / `jira_issue_attach`：评论（纯文本→ADF，带 traceId 时按 `AOS-TRACE:` marker 幂等回写）与附件上传（确定性命名 + 内容哈希去重 + 超限跳过）；`jira_evidence_post`：失败证据 composite（失败步骤截图/设计差异标注图/失败清单/失败域/崩溃签名 → 中文结构化评论 + 附件，幂等回写，`dryRun` 预览）。

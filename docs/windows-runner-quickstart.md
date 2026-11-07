@@ -43,6 +43,10 @@ $env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 也可用阿里云 `https://mirrors.aliyun.com/pypi/simple/` 或公司内部镜像。成功标志是 `artemis\.venv\.aos-deps.json` 存在；`runner.cmd` 用它判断依赖就绪，安装失败不会启动。
 
+### 完全离线（内置依赖包）
+
+如果公司网络完全访问不了 PyPI，使用 `mobile-testing-mcp-runner-<version>-win32-x64-offline.zip`（约 300MB）。包内 `deps\win32-site-packages.zip` 已包含 Windows x64 / CPython 3.12 的 Artemis 依赖；`configure.cmd` 后直接 `runner.cmd`，首次自动创建 venv 并解压，不需要网络。解压后约 850MB。
+
 完整排障见 [android-mcp-native-testing.md](./android-mcp-native-testing.md)。
 
 ## 1. 前置
