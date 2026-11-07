@@ -3986,6 +3986,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **smoke 结论**：任务 `aad7c37e-…` 已由 win-runner-01 领取并回写 3 条失败（`imp-4ee495af-19/20/21`，`unclassified`）；中心侧无 manifest/trace（runner 未广告 artifactBaseUrl），需要 runner 重启/配置 `AOS_RUNNER_ADVERTISE_URL` 或更新 runner 包后才能打开证据。
 - **远端证据标注**：任务详情检测 Windows/UNC manifestPath，显示「执行机本地清单 / 执行机本地 trace」并提示配置 `AOS_RUNNER_ADVERTISE_URL`；不再生成中心 404 的批次/trace 链接。
 - **应用包名**：回归任务新增可选 `appPackage`（Android package / iOS bundle id），面板下发表单与 `suite task create --app <package>` 均可填；runner 执行时转成 Artemis `locked_app_package`，执行前锁定并启动被测应用。未填时保持旧行为（不主动 launch，依赖设备当前前台应用）。
+- **中心 LLM 热更新重启**：`Runtime.refreshCenterLlm` 在每次任务前比对中心代理的 baseUrl/key/model 指纹；长驻 runner 的 Artemis 子进程仍在用旧指纹时 `markForRestart`，下次调用按新中心地址重启，避免旧地址连接失败导致用例集体超时。
 
 - **测试**：`npm test` 3101/3101、lint 0 error、类型测试通过。
 

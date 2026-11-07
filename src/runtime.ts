@@ -506,6 +506,17 @@ export class Runtime {
     this.transientEntry = center.entry;
     this.activeCache = null;
     this.writeActiveConfig(center.entry);
+    if (this.proxy.isRunning()) {
+      const runningFingerprint = this.proxy.status().fingerprint;
+      const targetFingerprint = this.envFingerprintForEntry(center.entry);
+      if (runningFingerprint !== targetFingerprint) {
+        await this.proxy.markForRestart();
+        const state = this.state.read();
+        delete state.child;
+        this.state.write(state);
+        logWarn("中心 LLM 地址/凭证变化：已安排重启 Artemis 网关子进程");
+      }
+    }
   }
 
   /** Write <configDir>/artemis.jsonc (unified format, merged over the artemis

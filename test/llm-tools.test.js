@@ -39,6 +39,50 @@ test("llm_list: config entries, masked keys, active marker, no setup required", 
   assert.deepEqual(deepseek.issues, []);
 });
 
+test("refreshCenterLlm: LLM base URL change restarts the live Artemis child", async () => {
+  const dir = makeTempProject({});
+  const proxy = new StubProxy({ running: true, childFingerprint: "stale-child" });
+  const originalFetch = globalThis.fetch;
+  const centerUrl = "http://192.168.3.91:8765";
+  const entry = {
+    name: "deepseek",
+    provider: "custom",
+    model: "deepseek-flash",
+    baseUrl: `${centerUrl}/panel/api/runners/suite/llm/proxy/root`,
+    apiKey: null
+  };
+  globalThis.fetch = async (url) => {
+    const text = String(url);
+    if (text.endsWith("/panel/api/runners/suite/llm")) {
+      return new Response(
+        JSON.stringify({ ok: true, value: { found: true, entry } }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify({ object: "list", data: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  try {
+    const { runtime } = await loadTestRuntime(dir, {
+      proxy,
+      baseEnv: {
+        AOS_LLM_FROM_CENTER: "1",
+        MOBILE_TESTING_RUNNER_CONTROL_URL: centerUrl,
+        MOBILE_TESTING_RUNNER_JOB_TOKEN: "0123456789abcdef0123456789abcdef",
+        MOBILE_TESTING_HOST_ID: "test-host"
+      }
+    });
+    const before = proxy.restartCalls;
+    await runtime.refreshCenterLlm();
+    assert.equal(proxy.restartCalls, before + 1);
+    assert.equal(proxy.running, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("llm_list: setup_required when nothing is configured", async () => {
   const dir = makeTempProject({});
   const { runtime } = await loadTestRuntime(dir, { proxy: new StubProxy() });
