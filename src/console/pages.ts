@@ -1581,6 +1581,7 @@ export interface OpsPageData {
   storeLabel: string;
   writeError: string | null;
   artifacts: number;
+  llm?: { name: string; model: string; baseUrl: string | null; maskedKey: string } | null;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
@@ -1615,15 +1616,41 @@ export function renderOpsPage(data: OpsPageData): string {
         hostId: data.hostId ?? null
       }),
       cCard({
-        title: "接入配置",
-        subtitle: "LLM / Figma / Jira / 执行机 / 项目登记",
-        body: `<p>凭据与接入状态在项目页「接入」，执行机与设备在「设备」页；本服务不在此页保存明文密钥。</p><p><a class="c-button" href="/panel?project=${encodeURIComponent(
-          data.rootPath
-        )}#integration">查看项目接入</a> <a class="c-button" href="/panel?project=${encodeURIComponent(
-          data.rootPath
-        )}&amp;section=devices">设备与执行机</a> <a class="c-button" href="/panel?project=${encodeURIComponent(
-          data.rootPath
-        )}&amp;section=assets">测试资产</a></p>`
+        title: "项目配置",
+        subtitle: "LLM / Figma / Jira 凭据；密钥只写项目 .env 与存储，不回显",
+        body: [
+          data.llm
+            ? `<p class="muted">当前 LLM：<code>${escapeHtml(data.llm.name)}</code> · ${escapeHtml(
+                data.llm.model
+              )}${data.llm.baseUrl === null ? "" : ` · ${escapeHtml(data.llm.baseUrl)}`} · key ${
+                data.llm.maskedKey
+              }</p>`
+            : `<p class="muted">当前项目还没有 LLM 条目；首次配置需填写 API key。</p>`,
+          `<form id="ops-config-form" class="c-form" data-project="${escapeHtml(data.rootPath)}">`,
+          `<p><label>LLM 名称 <input name="name" value="${escapeHtml(
+            data.llm?.name ?? ""
+          )}" placeholder="例如 deepseek-flash" aria-label="LLM 名称"></label> <label>模型 <input name="model" value="${escapeHtml(
+            data.llm?.model ?? ""
+          )}" placeholder="deepseek-chat" aria-label="模型"></label></p>`,
+          `<p><label>Base URL <input name="baseUrl" size="42" value="${escapeHtml(
+            data.llm?.baseUrl ?? ""
+          )}" placeholder="https://api.deepseek.com" aria-label="Base URL"></label> <label>API Key <input name="apiKey" type="password" placeholder="留空沿用现有 key" aria-label="API Key" autocomplete="new-password"></label></p>`,
+          `<p><label>Figma token <input name="figmaToken" type="password" placeholder="留空不修改" aria-label="Figma token" autocomplete="new-password"></label> <label>Jira 站点 <input name="jiraSite" placeholder="https://x.atlassian.net" aria-label="Jira 站点"></label></p>`,
+          `<p><label>Jira 邮箱 <input name="jiraEmail" placeholder="qa@example.com" aria-label="Jira 邮箱"></label> <label>Jira API token <input name="jiraApiToken" type="password" placeholder="留空不修改" aria-label="Jira API token" autocomplete="new-password"></label></p>`,
+          `<p><button class="c-button c-button-primary" type="submit">保存配置</button> <span id="ops-config-status" role="status" class="muted"></span></p>`,
+          `<p class="muted">Figma/Jira 可只填其中一组；LLM 首次配置必须填 API Key，后续可留空沿用。</p>`,
+          `</form>`,
+          `<script>(function(){var form=document.getElementById('ops-config-form');if(!form)return;var root=${JSON.stringify(
+            data.rootPath
+          ).replace(/</g, "\\u003c")};var status=document.getElementById('ops-config-status');form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var body={project:root};['name','model','baseUrl','apiKey','figmaToken','jiraSite','jiraEmail','jiraApiToken'].forEach(function(key){var value=String(f.get(key)||'').trim();if(value!=='')body[key]=value;});if(Object.keys(body).length===1){status.textContent='没有填写任何配置';return;}status.textContent='保存中…';fetch('/panel/api/projects/config',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('配置已保存 · 已写入审计');location.reload();return;}status.textContent='保存失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}).catch(function(err){status.textContent='保存失败：'+err;});});})();</script>`,
+          `<p><a class="c-button" href="/panel?project=${encodeURIComponent(
+            data.rootPath
+          )}#integration">查看项目接入状态</a> <a class="c-button" href="/panel?project=${encodeURIComponent(
+            data.rootPath
+          )}&amp;section=devices">设备与执行机</a> <a class="c-button" href="/panel?project=${encodeURIComponent(
+            data.rootPath
+          )}&amp;section=assets">测试资产</a></p>`
+        ].join("\n")
       }),
       cCard({
         title: "存储",

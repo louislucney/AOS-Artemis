@@ -795,3 +795,36 @@ test("console actions: 只重跑失败用例创建带 caseIds 的新任务", asy
   assert.equal(noFailures.status, 200, "同一任务可重复创建");
   assert.deepEqual(JSON.parse(noFailures.body).task.caseIds, ["case-failed"]);
 });
+
+test("console actions: 项目配置写入 Figma token，缺 key/半组 Jira 拒绝", async () => {
+  const { deps, rootPath, runtime } = await setup();
+  const withRuntime = { ...deps, runtimeFor: async () => runtime };
+  const figma = await handlePanelActionRequest(
+    request("/panel/api/projects/config", { project: rootPath, figmaToken: "figd_test_token" }),
+    withRuntime
+  );
+  assert.equal(figma.status, 200);
+  const env = await readFile(join(rootPath, ".env"), "utf8");
+  assert.match(env, /FIGMA_ACCESS_TOKEN=figd_test_token/);
+
+  const noKey = await handlePanelActionRequest(
+    request("/panel/api/projects/config", {
+      project: rootPath,
+      model: "deepseek-chat",
+      baseUrl: "https://api.deepseek.com"
+    }),
+    withRuntime
+  );
+  assert.equal(noKey.status, 400);
+  assert.match(JSON.parse(noKey.body).error, /apiKey/);
+
+  const jira = await handlePanelActionRequest(
+    request("/panel/api/projects/config", {
+      project: rootPath,
+      jiraSite: "https://x.atlassian.net"
+    }),
+    withRuntime
+  );
+  assert.equal(jira.status, 400);
+  assert.match(JSON.parse(jira.body).error, /Jira/);
+});

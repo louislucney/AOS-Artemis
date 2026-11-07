@@ -9,8 +9,11 @@ import { recordAuditSafe } from "../db/audit-event.js";
 import { resolveHostReference } from "../center/store.js";
 import { LEGACY_HOST_REASON } from "../host/legacy.js";
 import { exportProjectData, type ExportWhat } from "../export/index.js";
-import { errorMessage, log, writeFileAtomic } from "../util.js";
+import { errorMessage, log, maskSecret, writeFileAtomic } from "../util.js";
 import { importTestDocument } from "../workflow/excel-import.js";
+import { writeEnvUpdates } from "../env-file.js";
+import { aosConfigure } from "../tools/configure.js";
+import { syncFigmaTokenEnv } from "../figma/token.js";
 import { createRunCaseIssues, MAX_ISSUE_ITEMS, normalizeLabels, retryIssueEvidence } from "./issues.js";
 import { sameOriginAllowed } from "./http-guard.js";
 import {
@@ -494,6 +497,23 @@ export async function handlePanelActionRequest(
     } else {
       payload = request.body as Record<string, unknown>;
     }
+  }
+  if (request.url.pathname === "/panel/api/projects/config") {
+    const projectKey = typeof payload.project === "string" ? payload.project.trim() : "";
+    if (projectKey === "") return json(400, { error: "缺少 project" });
+    const hostParam = typeof payload.host === "string" ? payload.host.trim() : "";
+    const resolved = await resolveProjectKey(
+      deps,
+      projectKey,
+      hostParam === "" ? undefined : hostParam
+    ).catch(() => null);
+    if (resolved === null) return json(404, { error: `未知项目 "${projectKey}"` });
+    const response = await configureProject(deps, resolved.rootPath, payload);
+    await auditPanel(deps, resolved.rootPath, "action.config", response, {
+      project: projectKey
+    });
+    if (response.status === 200) deps.cache?.clear();
+    return response;
   }
   if (request.url.pathname === "/panel/api/projects/assets/figma") {
     return await uploadFigmaReferenceAction(deps, payload, actor);
@@ -2412,6 +2432,73 @@ async function stopTask(
     taskId,
     status: updated.status,
     note: "已请求停止：执行机将在当前用例边界停止并确认（离线时为下次心跳读取）"
+  });
+}
+
+async function configureProject(
+  deps: PanelWebDeps,
+  rootPath: string,
+  payload: Record<string, unknown>
+): Promise<PanelWebResponse> {
+  const runtime = deps.runtimeFor ? await deps.runtimeFor(rootPath) : null;
+  if (runtime === null) {
+    return json(400, { error: "配置写入需要服务端运行态（HTTP 模式）；请用 MCP 的 aos_configure 或编辑项目 .env" });
+  }
+  const text = (key: string): string => (typeof payload[key] === "string" ? payload[key].trim() : "");
+  const model = text("model");
+  const baseUrl = text("baseUrl");
+  const apiKey = text("apiKey");
+  const name = text("name");
+  const vendor = text("vendor");
+  const figmaToken = text("figmaToken");
+  const jiraSite = text("jiraSite");
+  const jiraEmail = text("jiraEmail");
+  const jiraApiToken = text("jiraApiToken");
+  const hasLlm = model !== "" || baseUrl !== "" || apiKey !== "" || name !== "" || vendor !== "";
+  const jiraProvided = jiraSite !== "" || jiraEmail !== "" || jiraApiToken !== "";
+  if (jiraProvided && (jiraSite === "" || jiraEmail === "" || jiraApiToken === "")) {
+    return json(400, { error: "Jira 配置需要同时提供站点 URL、邮箱和 API token" });
+  }
+  if (!hasLlm && figmaToken === "" && !jiraProvided) {
+    return json(400, { error: "没有可写入的配置项" });
+  }
+  if (hasLlm) {
+    const active = apiKey === "" ? await runtime.activeEntry() : null;
+    const effectiveKey = apiKey !== "" ? apiKey : (active?.apiKey ?? "");
+    if (effectiveKey === "") {
+      return json(400, { error: "缺少 apiKey（项目尚无可用 LLM key；首次配置必须填写）" });
+    }
+    const result = await aosConfigure(runtime, {
+      ...(model === "" ? {} : { model }),
+      ...(baseUrl === "" ? {} : { baseUrl }),
+      apiKey: effectiveKey,
+      ...(name === "" ? {} : { name }),
+      ...(vendor === "" ? {} : { vendor }),
+      ...(figmaToken === "" ? {} : { figmaToken }),
+      ...(jiraProvided ? { jiraSite, jiraEmail, jiraApiToken } : {})
+    });
+    const body = result.content[0];
+    const parsed = body && body.type === "text" ? JSON.parse(body.text) : { ok: result.isError !== true };
+    return result.isError === true ? json(400, parsed) : json(200, parsed);
+  }
+  const updates: Record<string, string> = {};
+  if (figmaToken !== "") updates.FIGMA_ACCESS_TOKEN = figmaToken;
+  if (jiraProvided) {
+    updates.JIRA_BASE_URL = jiraSite;
+    updates.JIRA_EMAIL = jiraEmail;
+    updates.JIRA_API_TOKEN = jiraApiToken;
+  }
+  const envPath = writeEnvUpdates(rootPath, updates);
+  if (figmaToken !== "") {
+    await runtime.store.setFigmaToken(rootPath, figmaToken);
+    syncFigmaTokenEnv(figmaToken);
+  }
+  runtime.refreshProjectEnv();
+  return json(200, {
+    ok: true,
+    envPath,
+    figma: figmaToken === "" ? null : maskSecret(figmaToken),
+    jira: jiraProvided ? { site: jiraSite, email: jiraEmail } : null
   });
 }
 

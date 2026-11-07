@@ -13,7 +13,7 @@ import type {
 import { formatBytes } from "../figma/retention.js";
 import type { Runtime } from "../runtime.js";
 import type { VerdictEnvironmentGroup } from "../tasks/verdict-exits.js";
-import { escapeHtml } from "../util.js";
+import { escapeHtml, maskSecret } from "../util.js";
 import { projectAllowed } from "../project-visibility.js";
 import { renderConsoleShell, renderGroupTabs, setConsoleShellDefaults, type ConsoleCapabilities, type ConsoleNavKey, type ConsoleShellInput } from "../console/shell.js";
 import { INTEGRATION_ACTIONS, INTEGRATION_LABELS } from "../figma/integration-readiness.js";
@@ -293,6 +293,7 @@ type PanelView =
       storeNote: string | null;
       writeError: string | null;
       artifacts: number;
+      llm: { name: string; model: string; baseUrl: string | null; maskedKey: string } | null;
     }
   | {
       kind: "events";
@@ -1011,6 +1012,8 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       projectStore as { writeErrors?: () => { count: number; lastError: string | null } }
     ).writeErrors?.();
     const artifacts = (await listArtifacts(resolved.rootPath, { limit: 500 })).length;
+    const llms = await projectStore.listLlms(resolved.rootPath).catch(() => []);
+    const activeLlm = llms.find((entry) => entry.isActive) ?? llms[0] ?? null;
     return {
       kind: "ops",
       rootPath: resolved.rootPath,
@@ -1022,7 +1025,16 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         health && health.count > 0
           ? `台账写失败 ${health.count} 次：${health.lastError ?? "未知原因"}`
           : null,
-      artifacts
+      artifacts,
+      llm:
+        activeLlm === null
+          ? null
+          : {
+              name: activeLlm.name,
+              model: activeLlm.model,
+              baseUrl: activeLlm.baseUrl,
+              maskedKey: activeLlm.apiKey === null ? "未保存" : maskSecret(activeLlm.apiKey)
+            }
     };
   }
 
@@ -3480,15 +3492,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
       cCard({
         title: "项目对比",
         body: `<div class="c-table-scroll">${cTable({
-          columns: [
-            "项目",
-            "主机",
-            "最近用例集批次（时间·门禁·通过率）",
-            "趋势（最近 10 批）",
-            "质量（flaky·失败域 top3）",
-            "待办（未裁决·未建单·积压·failed）",
-            "执行（执行机·定时任务）"
-          ],
+          columns: ["项目", "主机", "最近批次", "趋势", "质量", "待办", "执行"],
           columnWidths: ["16%", "10%", "20%", "12%", "18%", "14%", "10%"],
           rows,
           caption: "项目对比矩阵",
@@ -4110,6 +4114,7 @@ function renderPanelHtml(
       storeNote: coherentStoreNote(view.storeKind, view.storeNote),
       writeError: view.writeError,
       artifacts: view.artifacts,
+      llm: view.llm,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });

@@ -73,7 +73,11 @@ export function panelRequiredRoleForPath(pathname: string): PanelRole | null {
   if (pathname === "/panel/api/issues" || pathname === "/panel/api/issues/evidence") {
     return "admin";
   }
-  if (pathname === "/panel/api/projects" || pathname === "/panel/api/projects/archive") {
+  if (
+    pathname === "/panel/api/projects" ||
+    pathname === "/panel/api/projects/archive" ||
+    pathname === "/panel/api/projects/config"
+  ) {
     return "admin";
   }
   return null;

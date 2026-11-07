@@ -64,6 +64,7 @@ const AUDIT_ACTIONS: Record<string, string> = {
   "action.rerun": "重新派发",
   "action.verdicts": "提交裁决",
   "action.issues": "建单",
+  "action.config": "项目配置",
   "action.schedules": "计划变更",
   "action.quarantine": "隔离变更",
   "action.export": "导出记录",

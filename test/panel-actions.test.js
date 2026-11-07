@@ -1208,6 +1208,7 @@ test("panel roles: 默认/显式角色与动作范围", () => {
   assert.equal(panelRequiredRoleForPath("/panel/api/verdicts"), "maintainer");
   assert.equal(panelRequiredRoleForPath("/panel/api/projects/scripts/generate"), "maintainer");
   assert.equal(panelRequiredRoleForPath("/panel/api/issues"), "admin");
+  assert.equal(panelRequiredRoleForPath("/panel/api/projects/config"), "admin");
   assert.equal(panelRequiredRoleForPath("/panel/api/unknown"), null);
   assert.deepEqual(panelRoleScopes("viewer"), {
     dispatch: false,

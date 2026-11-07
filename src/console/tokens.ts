@@ -113,6 +113,8 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
   letter-spacing:.02em;text-transform:uppercase;background:var(--color-surface-white)}
 .c-table--fixed{table-layout:fixed}
 .c-table-scroll .c-table{min-width:1200px}
+.c-table-scroll .c-table th:first-child,.c-table-scroll .c-table td:first-child{position:sticky;left:0;z-index:1;background:var(--color-surface-white)}
+.c-table-scroll .c-table th:first-child{background:var(--color-surface-light)}
 .c-empty-cell{color:var(--color-text-secondary);text-align:center;padding:32px 16px}
 .c-nowrap{white-space:nowrap}
 .c-run-id{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--color-text-secondary)}
