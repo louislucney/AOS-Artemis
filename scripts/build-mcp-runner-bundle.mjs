@@ -138,11 +138,16 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_SKIP=1"',
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
+      'set "UV_PYTHON=3.12"',
       'if not exist "project\\.env" copy "project\\.env.example" "project\\.env" >nul',
       'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
       'if errorlevel 1 echo [提示] project\\.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。',
       "echo [1/2] 检查环境并安装 Artemis 依赖（首次较慢，需要网络）...",
       "node dist\\cli.js doctor --install-deps",
+      'if not exist "artemis\\.venv\\.aos-deps.json" (',
+      "  echo [setup] Artemis 依赖未就绪；检查上面的错误（网络/Python 3.12）。",
+      "  exit /b 1",
+      ")",
       "echo.",
       "echo [2/2] 完成。LLM 由中心提供，无需填写 key；运行 doctor.cmd 体检。",
       ""
@@ -161,6 +166,7 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_SKIP=1"',
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
+      'set "UV_PYTHON=3.12"',
       'if not exist "project\\.env" (',
       "  echo [提示] 缺少 project\\.env：先运行 setup.cmd，再填入中心 runner token。",
       "  exit /b 2",
@@ -209,6 +215,7 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_SKIP=1"',
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
+      'set "UV_PYTHON=3.12"',
       'set "DEVICE=%~1"',
       'if "%DEVICE%"=="" set "DEVICE="',
       'set "TASK=%~2"',
@@ -234,6 +241,7 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_SKIP=1"',
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
+      'set "UV_PYTHON=3.12"',
       'if "%MOBILE_TESTING_HOST_ID%"=="" set "MOBILE_TESTING_HOST_ID=win-runner-01"',
       'if not exist "project\\.env" (',
       "  echo [runner] 缺少 project\\.env；先运行 configure.cmd。",
@@ -244,11 +252,14 @@ function writeWindowsLaunchers(staging) {
       "  echo [runner] project\\.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；先运行 configure.cmd。",
       "  exit /b 2",
       ")",
-      'if not exist "artemis\\.venv\\Scripts\\python.exe" (',
+      'set "NEED_DEPS=0"',
+      'if not exist "artemis\\.venv\\Scripts\\python.exe" set "NEED_DEPS=1"',
+      'if not exist "artemis\\.venv\\.aos-deps.json" set "NEED_DEPS=1"',
+      'if "%NEED_DEPS%"=="1" (',
       "  echo [runner] 首次启动：安装 Artemis 依赖（可能需要几分钟）...",
       "  node dist\\cli.js doctor --install-deps",
-      '  if not exist "artemis\\.venv\\Scripts\\python.exe" (',
-      "    echo [runner] Artemis 依赖未安装；先运行 setup.cmd 查看详情。",
+      '  if not exist "artemis\\.venv\\.aos-deps.json" (',
+      "    echo [runner] Artemis 依赖未安装成功；先运行 setup.cmd 查看详情。",
       "    exit /b 2",
       "  )",
       ")",
@@ -295,11 +306,16 @@ export PATH="$ROOT/tools/platform-tools:$PATH"
 export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
+export UV_PYTHON=3.12
 [ -f "$ROOT/project/.env" ] || cp "$ROOT/project/.env.example" "$ROOT/project/.env"
 if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' "$ROOT/project/.env"; then
   echo "[提示] project/.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。"
 fi
 node dist/cli.js doctor --install-deps
+if [ ! -f "$ROOT/artemis/.venv/.aos-deps.json" ]; then
+  echo "[setup] Artemis 依赖未就绪；检查上面的错误（网络/Python 3.12）。"
+  exit 1
+fi
 echo
 echo "完成。LLM 由中心提供，无需填写 key；运行 doctor.command 体检。"
 `;
@@ -312,6 +328,7 @@ export PATH="$ROOT/tools/platform-tools:$PATH"
 export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
+export UV_PYTHON=3.12
 if [ ! -f "$ROOT/project/.env" ]; then
   echo "[提示] 缺少 project/.env：先运行 setup.command，再填入中心 runner token。"
   exit 2
@@ -330,6 +347,7 @@ export PATH="$ROOT/tools/platform-tools:$PATH"
 export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
+export UV_PYTHON=3.12
 DEVICE="\${1:-}"
 TASK="\${2:-打开应用，截图并报告当前页面}"
 if [ -z "$DEVICE" ]; then
@@ -350,6 +368,7 @@ export PATH="$ROOT/tools/platform-tools:$PATH"
 export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
+export UV_PYTHON=3.12
 : "\${MOBILE_TESTING_HOST_ID:=mac-runner-01}"
 export MOBILE_TESTING_HOST_ID
 if [ ! -f "$ROOT/project/.env" ]; then
@@ -360,11 +379,11 @@ if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' "$ROOT/project/.env"; then
   echo "[runner] project/.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；先运行 configure.command。"
   exit 2
 fi
-if [ ! -x "$ROOT/artemis/.venv/bin/python" ]; then
+if [ ! -x "$ROOT/artemis/.venv/bin/python" ] || [ ! -f "$ROOT/artemis/.venv/.aos-deps.json" ]; then
   echo "[runner] 首次启动：安装 Artemis 依赖（可能需要几分钟）..."
   node dist/cli.js doctor --install-deps || true
-  if [ ! -x "$ROOT/artemis/.venv/bin/python" ]; then
-    echo "[runner] Artemis 依赖未安装；先运行 setup.command 查看详情。"
+  if [ ! -f "$ROOT/artemis/.venv/.aos-deps.json" ]; then
+    echo "[runner] Artemis 依赖未安装成功；先运行 setup.command 查看详情。"
     exit 2
   fi
 fi
@@ -394,6 +413,44 @@ function writeBundleReadme(staging, target) {
           "iOS 真机：连接本机，配置 `AOS_IOS_XCODE_ORG_ID`、Appium/xcuitest，并保持 `sudo appium driver run xcuitest tunnel-creation` 运行。"
         ].join("\n")
       : "iOS 不支持 Windows：iPhone 必须连接 Mac，使用 macOS MCP runner。";
+  const troubleshooting =
+    target.platform === "win32"
+      ? [
+          "## 首次安装依赖失败（Windows）",
+          "",
+          "`runner.cmd` 首次会自动执行 `doctor --install-deps`（`uv sync`）。启动脚本已固定 `UV_PYTHON=3.12`；如果 `uv` 仍选 3.13，先 `uv python find 3.12` 确认能定位 Python 3.12。",
+          "",
+          "如果访问 `pypi.org` 超时：删除半装的 venv，换可达镜像后重试：",
+          "",
+          "```powershell",
+          "Remove-Item -Recurse -Force .\\artemis\\.venv",
+          '$env:UV_PYTHON="3.12"',
+          '$env:UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"',
+          '$env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"',
+          ".\\runner.cmd",
+          "```",
+          "",
+          "也可用阿里云 `https://mirrors.aliyun.com/pypi/simple/` 或公司内部镜像。成功标志：`artemis\\.venv\\.aos-deps.json` 存在；`runner.cmd` 用它判断依赖就绪，安装失败不会启动。",
+          ""
+        ].join("\n")
+      : [
+          "## 首次安装依赖失败（macOS）",
+          "",
+          "`runner.command` 首次会自动执行 `doctor --install-deps`。启动脚本已固定 `UV_PYTHON=3.12`。",
+          "",
+          "如果访问 `pypi.org` 超时：删除半装的 venv，换可达镜像后重试：",
+          "",
+          "```sh",
+          "rm -rf artemis/.venv",
+          "export UV_PYTHON=3.12",
+          "export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple",
+          "export UV_INDEX_URL=$UV_DEFAULT_INDEX",
+          "./runner.command",
+          "```",
+          "",
+          "成功标志：`artemis/.venv/.aos-deps.json` 存在；`runner.command` 用它判断依赖就绪，安装失败不会启动。",
+          ""
+        ].join("\n");
   fs.writeFileSync(
     path.join(staging, "README.md"),
     [
@@ -418,6 +475,7 @@ function writeBundleReadme(staging, target) {
         ? "1. `configure.cmd` 填中心 URL/token（或直接编辑 `project\\.env`）\n2. `runner.cmd` 常驻领取；首次会自动安装 Artemis 依赖（也可先 `setup.cmd`）\n3. `doctor.cmd` / `smoke.cmd` 可选：体检与单条验证（**不需要填 LLM key**）"
         : "1. `./configure.command` 填中心 URL/token（或直接编辑 `project/.env`）\n2. `./runner.command` 常驻领取；首次会自动安装 Artemis 依赖（也可先 `setup.command`）\n3. `./doctor.command` / `./smoke.command` 可选：体检与单条验证（**不需要填 LLM key**）",
       "",
+      troubleshooting,
       "## 设备",
       "",
       androidLine,

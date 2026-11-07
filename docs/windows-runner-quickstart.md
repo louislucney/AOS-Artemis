@@ -9,14 +9,38 @@
 前置：Node 20+、`uv`、Python 3.12。下载 Windows MCP runner，解压后：
 
 ```powershell
-.\setup.cmd
-# 配置中心 runner URL/token（见包内 README「中心」）；LLM 由中心提供，不需要填 key
+.\configure.cmd
+# Center URL: http://<中心IP>:8765
+# Runner token: 中心的 MOBILE_TESTING_RUNNER_JOB_TOKEN
+# Host ID: win-runner-01
+
+.\runner.cmd
+# 首次会自动 doctor --install-deps（uv sync）；装好后常驻领取
+```
+
+`doctor.cmd` / `smoke.cmd` 可选：
+
+```powershell
 .\doctor.cmd
 .\smoke.cmd 10CF6609P900059 "打开 UAT Mobil Guam，点击 Register now"
-.\runner.cmd
 ```
 
 runner 在 Windows 本机用 USB adb 执行；中心只下发任务并接收结果，不需要中心访问 5037。跨机回归时中心下发 tests.json/flows，runner 自动落本地 `case-sets`，不需要复制项目。iOS 不支持 Windows，iPhone 必须连接 Mac（用 macOS MCP runner）。
+
+### 首次安装依赖失败（PyPI 超时 / Python 3.12）
+
+启动脚本已固定 `UV_PYTHON=3.12`。如果 `uv` 仍选 3.13，先 `uv python find 3.12`。如果访问 `pypi.org` 超时：
+
+```powershell
+cd C:\RUNNER\mobile-testing-mcp-runner-0.1.0-win32-x64
+Remove-Item -Recurse -Force .\artemis\.venv
+$env:UV_PYTHON="3.12"
+$env:UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
+$env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
+.\runner.cmd
+```
+
+也可用阿里云 `https://mirrors.aliyun.com/pypi/simple/` 或公司内部镜像。成功标志是 `artemis\.venv\.aos-deps.json` 存在；`runner.cmd` 用它判断依赖就绪，安装失败不会启动。
 
 完整排障见 [android-mcp-native-testing.md](./android-mcp-native-testing.md)。
 

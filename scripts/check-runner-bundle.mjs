@@ -66,6 +66,9 @@ export function checkBundleFiles(files, platform) {
   if (!setup.includes("doctor --install-deps")) {
     errors.push(`${setupName} 未执行 doctor --install-deps`);
   }
+  if (!setup.includes("UV_PYTHON=3.12")) {
+    errors.push(`${setupName} 未固定 UV_PYTHON=3.12`);
+  }
   const runnerName = platform === "win32" ? "runner.cmd" : "runner.command";
   const runner = text(files, runnerName);
   if (!runner.includes("doctor --install-deps")) {
@@ -73,6 +76,12 @@ export function checkBundleFiles(files, platform) {
   }
   if (!runner.includes("MOBILE_TESTING_RUNNER_JOB_TOKEN")) {
     errors.push(`${runnerName} 未检查 runner token`);
+  }
+  if (!runner.includes("UV_PYTHON=3.12")) {
+    errors.push(`${runnerName} 未固定 UV_PYTHON=3.12`);
+  }
+  if (!runner.includes(".aos-deps.json")) {
+    errors.push(`${runnerName} 未检查 Artemis 依赖 stamp`);
   }
   const configureName = platform === "win32" ? "configure.cmd" : "configure.command";
   const configure = text(files, configureName);

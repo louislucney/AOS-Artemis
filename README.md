@@ -385,6 +385,23 @@ Android 真机现走 MCP 原生：
 
 构建：`npm run toolchain:fetch && npm run bundle:adb-host`（仅 adb）或 `npm run bundle:mcp-runner`（双端 MCP runner）；中心 `GET /panel/runner-bundle?role=adb-host&platform=win32&arch=x64` / `...&role=mcp-runner&platform=darwin&arch=arm64`。
 
+#### Windows 首次安装失败（PyPI 超时 / Python 3.12）
+
+`runner.cmd` 首次会自动执行 `doctor --install-deps`（`uv sync`），启动脚本已固定 `UV_PYTHON=3.12`。如果 `uv` 仍选 3.13，先 `uv python find 3.12` 确认能定位 Python 3.12。
+
+如果访问 `pypi.org` 超时，删除半装的 `.venv`，换可达镜像后重试：
+
+```powershell
+cd C:\RUNNER\mobile-testing-mcp-runner-0.1.0-win32-x64
+Remove-Item -Recurse -Force .\artemis\.venv
+$env:UV_PYTHON="3.12"
+$env:UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
+$env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
+.\runner.cmd
+```
+
+也可用阿里云 `https://mirrors.aliyun.com/pypi/simple/` 或公司内部镜像。成功标志是 `artemis\.venv\.aos-deps.json` 存在；`runner.cmd` 用它判断依赖就绪，安装失败不会启动。
+
 ### Jira 接入（读取 / 回写 / CLI）
 
 `jira_issue_get` / `jira_issue_search`：从 Jira Cloud 读取 issue 上下文（描述纯文本 + 启发式验收标准 + 原始 ADF）与 JQL 搜索结果，供 agent 直接生成/圈定测试用例；`jira_issue_comment` / `jira_issue_attach`：评论（纯文本→ADF，带 traceId 时按 `AOS-TRACE:` marker 幂等回写）与附件上传（确定性命名 + 内容哈希去重 + 超限跳过）；`jira_evidence_post`：失败证据 composite（失败步骤截图/设计差异标注图/失败清单/失败域/崩溃签名 → 中文结构化评论 + 附件，幂等回写，`dryRun` 预览）。

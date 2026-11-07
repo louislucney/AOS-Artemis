@@ -11,6 +11,7 @@ function validWinFiles() {
         "@echo off",
         'set "AOS_LLM_FROM_CENTER=1"',
         'set "AOS_PEN_SKIP=1"',
+        'set "UV_PYTHON=3.12"',
         "node dist\\cli.js doctor --install-deps",
         ""
       ].join("\r\n")
@@ -28,8 +29,9 @@ function validWinFiles() {
     [
       "runner.cmd",
       [
+        'set "UV_PYTHON=3.12"',
         'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
-        'if not exist "artemis\\.venv\\Scripts\\python.exe" node dist\\cli.js doctor --install-deps',
+        'if not exist "artemis\\.venv\\.aos-deps.json" node dist\\cli.js doctor --install-deps',
         "node dist\\cli.js suite runner",
         ""
       ].join("\r\n")
@@ -108,6 +110,7 @@ test("runner bundle contract: valid macOS package passes", () => {
         "#!/bin/sh",
         "export AOS_LLM_FROM_CENTER=1",
         "export AOS_PEN_SKIP=1",
+        "export UV_PYTHON=3.12",
         "node dist/cli.js doctor --install-deps",
         ""
       ].join("\n")
@@ -121,8 +124,9 @@ test("runner bundle contract: valid macOS package passes", () => {
       "runner.command",
       [
         "#!/bin/sh",
+        "export UV_PYTHON=3.12",
         "if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' project/.env; then exit 2; fi",
-        "if [ ! -x artemis/.venv/bin/python ]; then node dist/cli.js doctor --install-deps || true; fi",
+        "if [ ! -f artemis/.venv/.aos-deps.json ]; then node dist/cli.js doctor --install-deps || true; fi",
         "node dist/cli.js suite runner",
         ""
       ].join("\n")
