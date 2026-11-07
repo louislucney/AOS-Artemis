@@ -160,7 +160,7 @@ sudo appium driver run xcuitest tunnel-creation
 - **中心只下发任务**，runner 在宿主本机领取并用本机设备执行，结果/证据回传；不需要中心反向连宿主 adb，也不需要 5037/SSH 隧道。
 - **Windows x64**：跑 Android（本机 USB adb）。
 - **macOS arm64**：跑 iOS 模拟器/真机与 Android；iOS 真机必须连接 Mac，Windows 不能执行 iOS。
-- **LLM**：runner 从中心取 active LLM（`AOS_LLM_FROM_CENTER=1`，包内脚本已设置）；中心返回 **LLM 代理 URL**，runner 用 runner token 调用，真实 provider key 不出中心，runner 本机不需填 key。跨主机需中心 `AOS_RUNNER_SHARED_LLM=1`；runner 本地项目路径与中心不同时设 `AOS_CENTER_PROJECT_ROOT`。
+- **LLM**：runner 从中心取 active LLM（`AOS_LLM_FROM_CENTER=1`，包内脚本已设置）；中心返回 **LLM 代理 URL**，runner 用 runner token 调用，真实 provider key 不出中心，runner 本机不需填 key。跨主机需中心 `AOS_RUNNER_SHARED_LLM=1` 与 `AOS_RUNNER_DEFAULT_PROJECT=<中心项目根路径>`；项目路径只存在中心，runner 不需要填写。
 - **前置**：Node 20+、`uv`、Python 3.12；中心 runner URL/token（或中心 PG）；iOS 另需 Xcode、Appium + xcuitest、`AOS_IOS_XCODE_ORG_ID` 签名团队与 iOS 18+ Remote XPC 隧道。
 - **包内脚本**：`setup` 安装 Artemis 依赖；`doctor` 体检（含中心 LLM）；`smoke` 单条 `mobile_run_task` 验证；`runner` 常驻领取中心任务。
 - **下载**：面板「设备 → 接入执行机」；构建：`npm run bundle:mcp-runner`。

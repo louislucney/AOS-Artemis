@@ -159,7 +159,15 @@ export class SuiteControlService {
   /** Runner 从中心取 LLM 访问方式：返回中心代理 URL（runner token 作为 key），
    * 真实 provider key 不出中心。仅经 runner token + host 校验后返回。 */
   async getLlm(args: Record<string, unknown>): Promise<unknown> {
-    const rootPath = requireString(args, "rootPath");
+    const requested = typeof args.rootPath === "string" ? args.rootPath.trim() : "";
+    const rootPath =
+      requested || (this.env.AOS_RUNNER_DEFAULT_PROJECT ?? "").trim();
+    if (rootPath === "") {
+      throw new RunnerControlError(
+        "invalid-state",
+        "中心未配置 AOS_RUNNER_DEFAULT_PROJECT，runner 请求也未带项目"
+      );
+    }
     await assertLlmProject(this.store, this.env, this.hostId, rootPath);
     const active = await resolveCenterLlm(this.store, this.env, rootPath);
     if (active === null) return { found: false };

@@ -477,7 +477,7 @@ test("suite control: 定时回归窗口与审计通过 HTTP 资源", async () =>
   });
 });
 
-test("suite control: /llm 返回中心 active LLM，runner 通过 AOS_LLM_FROM_CENTER 注入", async () => {
+test("suite control: /llm 用中心默认项目返回代理，runner 不需要项目路径", async () => {
   const projectDir = makeTempProject({ config: baseConfig() });
   const central = await makeCentral(projectDir);
   await central.store.upsertLlm(central.rootPath, {
@@ -489,54 +489,53 @@ test("suite control: /llm 返回中心 active LLM，runner 通过 AOS_LLM_FROM_C
     makeActive: true
   });
   const workspaceRoot = await makeWorkspace();
-  await withEnv("AOS_RUNNER_JOB_TOKEN", TOKEN, async () => {
-    const handle = await createAosHttpServer({
-      port: 0,
-      host: "127.0.0.1",
-      workspaceRoot,
-      store: central.store
-    });
-    const baseUrl = `http://127.0.0.1:${handle.port}`;
-    const headers = { authorization: `Bearer ${TOKEN}`, "x-aos-host-id": HOST };
-    try {
-      const response = await fetch(
-        `${baseUrl}/panel/api/runners/suite/llm?rootPath=${encodeURIComponent(central.rootPath)}`,
-        { headers }
-      );
-      assert.equal(response.status, 200);
-      const payload = await response.json();
-      assert.equal(payload.ok, true);
-      assert.equal(payload.value.found, true);
-      assert.equal(payload.value.entry.model, "deepseek-flash");
-      assert.equal(payload.value.entry.apiKey, null, "真实 key 不下发给 runner");
-      assert.match(payload.value.entry.baseUrl, /\/panel\/api\/runners\/suite\/llm\/proxy\//);
-      assert.equal(JSON.stringify(payload).includes("sk-center-test"), false);
-
-      const env = {
-        AOS_HOST_ID: HOST,
-        AOS_RUNNER_JOB_TOKEN: TOKEN,
-        AOS_RUNNER_CONTROL_URL: baseUrl,
-        MOBILE_TESTING_PANEL_BASE_URL: baseUrl,
-        AOS_PROJECT_DIR: projectDir,
-        AOS_CONFIG: "",
-        AOS_LLM_FROM_CENTER: "1"
-      };
-      const built = await buildRemoteSuiteRuntime(projectDir, env);
+  await withEnv("AOS_RUNNER_JOB_TOKEN", TOKEN, () =>
+    withEnv("AOS_RUNNER_DEFAULT_PROJECT", central.rootPath, async () => {
+      const handle = await createAosHttpServer({
+        port: 0,
+        host: "127.0.0.1",
+        workspaceRoot,
+        store: central.store
+      });
+      const baseUrl = `http://127.0.0.1:${handle.port}`;
+      const headers = { authorization: `Bearer ${TOKEN}`, "x-aos-host-id": HOST };
       try {
-        const active = await built.runtime.activeEntry();
-        assert.equal(active?.name, "center:center-deepseek");
-        assert.equal(active?.model, "deepseek-flash");
-        assert.match(active?.baseUrl ?? "", /\/panel\/api\/runners\/suite\/llm\/proxy\//);
-        assert.equal(active?.apiKey, TOKEN, "runner 用 runner token 调中心代理");
-        const entries = await built.runtime.entries();
-        assert.ok(entries.some((entry) => entry.name === "center:center-deepseek"));
+        const response = await fetch(`${baseUrl}/panel/api/runners/suite/llm`, { headers });
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.equal(payload.ok, true);
+        assert.equal(payload.value.found, true);
+        assert.equal(payload.value.entry.model, "deepseek-flash");
+        assert.equal(payload.value.entry.apiKey, null, "真实 key 不下发给 runner");
+        assert.match(payload.value.entry.baseUrl, /\/panel\/api\/runners\/suite\/llm\/proxy\//);
+        assert.equal(JSON.stringify(payload).includes("sk-center-test"), false);
+
+        const env = {
+          AOS_HOST_ID: HOST,
+          AOS_RUNNER_JOB_TOKEN: TOKEN,
+          AOS_RUNNER_CONTROL_URL: baseUrl,
+          MOBILE_TESTING_PANEL_BASE_URL: baseUrl,
+          AOS_PROJECT_DIR: projectDir,
+          AOS_CONFIG: "",
+          AOS_LLM_FROM_CENTER: "1"
+        };
+        const built = await buildRemoteSuiteRuntime(projectDir, env);
+        try {
+          const active = await built.runtime.activeEntry();
+          assert.equal(active?.name, "center:center-deepseek");
+          assert.equal(active?.model, "deepseek-flash");
+          assert.match(active?.baseUrl ?? "", /\/panel\/api\/runners\/suite\/llm\/proxy\//);
+          assert.equal(active?.apiKey, TOKEN, "runner 用 runner token 调中心代理");
+          const entries = await built.runtime.entries();
+          assert.ok(entries.some((entry) => entry.name === "center:center-deepseek"));
+        } finally {
+          await built.dispose();
+        }
       } finally {
-        await built.dispose();
+        await handle.close();
       }
-    } finally {
-      await handle.close();
-    }
-  });
+    })
+  );
 });
 
 test("suite control: LLM 代理转发到中心 provider，runner 不接触真实 key", async () => {

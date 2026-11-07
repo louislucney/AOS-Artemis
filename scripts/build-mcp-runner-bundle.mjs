@@ -29,8 +29,6 @@ const targets = [
 ];
 const bundleCenterUrl =
   (process.env.AOS_MCP_RUNNER_CENTER_URL ?? "").trim() || "http://<中心IP>:8765";
-const bundleCenterProject =
-  (process.env.AOS_MCP_RUNNER_CENTER_PROJECT ?? "").trim() || "/path/to/center/project";
 const bundleHostId = (process.env.AOS_MCP_RUNNER_HOST_ID ?? "").trim();
 const platformArg = process.argv.find((arg) => arg.startsWith("--platform="))?.split("=")[1] ?? "";
 const selectedTargets =
@@ -102,8 +100,6 @@ function writeProject(staging, target) {
       `MOBILE_TESTING_RUNNER_CONTROL_URL=${bundleCenterUrl}`,
       "MOBILE_TESTING_RUNNER_JOB_TOKEN=",
       `MOBILE_TESTING_HOST_ID=${hostId}`,
-      "# 中心项目根路径（runner 本地路径与中心不同时填写，用于取中心 LLM）",
-      `AOS_CENTER_PROJECT_ROOT=${bundleCenterProject}`,
       "",
       "# runner 不需要本机 LLM key：从中心 LLM 代理获取（AOS_LLM_FROM_CENTER=1，真实 key 不出中心）",
       "# 仅当中心不可用、需要本机兜底时才填下面四项",
@@ -177,9 +173,6 @@ function writeWindowsLaunchers(staging) {
     "utf8"
   );
   const defaultUrl = bundleCenterUrl.includes("<") ? "http://127.0.0.1:8765" : bundleCenterUrl;
-  const defaultProject = bundleCenterProject.includes("<")
-    ? "/path/to/center/project"
-    : bundleCenterProject;
   const defaultHost = bundleHostId || "win-runner-01";
   fs.writeFileSync(
     path.join(staging, "configure.cmd"),
@@ -189,19 +182,15 @@ function writeWindowsLaunchers(staging) {
       "setlocal",
       'cd /d "%~dp0"',
       `set "DEFAULT_URL=${defaultUrl}"`,
-      `set "DEFAULT_PROJECT=${defaultProject}"`,
       `set "DEFAULT_HOST=${defaultHost}"`,
       "set /p CENTER_URL=Center URL [%DEFAULT_URL%]: ",
       'if "%CENTER_URL%"=="" set "CENTER_URL=%DEFAULT_URL%"',
       "set /p CENTER_TOKEN=Runner token: ",
-      "set /p CENTER_ROOT=Center project root [%DEFAULT_PROJECT%]: ",
-      'if "%CENTER_ROOT%"=="" set "CENTER_ROOT=%DEFAULT_PROJECT%"',
       "set /p HOST_ID=Host ID [%DEFAULT_HOST%]: ",
       'if "%HOST_ID%"=="" set "HOST_ID=%DEFAULT_HOST%"',
       '> "project\\.env" echo MOBILE_TESTING_RUNNER_CONTROL_URL=%CENTER_URL%',
       '>> "project\\.env" echo MOBILE_TESTING_RUNNER_JOB_TOKEN=%CENTER_TOKEN%',
       '>> "project\\.env" echo MOBILE_TESTING_HOST_ID=%HOST_ID%',
-      '>> "project\\.env" echo AOS_CENTER_PROJECT_ROOT=%CENTER_ROOT%',
       "echo 已写入 project\\.env",
       'if "%CENTER_TOKEN%"=="" echo [提示] runner token 为空；请重新运行 configure.cmd。',
       ""
@@ -255,25 +244,18 @@ function writeWindowsLaunchers(staging) {
 
 function writeMacLaunchers(staging) {
   const defaultUrl = bundleCenterUrl.includes("<") ? "http://127.0.0.1:8765" : bundleCenterUrl;
-  const defaultProject = bundleCenterProject.includes("<")
-    ? "/path/to/center/project"
-    : bundleCenterProject;
   const defaultHost = bundleHostId || "mac-runner-01";
   const configure = `#!/bin/sh
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$ROOT"
 DEFAULT_URL="${defaultUrl}"
-DEFAULT_PROJECT="${defaultProject}"
 DEFAULT_HOST="${defaultHost}"
 printf "Center URL [%s]: " "$DEFAULT_URL"
 read CENTER_URL
 CENTER_URL="\${CENTER_URL:-$DEFAULT_URL}"
 printf "Runner token: "
 read CENTER_TOKEN
-printf "Center project root [%s]: " "$DEFAULT_PROJECT"
-read CENTER_ROOT
-CENTER_ROOT="\${CENTER_ROOT:-$DEFAULT_PROJECT}"
 printf "Host ID [%s]: " "$DEFAULT_HOST"
 read HOST_ID
 HOST_ID="\${HOST_ID:-$DEFAULT_HOST}"
@@ -281,7 +263,6 @@ HOST_ID="\${HOST_ID:-$DEFAULT_HOST}"
   echo "MOBILE_TESTING_RUNNER_CONTROL_URL=$CENTER_URL"
   echo "MOBILE_TESTING_RUNNER_JOB_TOKEN=$CENTER_TOKEN"
   echo "MOBILE_TESTING_HOST_ID=$HOST_ID"
-  echo "AOS_CENTER_PROJECT_ROOT=$CENTER_ROOT"
 } > project/.env
 echo "已写入 project/.env"
 if [ -z "$CENTER_TOKEN" ]; then
@@ -401,8 +382,8 @@ function writeBundleReadme(staging, target) {
       "## 启动",
       "",
       target.platform === "win32"
-        ? "1. `configure.cmd` 填中心 URL/token/项目路径（或直接编辑 `project\\.env`）\n2. `setup.cmd`（首次安装 Artemis 依赖）\n3. `doctor.cmd` 确认全绿（**不需要填 LLM key**）\n4. `smoke.cmd [设备序列号] [任务描述]`\n5. `runner.cmd` 常驻领取中心任务"
-        : "1. `./configure.command` 填中心 URL/token/项目路径（或直接编辑 `project/.env`）\n2. `./setup.command`（首次安装 Artemis 依赖）\n3. `./doctor.command` 确认全绿（**不需要填 LLM key**）\n4. `./smoke.command [设备UDID] [任务描述]`\n5. `./runner.command` 常驻领取中心任务",
+        ? "1. `configure.cmd` 填中心 URL/token（或直接编辑 `project\\.env`）\n2. `setup.cmd`（首次安装 Artemis 依赖）\n3. `doctor.cmd` 确认全绿（**不需要填 LLM key**）\n4. `smoke.cmd [设备序列号] [任务描述]`\n5. `runner.cmd` 常驻领取中心任务"
+        : "1. `./configure.command` 填中心 URL/token（或直接编辑 `project/.env`）\n2. `./setup.command`（首次安装 Artemis 依赖）\n3. `./doctor.command` 确认全绿（**不需要填 LLM key**）\n4. `./smoke.command [设备UDID] [任务描述]`\n5. `./runner.command` 常驻领取中心任务",
       "",
       "## 设备",
       "",
@@ -422,7 +403,7 @@ function writeBundleReadme(staging, target) {
       "跨主机 runner 还需要：",
       "",
       "- 中心打开 `AOS_RUNNER_SHARED_LLM=1`（允许 runner 取中心 LLM 代理；单机队/受控内网，多租户不要开）",
-      "- runner 本地项目路径与中心不同时，设置 `AOS_CENTER_PROJECT_ROOT=<中心项目根路径>`",
+      "- 中心设置 `AOS_RUNNER_DEFAULT_PROJECT=<中心项目根路径>`（项目路径只存在中心，runner 不需要知道）",
       "",
       "未配置时 runner 只使用本机文件台账，不会领取中心任务。主机名用 `MOBILE_TESTING_HOST_ID` 指定（默认 win-runner-01 / mac-runner-01）。",
       ""

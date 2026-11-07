@@ -65,8 +65,9 @@ export async function fetchCenterLlm(
     env.MOBILE_TESTING_HOST_ID?.trim() ||
     env.AOS_HOST_ID?.trim() ||
     (await resolveHostIdentity({ env })).id;
-  const centerRoot = (env.AOS_CENTER_PROJECT_ROOT ?? "").trim() || options.rootPath;
-  const url = `${baseUrl.replace(/\/+$/, "")}/panel/api/runners/suite/llm?rootPath=${encodeURIComponent(centerRoot)}`;
+  const centerRoot = (env.AOS_CENTER_PROJECT_ROOT ?? "").trim();
+  const query = centerRoot === "" ? "" : `?rootPath=${encodeURIComponent(centerRoot)}`;
+  const url = `${baseUrl.replace(/\/+$/, "")}/panel/api/runners/suite/llm${query}`;
   const fetchImpl = options.fetchImpl ?? fetch;
   let response: Awaited<ReturnType<typeof fetch>>;
   try {
