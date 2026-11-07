@@ -8,7 +8,7 @@ import {
   type loadApiErrorCatalog
 } from "../artemis/api-errors.js";
 import { classifyFailure, scriptProvenanceSignal } from "../artemis/failure-taxonomy.js";
-import { resultPayload, taskStatusOf, traceIdOf } from "../artemis/task-result.js";
+import { resultPayload, taskStatusOf, traceIdOf, type TaskStatus } from "../artemis/task-result.js";
 import { crashesForTrace } from "../crash/query.js";
 import { TERMINAL_TASK_STATUSES } from "../db/types.js";
 import type { IosDevice } from "../device/ios-actions.js";
@@ -21,6 +21,34 @@ import type { Runtime } from "../runtime.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { GeneratedCase } from "./design-store.js";
 import type { SuiteCaseResult, SuiteResetFn } from "./suite-runner.js";
+
+/** Artemis 子进程异常退出时可能只把错误写到 stderr，status.json 仍保持 running；
+ * 套件轮询必须把这个终态信号当成 failed，否则会白等完整超时。 */
+export function traceTerminalError(traceDir: string): string | null {
+  for (const name of ["stderr.log", "stdout.log"]) {
+    try {
+      const filePath = path.join(traceDir, name);
+      const stat = fs.statSync(filePath);
+      if (stat.size === 0) continue;
+      const start = Math.max(0, stat.size - 8192);
+      const fd = fs.openSync(filePath, "r");
+      try {
+        const buffer = Buffer.alloc(stat.size - start);
+        fs.readSync(fd, buffer, 0, buffer.length, start);
+        const text = buffer.toString("utf-8");
+        const critical = /CRITICAL ERROR during task execution:\s*([^\r\n]+)/i.exec(text);
+        if (critical) return `Artemis 执行失败：${critical[1].trim()}`;
+        const llm = /((?:LLMExhaustedError|openai\.APIConnectionError):[^\r\n]+)/i.exec(text);
+        if (llm) return `Artemis 执行失败：${llm[1].trim()}`;
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      /* trace 尚未落盘或不可读：继续轮询 */
+    }
+  }
+  return null;
+}
 
 /** 套件执行核心（DESIGN §13.85）：一例 = 一次深调用——reset → 提交 → 轮询 →
  * api-errors 采集与产物 → 结果组装。编排（加载/筛选/聚合/对账摄取）留在 suite-runner。 */
@@ -211,10 +239,37 @@ export async function executeCase(
   }
 
   const deadline = now() + context.pollTimeoutMs;
+  const traceDir = runtime.traceDir(traceId);
   let status = await runtime.traceStatus(traceId);
-  while (!isTerminal(status?.status) && now() < deadline) {
+  let terminalError =
+    isTerminal(status?.status) === true
+      ? null
+      : status?.error?.trim() || traceTerminalError(traceDir);
+  while (!isTerminal(status?.status) && terminalError === null && now() < deadline) {
     await sleep(context.pollIntervalMs);
     status = await runtime.traceStatus(traceId);
+    if (!isTerminal(status?.status)) {
+      terminalError = status?.error?.trim() || traceTerminalError(traceDir);
+    }
+  }
+  if (terminalError !== null) {
+    status = {
+      ...(status ?? {
+        traceId,
+        status: null,
+        deviceSerial: context.deviceSerial,
+        error: null,
+        message: null,
+        testSummary: null,
+        notesDir: null,
+        stderrLog: null,
+        stdoutLog: null,
+        startTimeMs: null,
+        endTimeMs: null
+      }),
+      status: "failed",
+      error: terminalError
+    } satisfies TaskStatus;
   }
   await runtime.syncTaskStatuses();
   await runtime.flushCrashScans();

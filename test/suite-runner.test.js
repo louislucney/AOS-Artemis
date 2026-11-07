@@ -77,6 +77,25 @@ test("suite runner: Android 提交前剔除 iOS 脚本断言块，iOS 保留", a
   assert.ok(!taskDescForTarget(taskDesc, null).includes("【AOS-EXPECT】"), "无设备缺省按 Android 剔除");
 });
 
+test("suite runner: CRITICAL ERROR in stderr fails fast instead of waiting for timeout", async () => {
+  const { runtime, run } = await setup({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "running" } }
+  });
+  const traceDir = runtime.traceDir("trace-1");
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "stderr.log"),
+    "INFO:openai._base_client:Retrying request\n" +
+      "CRITICAL ERROR during task execution: LLMExhaustedError: Connection error.\n",
+    "utf-8"
+  );
+  const report = await run({ pollTimeoutMs: 200 });
+  assert.equal(report.failed, 1);
+  assert.match(report.cases[0].error ?? "", /Connection error/);
+  assert.equal(report.cases[0].status, "failed");
+});
+
 test("suite runner: runs all cases, resets per case and writes the ledger", async () => {
   const { dir, store, resetCalls, run } = await setup({
     cases: [caseEntry(1), caseEntry(2)],

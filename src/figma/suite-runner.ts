@@ -40,7 +40,7 @@ import { readAndroidTraceObservations } from "../artemis/android-trace.js";
 import { preflightGeneratedTests, type PreflightReport } from "./preflight.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
-const DEFAULT_POLL_TIMEOUT_MS = 15 * 60_000;
+const DEFAULT_POLL_TIMEOUT_MS = 3 * 60_000;
 
 export type SuiteResetFn = (
   request: AppResetRequest,
@@ -517,7 +517,12 @@ export async function runGeneratedTests(
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = options.now ?? Date.now;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-  const pollTimeoutMs = options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
+  const pollTimeoutMs =
+    options.pollTimeoutMs ??
+    (() => {
+      const raw = Number((process.env.AOS_SUITE_CASE_TIMEOUT_MS ?? "").trim());
+      return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : DEFAULT_POLL_TIMEOUT_MS;
+    })();
   const apiCatalog = options.apiErrors === false ? null : loadApiErrorCatalog(runtime.configDirAbs);
   const collectLogcat =
     options.logcatCollector ?? ((request) => new AdbLogcatCollector().collect(request));
