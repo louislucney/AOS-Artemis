@@ -3964,6 +3964,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **面板口径/入口**：对比页任务计数过滤 `jobSpec !== null`（历史 Web 任务不再显示 `失败 15`）；项目概览先列项目表再列主机/新增项目；`任务与结果` 空态给「新建测试」按钮；失败分析空态给 CTA；批量裁决默认不选并强制选择；`安装包` tab 预选 package 上传类型；`[hidden]` 强制隐藏；secret 复选框不再误显示；`&section` 链接转义并清理伪项目 `ESSO-GU§ion=create`。
 - **设备页**（`console/pages.ts`、`panel/web.ts`、`console/shell.ts`）：`?section=devices&project=…` 保留项目上下文/项目切换器；每行「去下发」携带 host+platform 进入向导；表格列宽与移动端导航换行改善。
 - **结果/运营细节**：任务详情的「去失败分析」带 `task=<id>`，失败分析按任务过滤并可一键查看全部；任务 CLI 命令加「复制命令」；全局搜索项目列显示项目名而非绝对路径；`/usage` 标题改「使用统计」，先展示有数据的工具概览，再展示 Token 消耗；运维页新增「接入配置」入口（项目接入/设备/资产）。
+- **只重跑失败用例**：`RegressionTaskRecord.caseIds`（PG `case_ids` 迁移）记录任务级 caseId 过滤；任务详情汇总 `failedCaseIds` 并新增「重跑失败用例（N）」→ `POST /panel/api/tasks/rerun {failedOnly:true}` 创建带 `caseIds` 的新任务；runner `suite run --task` 把 `task.caseIds` 传给 `SuiteRunOptions.caseIds`，只执行失败用例。
 - **档案/搜索闭环**：任务详情新增「任务档案」到 `section=archive&task=<id>`；`listArtifacts` 支持关联 needles（task/runId/traceId/manifest basename）过滤，档案页显示任务过滤 chip 并可清除；搜索项目列显示显示名、支持清空、用例集结果加「用例库」入口；批量裁决提交前确认条数与裁决；表格在窄屏显示「左右滑动查看完整表格」提示；footer 贴底、顶栏 meta 去孤立分隔符。
 - **响应式/可达性**：移动导航改为换行展示（不再隐藏设备/档案/运维/使用统计）；dropzone 加 `:focus-visible`；减少动态时保留手动「刷新」；表格 `overflow-wrap` 从 `anywhere` 改 `break-word`，避免 `android`/项目名被拆成一字一行；对比表固定最小宽度 + 横向滚动。
 - **测试**：`test/console-dispatch.test.js`（安装包/表单）、`test/panel-console-actions.test.js`（跨机 runner 下发、appAssetId）、`test/panel-compare.test.js`（Web 任务不计入积压）、`test/panel-web.test.js`（批次/轨迹/失败分析链接）、`test/web-devices-ui.test.js`（项目上下文/去下发）；全量 `3099/3099`，lint 0 error。

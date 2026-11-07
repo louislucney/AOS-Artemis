@@ -405,7 +405,8 @@ export class MemoryStore implements ProjectStore {
       executionMode: input.executionMode === "llm" ? "llm" : "maestro",
       deviceSerial: input.deviceSerial ?? null,
       deviceLeaseId: input.deviceLeaseId ?? null,
-      appAssetId: input.appAssetId ?? null
+      appAssetId: input.appAssetId ?? null,
+      caseIds: [...(input.caseIds ?? [])]
     };
     this.regressionTasks.push(record);
     return cloneRegressionTask(record);

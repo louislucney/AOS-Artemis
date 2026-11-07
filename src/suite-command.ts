@@ -689,6 +689,11 @@ async function suiteRunTask(
     baseOptions.appPath = taskApp.path;
     say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);
   }
+  const taskCaseIds = task.caseIds ?? [];
+  if (taskCaseIds.length > 0 && flags.list("case").length === 0) {
+    baseOptions.caseIds = [...taskCaseIds];
+    say(`任务用例过滤：${taskCaseIds.length} 条（仅执行指定 caseId）`);
+  }
   const quarantine = loadSuiteQuarantine(
     runtime,
     flags.bool("no-quarantine"),

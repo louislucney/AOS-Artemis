@@ -696,3 +696,102 @@ test("console actions: 跨机 runner 主机可在中心项目上下发", async (
   assert.equal(task.targetHostId, "win-runner-01");
   assert.equal((await store.getRegressionTask(rootPath, task.id))?.id, task.id);
 });
+
+test("console actions: 只重跑失败用例创建带 caseIds 的新任务", async () => {
+  const { deps, rootPath, store } = await setup();
+  const task = await store.createRegressionTask({
+    rootPath,
+    refs: [],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.recordSuiteRun({
+    rootPath,
+    createdAt: "2026-10-18T00:00:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: task.id,
+      caseSetId: null,
+      featureKey: "f-1",
+      featureName: "登录",
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      status: "failed",
+      startedAt: "2026-10-18T00:00:00.000Z",
+      finishedAt: "2026-10-18T00:01:00.000Z",
+      total: 2,
+      passed: 1,
+      failed: 1,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: { 用例缺陷: 1 },
+      gateResult: "fail",
+      exitCode: 1,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-ok",
+        name: "通过",
+        featureKey: "f-1",
+        platform: "android",
+        status: "passed",
+        traceId: null,
+        failureDomain: null,
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: 100,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      },
+      {
+        caseId: "case-failed",
+        name: "失败",
+        featureKey: "f-1",
+        platform: "android",
+        status: "failed",
+        traceId: null,
+        failureDomain: "用例缺陷",
+        failureConfidence: "medium",
+        failureReason: "断言未命中",
+        durationMs: 120,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null
+      }
+    ]
+  });
+  const response = await handlePanelActionRequest(
+    request("/panel/api/tasks/rerun", {
+      project: rootPath,
+      taskId: task.id,
+      failedOnly: true
+    }),
+    deps
+  );
+  assert.equal(response.status, 200);
+  const created = JSON.parse(response.body).task;
+  assert.deepEqual(created.caseIds, ["case-failed"]);
+  assert.equal(created.targetHostId, task.targetHostId);
+
+  const noFailures = await handlePanelActionRequest(
+    request("/panel/api/tasks/rerun", {
+      project: rootPath,
+      taskId: task.id,
+      failedOnly: true
+    }),
+    deps
+  );
+  assert.equal(noFailures.status, 200, "同一任务可重复创建");
+  assert.deepEqual(JSON.parse(noFailures.body).task.caseIds, ["case-failed"]);
+});

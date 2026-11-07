@@ -447,6 +447,8 @@ export interface RegressionTaskRecord {
   deviceLeaseId: string | null;
   /** 可选安装包资产 id（package）；runner 执行前下载安装，不再要求设备预装。 */
   appAssetId: string | null;
+  /** 可选用例过滤（重跑失败用例）：runner 仅执行这些 caseId；空＝全部。 */
+  caseIds: string[];
 }
 
 /** 旧 `stopped` 行对外统一读作 `cancelled`（`cancelSource=panel` 仅作历史来源标注）。 */
@@ -465,7 +467,8 @@ export function normalizeRegressionTask(record: RegressionTaskRecord): Regressio
     executionMode: record.executionMode === "llm" ? "llm" : "maestro",
     deviceSerial: record.deviceSerial ?? null,
     deviceLeaseId: record.deviceLeaseId ?? null,
-    appAssetId: record.appAssetId ?? null
+    appAssetId: record.appAssetId ?? null,
+    caseIds: record.caseIds ?? []
   };
 }
 
@@ -877,6 +880,7 @@ export interface CreateRegressionTaskInput {
   deviceSerial?: string | null;
   deviceLeaseId?: string | null;
   appAssetId?: string | null;
+  caseIds?: string[];
 }
 
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */

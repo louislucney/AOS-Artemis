@@ -2427,6 +2427,22 @@ async function rerunTask(
   if (task.status === "claimed" || task.status === "running") {
     return json(409, { error: "任务正在执行：请先「停止执行」，再重新派发" });
   }
+  let caseIds: string[] = [];
+  if (payload.failedOnly === true) {
+    const runs = await deps.store
+      .listSuiteRuns(rootPath, { taskId: task.id, limit: 100 })
+      .catch(() => []);
+    const seen = new Set<string>();
+    for (const run of runs) {
+      for (const entry of run.cases) {
+        if (entry.status === "failed") seen.add(entry.caseId);
+      }
+    }
+    caseIds = [...seen];
+    if (caseIds.length === 0) {
+      return json(400, { error: "该任务没有失败用例可重跑" });
+    }
+  }
   const created = await deps.store.createRegressionTask({
     rootPath,
     refs: task.refs,
@@ -2435,7 +2451,9 @@ async function rerunTask(
     createdBy: "panel",
     targetHostId: task.targetHostId,
     createdHostId: task.createdHostId,
-    priority: task.priority
+    priority: task.priority,
+    appAssetId: task.appAssetId,
+    caseIds
   });
   deps.cache?.clear();
   return json(200, { ok: true, task: created, sourceTaskId: task.id });

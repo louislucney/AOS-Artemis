@@ -270,6 +270,8 @@ export interface PanelTaskRunView {
   total: number;
   passed: number;
   failed: number;
+  /** 失败用例 id（重跑失败用例用）。 */
+  failedCaseIds: string[];
   /** UI 核验计数；清单缺失/远端不可读 → null。 */
   ui: UiSummary | null;
   failureDomains: Record<string, number>;
@@ -1504,6 +1506,9 @@ export async function buildPanelTaskDetail(
     total: run.total,
     passed: run.passed,
     failed: run.failed,
+    failedCaseIds: run.cases
+      .filter((entry) => entry.status === "failed")
+      .map((entry) => entry.caseId),
     ui: taskRunUi(rootPath, run.manifestPath),
     failureDomains: run.failureDomains,
     comparison: comparisonView(run.comparison),
