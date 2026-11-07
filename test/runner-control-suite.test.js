@@ -648,7 +648,8 @@ test("suite control: default project + bundle documents allow a different runner
     platforms: ["android"],
     baseline: "latest",
     targetHostId: HOST,
-    appAssetId: app.id
+    appAssetId: app.id,
+    appPackage: "com.example.app"
   });
   const localDir = makeTempProject({ config: baseConfig() });
   const workspaceRoot = await makeWorkspace();
@@ -683,6 +684,7 @@ test("suite control: default project + bundle documents allow a different runner
         assert.match(bundlePayload.value.flows.content, /screens/);
         assert.equal(bundlePayload.value.appAsset.id, app.id);
         assert.equal(bundlePayload.value.appAsset.filename, "app-release.apk");
+        assert.equal(bundlePayload.value.task.appPackage, "com.example.app");
 
         const appResponse = await fetch(
           `${baseUrl}/panel/api/runners/suite/tasks/${encodeURIComponent(task.id)}/app?rootPath=${encodeURIComponent(central.rootPath)}`,
