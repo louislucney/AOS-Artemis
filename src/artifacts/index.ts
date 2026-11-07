@@ -17,6 +17,8 @@ export interface ArtifactQuery {
   kind?: ArtifactRecord["kind"];
   since?: string;
   q?: string;
+  /** 关联过滤：任一 needle 命中 title/path 才保留（任务档案用 runId/traceId/manifest basename）。 */
+  needles?: string[];
   limit?: number;
   offset?: number;
 }
@@ -64,6 +66,7 @@ export async function listArtifacts(
     }
   }
   const needle = query.q?.toLowerCase() ?? null;
+  const needles = (query.needles ?? []).map((entry) => entry.toLowerCase()).filter(Boolean);
   const filtered = out
     .filter((record) => query.since === undefined || record.at >= query.since)
     .filter((record) => {
@@ -71,6 +74,11 @@ export async function listArtifacts(
       return (
         record.title.toLowerCase().includes(needle) || record.path.toLowerCase().includes(needle)
       );
+    })
+    .filter((record) => {
+      if (needles.length === 0) return true;
+      const haystack = `${record.title}\n${record.path}`.toLowerCase();
+      return needles.some((entry) => haystack.includes(entry));
     })
     .sort((a, b) => b.at.localeCompare(a.at) || a.path.localeCompare(b.path));
   const start =

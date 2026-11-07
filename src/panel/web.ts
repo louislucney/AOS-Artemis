@@ -895,10 +895,31 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         ? Math.floor(Number(offsetRaw))
         : 0;
     const pageSize = 50;
+    const taskFilterId = trimmed(url.searchParams.get("task"));
+    const needles: string[] = [];
+    if (taskFilterId !== null) {
+      const task = await projectStore
+        .getRegressionTask(resolved.rootPath, taskFilterId)
+        .catch(() => null);
+      if (task !== null) {
+        needles.push(task.id, ...task.runIds);
+        const runs = await projectStore
+          .listSuiteRuns(resolved.rootPath, { taskId: task.id, limit: 200 })
+          .catch(() => []);
+        for (const run of runs) {
+          needles.push(run.id);
+          if (run.manifestPath !== null) needles.push(path.basename(run.manifestPath));
+          for (const entry of run.cases) {
+            if (entry.traceId !== null) needles.push(entry.traceId);
+          }
+        }
+      }
+    }
     const fetched = await listArtifacts(resolved.rootPath, {
       ...(kind === undefined ? {} : { kind }),
       ...(q === null ? {} : { q }),
       ...(since === null ? {} : { since }),
+      ...(needles.length === 0 ? {} : { needles }),
       limit: pageSize + 1,
       offset
     });
@@ -2580,7 +2601,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
             `<div class="c-banner c-banner-accent" role="status">已派发任务 <code>${escapeHtml(view.flash)}</code>；已写入审计（<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=audit${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">查看审计</a>）。</div>`
           ]),
       "<header>",
-      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a> · <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=tasks${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">任务与结果</a></p>`,
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a> · <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=tasks${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">任务与结果</a> · <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=archive&amp;task=${encodeURIComponent(task.id)}${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">任务档案</a></p>`,
       `<h1>任务 <code>${escapeHtml(task.id)}</code></h1>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个设备运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {

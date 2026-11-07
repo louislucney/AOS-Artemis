@@ -69,6 +69,13 @@ test("listArtifacts: kind/q/since/limit 过滤", async () => {
     assert.ok(since.every((record) => record.at >= "2026-10-18T04:00:00.000Z"));
     const limited = await listArtifacts(root, { limit: 2 });
     assert.equal(limited.length, 2);
+    const needles = await listArtifacts(root, { needles: ["20261018-abc", "20261018_login"] });
+    assert.ok(needles.length >= 3);
+    assert.ok(
+      needles.every((record) =>
+        /20261018-abc|20261018_login/i.test(`${record.title}\n${record.path}`)
+      )
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -99,6 +99,7 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.55;cursor:not-allowed}
 
 /* ── CSDC 表格：外层卡片 + 浅灰表头 + 宽松行距 ─────────────────── */
+.c-table-scroll-hint{display:none;margin:0 0 6px;color:var(--color-text-secondary);font-size:var(--font-size-caption)}
 .c-table-wrap{overflow-x:auto;max-width:100%;background:var(--color-surface-white);
   border:1px solid var(--color-border-subtle);border-radius:var(--radius-card);box-shadow:var(--shadow-card)}
 .c-table{width:100%;border-collapse:collapse;font-size:var(--font-size-callout);background:var(--color-surface-white);text-align:left}
@@ -357,6 +358,7 @@ body.c-shortcuts-open #console-shortcuts{display:block}
   .c-switcher select{max-width:100%}
   .c-card{min-width:0;max-width:100%}
   .c-table-wrap{max-width:100%}
+  .c-table-scroll-hint{display:block}
   .c-topbar-meta{width:100%;max-width:100%;margin-left:0;overflow-wrap:anywhere}
   .c-button{min-height:44px}
   .c-nav-item{padding:10px 8px}
