@@ -1031,9 +1031,9 @@ test("http server: Maestro runner bundle 已移除（410）", async () => {
 test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => {
   const workspace = makeTempDir("aos-http-mcp-runner-ws-");
   const bundleDir = makeTempDir("aos-http-mcp-runner-");
-  const winFile = "mobile-testing-mcp-runner-0.1.0-win32-x64.zip";
-  const macFile = "mobile-testing-mcp-runner-0.1.0-darwin-arm64.tar.gz";
-  const offlineFile = "mobile-testing-mcp-runner-0.1.0-win32-x64-offline.zip";
+  const winFile = "mobile-testing-mcp-runner-0.2.0-win32-x64.zip";
+  const macFile = "mobile-testing-mcp-runner-0.2.0-darwin-arm64.tar.gz";
+  const offlineFile = "mobile-testing-mcp-runner-0.2.0-win32-x64-offline.zip";
   fs.writeFileSync(path.join(bundleDir, winFile), "fake-mcp-runner-win");
   fs.writeFileSync(path.join(bundleDir, macFile), "fake-mcp-runner-mac");
   fs.writeFileSync(path.join(bundleDir, offlineFile), "fake-mcp-runner-offline");
@@ -1076,7 +1076,7 @@ test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => 
       assert.equal(win.headers.get("content-type"), "application/zip");
       assert.match(
         win.headers.get("content-disposition") ?? "",
-        /mobile-testing-mcp-runner-0\.1\.0-win32-x64\.zip/
+        /mobile-testing-mcp-runner-0\.2\.0-win32-x64\.zip/
       );
       assert.equal(Buffer.from(await win.arrayBuffer()).toString("utf8"), "fake-mcp-runner-win");
 
@@ -1087,7 +1087,7 @@ test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => 
       assert.equal(mac.headers.get("content-type"), "application/gzip");
       assert.match(
         mac.headers.get("content-disposition") ?? "",
-        /mobile-testing-mcp-runner-0\.1\.0-darwin-arm64\.tar\.gz/
+        /mobile-testing-mcp-runner-0\.2\.0-darwin-arm64\.tar\.gz/
       );
       assert.equal(Buffer.from(await mac.arrayBuffer()).toString("utf8"), "fake-mcp-runner-mac");
 
@@ -1098,7 +1098,7 @@ test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => 
       assert.equal(offline.headers.get("content-type"), "application/zip");
       assert.match(
         offline.headers.get("content-disposition") ?? "",
-        /mobile-testing-mcp-runner-0\.1\.0-win32-x64-offline\.zip/
+        /mobile-testing-mcp-runner-0\.2\.0-win32-x64-offline\.zip/
       );
       assert.equal(
         Buffer.from(await offline.arrayBuffer()).toString("utf8"),
@@ -1114,7 +1114,7 @@ test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => 
 test("http server: role=adb-host 提供 MCP 原生 adb-host 小包", async () => {
   const workspace = makeTempDir("aos-http-adb-host-ws-");
   const bundleDir = makeTempDir("aos-http-adb-host-");
-  const filename = "mobile-testing-adb-host-0.1.0-win32-x64.zip";
+  const filename = "mobile-testing-adb-host-0.2.0-win32-x64.zip";
   fs.writeFileSync(path.join(bundleDir, filename), "fake-adb-host-bundle");
   fs.writeFileSync(
     path.join(bundleDir, "adb-host-manifest.json"),
@@ -1132,7 +1132,7 @@ test("http server: role=adb-host 提供 MCP 原生 adb-host 小包", async () =>
       assert.equal(response.headers.get("content-type"), "application/zip");
       assert.match(
         response.headers.get("content-disposition") ?? "",
-        /mobile-testing-adb-host-0\.1\.0-win32-x64\.zip/
+        /mobile-testing-adb-host-0\.2\.0-win32-x64\.zip/
       );
       assert.equal(Buffer.from(await response.arrayBuffer()).toString("utf8"), "fake-adb-host-bundle");
     } finally {

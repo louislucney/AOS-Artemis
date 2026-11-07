@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AOS_MCP_VERSION = "0.1.0";
+export const AOS_MCP_VERSION = "0.2.0";
 
 /** stderr + file logger (see src/log.ts) — stdout is reserved for the MCP protocol. */
 export { log, logDebug, logError, logWarn } from "./log.js";
