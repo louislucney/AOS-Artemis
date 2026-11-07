@@ -1,8 +1,22 @@
-# Windows adb-host 快速接入（Android 真机）
+# Windows 执行机快速接入（MCP runner / adb-host）
 
-> **Maestro web-runner 已于 2026-11-06 移除。** Windows 不再需要 Node/JDK/Maestro runner；Android 真机走 MCP 原生 `mobile_run_task` / `run_regression`，Windows 只作为**设备宿主**提供 adb。
+> **Maestro web-runner 已于 2026-11-06 移除。** Windows 现在有两种接入：**MCP runner（宿主本机执行，推荐）** 或 **adb-host（只暴露 adb，中心直连）**。Android 真机走 MCP 原生 `mobile_run_task` / `run_regression`。
 >
-> 场景总览见 [device-access-and-execution.md](./device-access-and-execution.md)：如果手机能直接插 MCP 服务所在的 Mac，不需要本文的 Windows adb-host。
+> 场景总览见 [device-access-and-execution.md](./device-access-and-execution.md)。MCP runner 双端包见面板「设备 → 接入执行机」或 `npm run bundle:mcp-runner`；本文余下部分仍是 adb-host 的接入步骤。
+
+## 0. MCP runner（推荐）
+
+前置：Node 20+、`uv`、Python 3.12。下载 Windows MCP runner，解压后：
+
+```powershell
+.\setup.cmd
+# 编辑 project\.env 填入 AOS_LLM_API_KEY
+.\doctor.cmd
+.\smoke.cmd 10CF6609P900059 "打开 UAT Mobil Guam，点击 Register now"
+.\runner.cmd
+```
+
+runner 在 Windows 本机用 USB adb 执行；中心只下发任务并接收结果，不需要中心访问 5037。iOS 不支持 Windows，iPhone 必须连接 Mac（用 macOS MCP runner）。
 
 完整排障见 [android-mcp-native-testing.md](./android-mcp-native-testing.md)。
 

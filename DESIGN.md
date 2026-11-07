@@ -3893,7 +3893,18 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > 2026-11-06。Android 真机自动化切到 MCP 原生后，Maestro 路线的执行引擎、脚本中间层和 600MB runner 包不再保留；历史 Web 任务/结果/设备记录只读保留。
 
 - **删除**：`src/runner/web-agent.ts`、`web-job-runner.ts`、`web-executors.ts`、`web-job-workspace.ts`、`src/device/maestro.ts`、`src/web/script-gen.ts`、`script-generation.ts`、`script-set.ts`、`step-normalizer.ts`、`step-parse.ts`、`step-types.ts`、`src/web/dispatch.ts`（web job 选机）、`src/runner/control/{client,http,service,web-control,contract}.ts`（web runner 控制面）；`scripts/build-runner-bundle.mjs`、`scripts/check-android-runner-env.ps1`。
-- **入口**：`node dist/cli.js web-runner` 与 `web scripts generate` 移除；`web llm-worker` 保留。`createWebJob` 对 `executionMode=maestro` 永久返回 409 `maestro-disabled`；面板网页测试表单不再渲染（仅历史只读）。`/panel/runner-bundle` 仅接受 `role=adb-host`，旧 runner 下载返回 410。
+- **入口**：`node dist/cli.js web-runner` 与 `web scripts generate` 移除；`web llm-worker` 保留。`createWebJob` 对 `executionMode=maestro` 永久返回 409 `maestro-disabled`；面板网页测试表单不再渲染（仅历史只读）。`/panel/runner-bundle` 在 §13.318 起增加 `role=mcp-runner`；未知/旧 runner role 返回 410。
 - **工具链**：`npm run toolchain:fetch` 只下载 Android platform-tools；删除 Node/JDK/Maestro 镜像；`bundle:runner` 删除，保留 `bundle:adb-host`（约 8MB）。
 - **保留**：Web 资产/结果/任务数据模型、Excel/安装包/参考图资产、`/panel/api/jobs/:id/spec` 等历史读取、`web llm-worker`、suite runner 控制面。
 - **测试**：删除 Maestro/脚本生成/web-runner 测试；`npm test` **3068/3068** 通过，`lint` 0 error。
+
+### 13.318 新增（MCP runner 双端包：Windows Android / macOS iOS+Android）
+
+> 2026-11-07。Maestro runner 移除后，面板只剩 adb-host（只暴露 adb，中心反向连接）。现场拓扑需要“runner 在宿主本机执行、中心只下发任务”的 B 架构；新增双端 MCP runner 包，并保留 adb-host 作为远程 adb 兼容入口。
+
+- **构建**（`scripts/build-mcp-runner-bundle.mjs`、`npm run bundle:mcp-runner`）：产出 `dist-runner/mobile-testing-mcp-runner-<version>-win32-x64.zip`（约 63MB）与 `...-darwin-arm64.tar.gz`（约 65MB），写入 `mcp-runner-manifest.json`。包内包含：`dist/`、生产 `node_modules/`（排除 fsevents/.bin/@esbuild）、`artemis/` Python 源码（排除 `.venv/.git/traces/playground/缓存`）、对应平台 `platform-tools/`、`scripts/e2e-device.mjs` 与 `mobile-testing-call.mjs`、`docs/`、示例 `project/aos.config.jsonc` 与 `.env.example`。
+- **启动脚本**：Windows `setup.cmd`/`doctor.cmd`/`smoke.cmd`/`runner.cmd`；macOS `setup.command`/`doctor.command`/`smoke.command`/`runner.command`。`setup` 执行 `doctor --install-deps`（uv 安装 Artemis 依赖）；`doctor` 体检；`smoke` 调 `e2e-device.mjs` 跑单条 `mobile_run_task`；`runner` 以 `suite runner` 常驻领取中心任务。
+- **下载**（`src/http-server.ts`）：`GET /panel/runner-bundle?role=mcp-runner&platform=win32&arch=x64` 或 `...&platform=darwin&arch=arm64` 读取 `mcp-runner-manifest.json` 并流式返回；`.zip` → `application/zip`，`.tar.gz` → `application/gzip`。`role=adb-host` 继续原行为；未知 role 410。
+- **面板**（`src/console/pages.ts`）：「设备 → 接入执行机」主按钮改为 Windows/macOS MCP runner，adb-host 降为兼容入口；文案明确前置（Node 20+、uv、Python 3.12；iOS 需 Xcode/Appium/签名/隧道）与边界（Windows 不能执行 iOS）。
+- **边界**：包内不包含 Node/uv/Python 运行时（由宿主安装；`uv` 负责 Python 3.12）；iOS 真机必须连接 Mac，Windows 只支持 Android；MCP runner 与 adb-host 都只是设备接入方式，执行仍由 `mobile_run_task`/`suite run` 承担。
+- **测试**：`test/http-server.test.js` 覆盖 `role=mcp-runner` 的 zip/tar.gz 下载与 content-type；`test/web-devices-ui.test.js` 覆盖双端按钮与 adb-host 兼容入口；构建/测试/lint 保持绿。

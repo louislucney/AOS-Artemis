@@ -25,6 +25,8 @@
 - 或本地构建：`npm run bundle:adb-host`，产物在 `dist-runner/mobile-testing-adb-host-<version>-win32-x64.zip` 与 `...-darwin-arm64.zip`；
 - 包内只有 `platform-tools/`、启动脚本和本手册，不包含 Node/JDK/Maestro。
 
+**如果要在宿主本机执行（推荐）**：下载 MCP runner 双端包（Windows Android / macOS iOS+Android），在宿主运行 `setup` → `doctor` → `smoke` → `runner`；中心只下发任务并接收结果，不需要把 adb 暴露给中心。面板「设备 → 接入执行机」或 `npm run bundle:mcp-runner`。
+
 启动：
 
 - Windows：`.\start-adb-host.ps1`（防火墙脚本 `firewall-add.ps1`）。

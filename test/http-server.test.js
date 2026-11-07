@@ -1028,6 +1028,51 @@ test("http server: Maestro runner bundle 已移除（410）", async () => {
   }
 });
 
+test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => {
+  const workspace = makeTempDir("aos-http-mcp-runner-ws-");
+  const bundleDir = makeTempDir("aos-http-mcp-runner-");
+  const winFile = "mobile-testing-mcp-runner-0.1.0-win32-x64.zip";
+  const macFile = "mobile-testing-mcp-runner-0.1.0-darwin-arm64.tar.gz";
+  fs.writeFileSync(path.join(bundleDir, winFile), "fake-mcp-runner-win");
+  fs.writeFileSync(path.join(bundleDir, macFile), "fake-mcp-runner-mac");
+  fs.writeFileSync(
+    path.join(bundleDir, "mcp-runner-manifest.json"),
+    JSON.stringify([
+      { platform: "win32", arch: "x64", filename: winFile, size: 19, sha256: "test" },
+      { platform: "darwin", arch: "arm64", filename: macFile, size: 19, sha256: "test" }
+    ])
+  );
+  await withEnv("AOS_RUNNER_BUNDLE_DIR", bundleDir, async () => {
+    const handle = await createAosHttpServer({ port: 0, host: "127.0.0.1", workspaceRoot: workspace });
+    try {
+      const win = await fetch(
+        `http://127.0.0.1:${handle.port}/panel/runner-bundle?role=mcp-runner&platform=win32&arch=x64`
+      );
+      assert.equal(win.status, 200);
+      assert.equal(win.headers.get("content-type"), "application/zip");
+      assert.match(
+        win.headers.get("content-disposition") ?? "",
+        /mobile-testing-mcp-runner-0\.1\.0-win32-x64\.zip/
+      );
+      assert.equal(Buffer.from(await win.arrayBuffer()).toString("utf8"), "fake-mcp-runner-win");
+
+      const mac = await fetch(
+        `http://127.0.0.1:${handle.port}/panel/runner-bundle?role=mcp-runner&platform=darwin&arch=arm64`
+      );
+      assert.equal(mac.status, 200);
+      assert.equal(mac.headers.get("content-type"), "application/gzip");
+      assert.match(
+        mac.headers.get("content-disposition") ?? "",
+        /mobile-testing-mcp-runner-0\.1\.0-darwin-arm64\.tar\.gz/
+      );
+      assert.equal(Buffer.from(await mac.arrayBuffer()).toString("utf8"), "fake-mcp-runner-mac");
+    } finally {
+      handle.httpServer.closeAllConnections?.();
+      await handle.close();
+    }
+  });
+});
+
 test("http server: role=adb-host 提供 MCP 原生 adb-host 小包", async () => {
   const workspace = makeTempDir("aos-http-adb-host-ws-");
   const bundleDir = makeTempDir("aos-http-adb-host-");

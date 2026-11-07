@@ -525,20 +525,36 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
             sha256: string;
           };
           const role = (url.searchParams.get("role") ?? "").trim();
-          if (role !== "adb-host") {
+          const bundleRoles: Record<
+            string,
+            { manifestName: string; label: string; buildHint: string }
+          > = {
+            "adb-host": {
+              manifestName: "adb-host-manifest.json",
+              label: "adb-host bundle",
+              buildHint: "npm run bundle:adb-host"
+            },
+            "mcp-runner": {
+              manifestName: "mcp-runner-manifest.json",
+              label: "MCP runner bundle",
+              buildHint: "npm run bundle:mcp-runner"
+            }
+          };
+          const bundleRole = bundleRoles[role];
+          if (bundleRole === undefined) {
             res.writeHead(410, { "Content-Type": "application/json" });
             res.end(
               JSON.stringify({
                 ok: false,
                 error:
-                  "Maestro runner bundle 已移除；Android 真机请使用 MCP 原生（下载 role=adb-host 小包）"
+                  "Maestro runner bundle 已移除；请指定 role=adb-host（仅 adb）或 role=mcp-runner（MCP 执行机）"
               })
             );
             return;
           }
-          const manifestName = "adb-host-manifest.json";
-          const bundleLabel = "adb-host bundle";
-          const buildHint = "npm run bundle:adb-host";
+          const manifestName = bundleRole.manifestName;
+          const bundleLabel = bundleRole.label;
+          const buildHint = bundleRole.buildHint;
           let entries: BundleEntry[] = [];
           try {
             const parsed = JSON.parse(
@@ -588,7 +604,7 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
                   filename,
                   size,
                   sha256,
-                  url: `/panel/runner-bundle?role=adb-host&platform=${encodeURIComponent(p)}&arch=${encodeURIComponent(a)}`
+                  url: `/panel/runner-bundle?role=${encodeURIComponent(role)}&platform=${encodeURIComponent(p)}&arch=${encodeURIComponent(a)}`
                 }))
               })
             );

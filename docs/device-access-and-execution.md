@@ -155,12 +155,23 @@ sudo appium driver run xcuitest tunnel-creation
 - 执行：`mobile_run_task`（单条）/ `run_regression`（Excel）；`app_path` 传 `.ipa` 的 `http(s)://` URL（由 Appium 宿主安装），不要传 Mac 本地路径。
 - 真机不经过 adb、adb-host 或 Maestro；签名/隧道细节见 README「iOS 真机」与 [接入指南 §3.7](./接入指南.md)。
 
-## 7. 当前状态：Maestro 已移除
+## 6.5 MCP runner（宿主本机执行）
 
-- `web-runner`、Maestro 脚本生成、runner 打包、`web scripts generate` 已删除。
+- **中心只下发任务**，runner 在宿主本机领取并用本机设备执行，结果/证据回传；不需要中心反向连宿主 adb，也不需要 5037/SSH 隧道。
+- **Windows x64**：跑 Android（本机 USB adb）。
+- **macOS arm64**：跑 iOS 模拟器/真机与 Android；iOS 真机必须连接 Mac，Windows 不能执行 iOS。
+- **前置**：Node 20+、`uv`、Python 3.12；iOS 另需 Xcode、Appium + xcuitest、`AOS_IOS_XCODE_ORG_ID` 签名团队与 iOS 18+ Remote XPC 隧道。
+- **包内脚本**：`setup` 安装 Artemis 依赖；`doctor` 体检；`smoke` 单条 `mobile_run_task` 验证；`runner` 常驻领取中心任务。
+- **下载**：面板「设备 → 接入执行机」；构建：`npm run bundle:mcp-runner`。
+
+## 7. 当前状态：Maestro 已移除，MCP runner 双端可用
+
+- `web-runner`、Maestro 脚本生成、旧 runner 打包、`web scripts generate` 已删除。
 - 新建 Maestro web 任务返回 `409 maestro-disabled`；面板网页测试表单隐藏；历史 Web 任务/结果/设备记录只读。
-- `/panel/runner-bundle` 只接受 `role=adb-host`；旧 runner 包返回 `410`。
-- `npm run toolchain:fetch` 只下载 Android platform-tools；`bundle:runner` 已删除，保留 `bundle:adb-host`。
+- 面板「设备 → 接入执行机」提供 **MCP runner 双端包**：Windows x64（Android）与 macOS arm64（iOS/Android）。runner 在宿主本机执行 `mobile_run_task` / `suite run`，中心只下发任务并接收结果；不再要求中心反向连 adb。
+- 下载：`/panel/runner-bundle?role=mcp-runner&platform=win32&arch=x64` 或 `...&platform=darwin&arch=arm64`；构建：`npm run bundle:mcp-runner`。
+- adb-host 仍保留为兼容入口（只含 platform-tools，适合“只暴露 adb、中心直连”的远程拓扑）；构建：`npm run bundle:adb-host`。
+- `npm run toolchain:fetch` 只下载 Android platform-tools。
 
 ## 8. 验证清单
 

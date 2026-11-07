@@ -1163,14 +1163,14 @@ export function renderDevicesPage(data: DevicesPageData): string {
     total === 0
       ? `<section class="c-empty c-device-empty">
           <h2>还没有设备宿主</h2>
-          <p>Android 真机 MCP 原生只需要一个可达的 adb server；下载 adb-host 小包，启动 <code>adb -a</code> 后配置项目即可。Maestro runner 已移除。</p>
+          <p>下载 MCP runner 到设备宿主，在宿主本机执行 <code>mobile_run_task</code> / <code>suite run</code>；或只暴露 adb（adb-host）由中心直连。Maestro runner 已移除。</p>
           <div class="c-empty-action">
-            <a class="c-button c-button-primary" href="#runner-download">下载 adb-host 小包</a>
+            <a class="c-button c-button-primary" href="#runner-download">下载 MCP runner / adb-host</a>
             <details class="c-device-help">
               <summary class="c-button">查看接入说明</summary>
               <div class="c-device-help-body">
                 <ol>
-                  <li>下载 <a href="/panel/runner-toolchain">platform-tools</a>（adb）并加入 PATH。</li>
+                  <li>下载 <strong>MCP runner</strong>（Windows/macOS）并在宿主运行 <code>setup</code>；或只下载 <a href="/panel/runner-toolchain">platform-tools</a>（adb）走远程 adb。</li>
                   <li>运行 <code>adb -a -P 5037 server nodaemon</code>（防火墙只放行 MCP 服务 IP，或改用 SSH 隧道）。</li>
                   <li>在 MCP 项目配置 <code>ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code>。</li>
                   <li>用 <code>run_regression</code> / <code>mobile_run_task</code> 执行；无需 runner。</li>
@@ -1192,11 +1192,17 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
         });
   const aside = `<aside class="c-device-aside" id="runner-guide" aria-label="设备接入说明">
     <section class="c-card" id="runner-download">
-      <h2 class="c-card-title">接入设备（Android / iOS）</h2>
-      <p class="c-card-subtitle"><strong>Android 真机走 MCP 原生</strong>（<code>mobile_run_task</code> / <code>run_regression</code>）。如果手机直接插在 MCP 服务所在的 Mac 上，用系统 adb 即可，<strong>不需要下载 adb-host</strong>；只有手机插在另一台 Mac/Windows 宿主时才需要。</p>
-      <p class="c-card-subtitle c-card-subtitle-tight"><strong>远程 Android 设备宿主</strong>：下载对应平台的 adb-host 小包（只含 platform-tools）。</p>
+      <h2 class="c-card-title">接入执行机（Android / iOS）</h2>
+      <p class="c-card-subtitle"><strong>MCP runner</strong> 在宿主本机运行 MCP 执行代码：中心下发任务，runner 用本机 adb / 模拟器执行并回传结果。Windows 跑 Android；macOS 跑 iOS（模拟器/真机）和 Android。</p>
+      <p class="c-card-subtitle c-card-subtitle-tight">手机直接插在 MCP 服务所在的 Mac 时，用系统 adb 即可，不需要下载包。</p>
+      <p class="c-card-subtitle c-card-subtitle-tight">前置：Node 20+、uv、Python 3.12；iOS 还需要 Xcode、Appium + xcuitest、签名团队与 iOS 18+ Remote XPC 隧道。包内含 adb、MCP 代码与 Artemis 源码。</p>
+      <div class="c-download-grid" aria-label="MCP runner 安装包下载">
+        <a class="c-button c-button-primary" href="/panel/runner-bundle?role=mcp-runner&amp;platform=win32&amp;arch=x64" download>Windows MCP runner（Android）</a>
+        <a class="c-button c-button-primary" href="/panel/runner-bundle?role=mcp-runner&amp;platform=darwin&amp;arch=arm64" download>macOS MCP runner（iOS/Android）</a>
+      </div>
+      <p class="c-card-subtitle c-card-subtitle-tight">只把手机插在远端、由中心直接连 adb 时，仍可用 adb-host 小包（只含 platform-tools）。</p>
       <div class="c-download-grid" aria-label="adb-host 安装包下载">
-        <a class="c-button c-button-primary" href="/panel/runner-bundle?role=adb-host&amp;platform=win32&amp;arch=x64" download>Windows adb-host（约 8MB）</a>
+        <a class="c-button" href="/panel/runner-bundle?role=adb-host&amp;platform=win32&amp;arch=x64" download>Windows adb-host（约 8MB）</a>
         <a class="c-button" href="/panel/runner-bundle?role=adb-host&amp;platform=darwin&amp;arch=arm64" download>macOS adb-host（约 16MB）</a>
       </div>
       <p class="c-card-subtitle c-card-subtitle-tight">Maestro runner 已移除；历史 Web 任务/设备记录只读保留。</p>
@@ -1204,8 +1210,8 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
     </section>
     <section class="c-card" id="ios-device-guide" aria-label="iOS 设备接入说明">
       <h2 class="c-card-title">iOS 设备</h2>
-      <p class="c-card-subtitle"><strong>iOS 模拟器</strong>：只能在 MCP 服务所在的 Mac 上（simctl/idb），不需要安装包；启动模拟器后把 UDID 传给 <code>mobile_run_task</code>。</p>
-      <p class="c-card-subtitle"><strong>iOS 真机</strong>：在连接设备的 Mac 宿主运行 Appium/WDA；配 <code>AOS_IOS_XCODE_ORG_ID</code>（必填）与 <code>AOS_APPIUM_URL</code>（可选），iOS 18+ 保持 Remote XPC 隧道。用 <code>mobile_run_task</code> 执行。</p>
+      <p class="c-card-subtitle"><strong>iOS 模拟器</strong>：在 macOS MCP runner 所在机器上（simctl/idb）；下载 macOS MCP runner，启动模拟器后把 UDID 传给 <code>mobile_run_task</code>。</p>
+      <p class="c-card-subtitle"><strong>iOS 真机</strong>：iPhone 必须连接 Mac，不能插 Windows；在 macOS MCP runner 上运行 Appium/WDA，配 <code>AOS_IOS_XCODE_ORG_ID</code>（必填）与 <code>AOS_APPIUM_URL</code>（可选），iOS 18+ 保持 Remote XPC 隧道。用 <code>mobile_run_task</code> 执行。</p>
       <p class="c-card-subtitle">iOS 不使用 adb-host；<strong>Maestro 已移除</strong>。签名/隧道细节见 README「iOS 真机」。</p>
     </section>
     <section class="c-card">
@@ -1222,7 +1228,7 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
     <div class="c-page-head">
       <div>
         <h1>设备</h1>
-        <p class="c-page-lede">Android 走 adb-host / MCP 原生，iOS 走 Mac 宿主（模拟器 simctl/idb、真机 Appium/WDA）；Maestro 已移除。</p>
+        <p class="c-page-lede">Android 走 MCP runner（Windows）/ 本机 adb，iOS 走 macOS MCP runner（模拟器 simctl/idb、真机 Appium/WDA）；Maestro 已移除。</p>
       </div>
       <div class="c-page-actions">
         <a class="c-button" href="${escapeHtml(devicesHref(data.platform, data.filter))}">刷新</a>

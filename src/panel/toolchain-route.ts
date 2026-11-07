@@ -86,7 +86,7 @@ function renderPage(entries: ToolchainEntry[]): string {
     active: "devices",
     body: [
       "<h1>执行机依赖</h1>",
-      "<p class=\"muted\">Android 真机 MCP 原生执行只需要 adb（platform-tools）；Maestro/JDK/Node runner 已移除。</p>",
+      "<p class=\"muted\">这里只镜像 adb（platform-tools）。MCP runner 双端包（Windows Android / macOS iOS+Android）请到「设备 → 接入执行机」下载。</p>",
       cards,
       cCard({
         title: "安装顺序",
