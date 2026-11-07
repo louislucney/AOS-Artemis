@@ -30,8 +30,18 @@ test("legacy panel routes 302 to the new IA", async () => {
 
   const jobs = await redirect("http://x/panel?project=%2Fw%2Fp&section=jobs");
   assert.equal(jobs.status, 302);
-  assert.match(jobs.headers.Location, /section=create/);
-  assert.match(jobs.headers.Location, /type=web/);
+  assert.match(jobs.headers.Location, /section=tasks/);
+  assert.doesNotMatch(jobs.headers.Location, /type=web/);
+
+  const legacyWebCreate = await redirect(
+    "http://x/panel?project=%2Fw%2Fp&section=create&type=web&host=h"
+  );
+  assert.equal(legacyWebCreate.status, 302);
+  assert.match(legacyWebCreate.headers.Location, /section=create/);
+  assert.match(legacyWebCreate.headers.Location, /type=suite/);
+  assert.match(legacyWebCreate.headers.Location, /host=h/);
+  const legacyWebCreateAgain = await redirect(`http://x${legacyWebCreate.headers.Location}`);
+  assert.notEqual(legacyWebCreateAgain?.status, 302);
 
   const jobDetail = await redirect(
     "http://x/panel?project=%2Fw%2Fp&section=jobs&job=job-1&host=h"

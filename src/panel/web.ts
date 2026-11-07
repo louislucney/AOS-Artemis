@@ -802,12 +802,9 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   let embeddedCreate: "suite" | "web" | null = null;
   if (section === "create") {
     const createType = trimmed(url.searchParams.get("type"));
-    if (createType === "suite") {
+    if (createType === "suite" || createType === "web") {
       section = "dispatch";
       embeddedCreate = "suite";
-    } else if (createType === "web") {
-      section = "jobs";
-      embeddedCreate = "web";
     } else {
       const [caseSets, assets, webProject] = await Promise.all([
         projectStore.listCaseSets(resolved.rootPath).catch(() => []),
@@ -979,8 +976,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       leases,
       nowMs,
       runnerTtlMs: runnerTtlFrom(deps.env ?? process.env),
-      projectChoices: [],
-      ...(embeddedCreate === "web" ? { embeddedCreate: "web" as const } : {})
+      projectChoices: []
     };
   }
   if (section === "library") {
@@ -1416,11 +1412,14 @@ function legacyPanelRedirect(url: URL): PanelWebResponse | null {
     set("section", "create");
     set("type", "suite");
     changed = true;
+  } else if (section === "create" && (params.get("type") ?? "").trim() === "web") {
+    set("type", "suite");
+    changed = true;
   } else if (section === "jobs") {
     const job = (params.get("job") ?? "").trim();
     if (job === "") {
-      set("section", "create");
-      set("type", "web");
+      set("section", "tasks");
+      del("type");
     } else {
       set("section", "tasks");
       set("task", job);
@@ -3322,8 +3321,8 @@ function renderProjectPage(view: { rootPath: string; hostId: string | null; deta
       `<p class="muted">测试资产：<a href="${escapeHtml(
         `/panel?project=${encodeURIComponent(view.rootPath)}&section=assets${hostSuffix(view.hostId)}`
       )}">测试资产</a>（Excel 原件版本与列映射） · <a href="${escapeHtml(
-        `/panel?project=${encodeURIComponent(view.rootPath)}&section=create&type=web${hostSuffix(view.hostId)}`
-      )}">下发测试</a>（Web 任务下发到远端执行机）</p>`,
+        `/panel?project=${encodeURIComponent(view.rootPath)}&section=create&type=suite${hostSuffix(view.hostId)}`
+      )}">下发测试</a>（套件回归）</p>`,
       "</header>",
       "<main>",
       ...(emptyProject ? [renderOnboarding(view.rootPath, view.hostId)] : []),

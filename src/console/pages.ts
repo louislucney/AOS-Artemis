@@ -1357,7 +1357,7 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
   const maestroWebDisabled = true;
   const form = maestroWebDisabled
     ? [
-        `<div class="c-banner c-banner-warn" role="status"><strong>Maestro 网页测试已移除</strong>：请使用 MCP 原生 <code>run_regression</code> / <code>mobile_run_task</code>。</div>`
+        `<div class="c-banner c-banner-warn" role="status"><strong>Maestro 网页测试已移除</strong>：本页只保留历史任务，不能再新建。下发任务请用「套件回归」。</div>`
       ].join("\n")
     : [
     `<div class="c-banner c-banner-warn" role="status"><strong>Android 新接入请走 MCP 原生</strong>：用 <code>run_regression</code> / <code>mobile_run_task</code>；本页「网页测试 / Maestro」仅保留 legacy 兼容。只做 MCP 原生时不需要下载 runner 包。</div>`,
@@ -1461,10 +1461,10 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
         createHref
       )}">新建测试</a><a class="c-flow-option" href="${escapeHtml(
         suiteHref
-      )}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试</span></nav>`
-    : `<nav class="c-flow-switch" aria-label="下发类型"><a class="c-flow-option" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=create&amp;type=suite${hostQuery.replace(/&/g, "&amp;")}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试</span></nav>`;
+      )}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试历史</span></nav>`
+    : `<nav class="c-flow-switch" aria-label="下发类型"><a class="c-flow-option" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=create&amp;type=suite${hostQuery.replace(/&/g, "&amp;")}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试历史</span></nav>`;
   return renderConsoleShell({
-    title: embedded ? "新建测试 · 网页测试" : "下发测试",
+    title: embedded ? "新建测试 · 网页测试历史" : "网页测试历史（只读）",
     active: "create",
     meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
     project: data.rootPath,
@@ -1472,13 +1472,17 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
     capabilities: data.capabilities,
     storeHealth: data.storeHealth,
     body: [
-      "<h1>下发测试</h1>",
+      "<h1>网页测试历史</h1>",
       flowSwitch,
       archived ? `<p>${cBadge({ label: "已归档", tone: "warning" })} 归档项目只读。</p>` : "",
-      `<p class="muted">Web 任务下发到远端执行机的具体设备：按硬要求过滤、按型号/系统版本打分；<a href="${escapeHtml(
-        `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets${hostQuery}`
-      )}">测试资产</a> 管理 Excel/安装包/资料/脚本版本。这里的 Excel 是 Web 测试资产（测试资产页上传），不是用例库导入的套件用例。</p>`,
-      cCard({ title: "下发参数", subtitle: "执行机可自动选机或手动指定；设备与主机必须匹配", body: form }),
+      `<p class="muted">这里只保留 Maestro 历史任务和结果。要下发任务请用 <a class="c-button c-button-primary" href="${escapeHtml(
+        suiteHref
+      )}">套件回归</a></p>`,
+      cCard({
+        title: "说明",
+        subtitle: "Maestro 网页测试已移除；历史记录只读",
+        body: form
+      }),
       cCard({
         title: "任务列表",
         subtitle: `共 ${data.jobs.length} 条（新→旧；仅列 Web 任务）`,
@@ -1486,7 +1490,7 @@ export function renderWebJobsPage(data: WebJobsPageData): string {
           columns: ["任务", "状态", "执行机与设备", "设备型号/系统", "执行方式", "安装包", "创建", "结果", "主机"],
           rows,
           caption: "Web 任务列表",
-          empty: "尚无 Web 任务（上方下发）"
+          empty: "尚无 Web 任务记录"
         })
       }),
       script
@@ -1995,7 +1999,7 @@ export function renderAuditPage(data: AuditPageData): string {
       return `<a href="/panel?${base}&amp;section=create&amp;type=suite">重新打开下发预览</a>`;
     }
     if (event.action === "action.jobs") {
-      return `<a href="/panel?${base}&amp;section=create&amp;type=web">重新打开下发表单</a>`;
+      return `<a href="/panel?${base}&amp;section=tasks">查看任务记录</a>`;
     }
     if (event.action === "action.issues") {
       return `<a href="/panel?${base}&amp;section=tasks&amp;view=stats#issues">去建单</a>`;

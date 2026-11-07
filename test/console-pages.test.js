@@ -484,12 +484,10 @@ test("console pages: 新建测试 landing 只保留套件回归入口", async ()
   assert.match(suite.body, /新建测试 · 套件回归/);
   assert.match(suite.body, /MCP 原生接入/);
 
-  const web = await handlePanelRequest(url(rootPath, "create", { type: "web" }), deps);
-  assert.equal(web.status, 200);
-  assert.match(web.body, /新建测试 · 网页测试/);
-  assert.match(web.body, /Maestro 网页测试已移除/);
-  assert.doesNotMatch(web.body, /id="web-job-form"/);
-  assert.doesNotMatch(web.body, /上传新安装包/);
+  const legacyWeb = await handlePanelRequest(url(rootPath, "create", { type: "web" }), deps);
+  assert.equal(legacyWeb.status, 200);
+  assert.match(legacyWeb.body, /新建测试 · 套件回归/);
+  assert.doesNotMatch(legacyWeb.body, /Maestro 网页测试已移除/);
 });
 
 test("console pages: 任务列表分页（25/页，保留搜索条件）", () => {

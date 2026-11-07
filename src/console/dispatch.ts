@@ -594,7 +594,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const projectSelect = [
     `<p><label>项目 <select name="project" aria-label="项目">${projectOptionsHtml}</select></label> <span class="muted">先选主机，再选该主机上的项目。</span></p>`,
     noProjects
-      ? `<p class="muted">该主机尚未登记项目：套件回归需要项目目录，请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>；如果是给手机下发网页测试，<strong>不需要登记项目</strong>，直接用 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=create&amp;type=web${dispatchHostQuery.replace(/&/g, "&amp;")}">网页测试</a>。</p>`
+      ? `<p class="muted">该主机尚未登记项目：套件回归需要项目目录，请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>。</p>`
       : ""
   ]
     .filter((part) => part !== "")
@@ -626,7 +626,7 @@ export function renderDispatchPage(view: DispatchView): string {
     `<div id="dispatch-field-keyword"><p><label>关键词 <input type="text" name="keyword" aria-label="功能关键词" value="${query("keyword")}" placeholder="例：登录"></label></p></div>`,
     sourceEmpty,
     view.rootPath === ""
-      ? `<p class="muted">先选择项目；Excel 用例导入在用例库，网页测试资产在「网页测试」。</p>`
+      ? `<p class="muted">先选择项目。</p>`
       : `<p class="muted">Excel 用例还没进用例库？<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=assets&amp;tab=case-sets#library-import">去用例库导入 Excel</a>；Android 安装包/Excel 回归请用 MCP 原生 <code>run_regression</code>（appPath 安装 APK），不要用套件下发。</p>`
   ].join("\n");
 
@@ -825,7 +825,7 @@ go.addEventListener('click',function(){
       "<h1>套件回归</h1>",
       flowSwitch,
       hostProjectCallout === "" ? installCallout : hostProjectCallout,
-      `<p class="muted"><code>${escapeHtml(view.rootPath === "" ? "未选择项目" : view.rootPath)}</code> · 套件回归：来源 → 参数 → 预览回显 → 确认派发；网页测试走独立流程。</p>`,
+      `<p class="muted"><code>${escapeHtml(view.rootPath === "" ? "未选择项目" : view.rootPath)}</code> · 套件回归：来源 → 参数 → 预览回显 → 确认派发。</p>`,
       `<form id="dispatch-form" method="get" action="/panel">`,
       `<input type="hidden" name="section" value="dispatch">`,
       cCard({ title: "⓪ 主机与项目", body: hostCardBody }),
