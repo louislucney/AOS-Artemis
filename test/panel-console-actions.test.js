@@ -585,7 +585,8 @@ test("console actions: 安装包 appAssetId 写入任务；非法/平台不匹�
     source: "case-set",
     ref: set.id,
     platforms: "android",
-    appAssetId: pkg.id
+    appAssetId: pkg.id,
+    appPackage: "com.example.app"
   });
   const preview = await computeDispatchPreview({ store, env: {} }, rootPath, params);
   const ok = await handlePanelActionRequest(
@@ -595,12 +596,14 @@ test("console actions: 安装包 appAssetId 写入任务；非法/平台不匹�
       ref: set.id,
       platforms: ["android"],
       appAssetId: pkg.id,
+      appPackage: "com.example.app",
       previewId: dispatchPreviewId(preview, dispatchFormSignature(params), rootPath)
     }),
     deps
   );
   assert.equal(ok.status, 200);
   assert.equal(JSON.parse(ok.body).task.appAssetId, pkg.id);
+  assert.equal(JSON.parse(ok.body).task.appPackage, "com.example.app");
 
   const missing = await handlePanelActionRequest(
     request("/panel/api/tasks", {

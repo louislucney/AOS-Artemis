@@ -245,6 +245,7 @@ const SCHEMA = [
      device_serial TEXT,
      device_lease_id TEXT,
      app_asset_id TEXT,
+     app_package TEXT,
      case_ids TEXT NOT NULL DEFAULT '[]'
     )`,
   `CREATE TABLE IF NOT EXISTS suite_runs (
@@ -518,6 +519,7 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_serial TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_lease_id TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_asset_id TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_package TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS case_ids TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_host_id TEXT`,
@@ -1066,8 +1068,8 @@ export class PostgresStore implements ProjectStore {
       `INSERT INTO regression_tasks
          (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids,
           target_host_id, created_host_id, priority, job_spec, execution_mode, device_serial, device_lease_id,
-          app_asset_id, case_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+          app_asset_id, app_package, case_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
       [
         id,
         project?.id ?? null,
@@ -1086,6 +1088,7 @@ export class PostgresStore implements ProjectStore {
         input.deviceSerial ?? null,
         input.deviceLeaseId ?? null,
         input.appAssetId ?? null,
+        input.appPackage ?? null,
         JSON.stringify(input.caseIds ?? [])
       ]
     );
@@ -1120,6 +1123,7 @@ export class PostgresStore implements ProjectStore {
       deviceSerial: input.deviceSerial ?? null,
       deviceLeaseId: input.deviceLeaseId ?? null,
       appAssetId: input.appAssetId ?? null,
+      appPackage: input.appPackage ?? null,
       caseIds: [...(input.caseIds ?? [])]
     };
   }
@@ -2761,8 +2765,8 @@ export class PostgresStore implements ProjectStore {
         `INSERT INTO regression_tasks
            (id, project_id, created_at, created_by, refs, platforms, baseline, status, claimed_by, claimed_at,
             run_ids, attempts, cancel_source, cancelled_by, cancelled_host_id, cancelled_at, cancel_note,
-            cancel_requested_at, job_spec, device_serial, device_lease_id, app_asset_id, case_ids)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+            cancel_requested_at, job_spec, device_serial, device_lease_id, app_asset_id, app_package, case_ids)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
          ON CONFLICT (id) DO NOTHING
          RETURNING id`,
         [
@@ -2788,6 +2792,7 @@ export class PostgresStore implements ProjectStore {
           entry.deviceSerial ?? null,
           entry.deviceLeaseId ?? null,
           entry.appAssetId ?? null,
+          entry.appPackage ?? null,
           JSON.stringify(entry.caseIds ?? [])
         ]
       );
@@ -3763,6 +3768,7 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     deviceSerial: nullableString(row.device_serial),
     deviceLeaseId: nullableString(row.device_lease_id),
     appAssetId: nullableString(row.app_asset_id),
+    appPackage: nullableString(row.app_package),
     caseIds: parseStringArray(row.case_ids)
   });
 }

@@ -146,7 +146,7 @@ node dist/cli.js host register <id|hostname> --label <名> --owner <人> \
 
 # 中心：定向创建回归任务（必须给目标机上的项目根路径）
 node dist/cli.js suite task create --host <id|hostname> --project <rootPath> \
-        --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>]
+        --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>] [--app <package>]
 node dist/cli.js suite task list --host <id|hostname> [--project <rootPath>]
 node dist/cli.js suite task cancel <taskId> --host <id|hostname> --project <rootPath> [--note <text>]
 
@@ -392,7 +392,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.2.0-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.2.1-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -673,7 +673,7 @@ node dist/cli.js suite report [--limit N] [--case <caseId|semanticId|displayId>]
                            [--update-tests [--tests-xlsx <path>]]
 node dist/cli.js suite feedback [--min-failures N]
 node dist/cli.js suite reconcile list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>] [--json]
-node dist/cli.js suite task create --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>]
+node dist/cli.js suite task create --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>] [--app <package>]
 node dist/cli.js suite task list|show <id> [--json]
 node dist/cli.js suite task create|list|cancel --host <id|hostname> --project <rootPath> ...   # 中心模式（仅 PG）
 node dist/cli.js suite queue status|pause|resume [--host <id|hostname>] [--note <text>] [--json]
@@ -700,7 +700,7 @@ node dist/cli.js suite reference-calibrate --manifest <json> [--out <dir>] [--no
 - `report`：从运行台账导出 xlsx/JUnit；`--update-tests` 把本次结果写入 `tests.xlsx` 的独立「执行结果」sheet（按 caseId 对齐隐藏执行器 sheet 的 displayId；幂等替换、不动生成计划），并按已登记 `suite_runs` 生成「跨端对比」sheet（case × 平台 latest + 新增/修复/回归/仍失败/仍通过）；`--tests-xlsx` 指定路径；回填失败 exit 1。
 - `check`：静态检查（tests.json × flows.json × 三件套 × 真实数据约束；`apiReview.status=pending` 默认阻断，`--allow-pending-api` 放行），**不连设备**，供 pre-merge CI；未硬覆盖屏幕/跳转、生成截断、缺/坏 flows.json、**缺 tests.xlsx 或 xlsx 早于 tests.json**（三件套强制）、**用例缺 `【真实数据】` 约束标记**（禁止伪造页面/假数据，数据须经真实请求链路）均 exit 2（探索缺口仅报告；`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告。新增 `--semantics <path>` / `--fail-on-dynamic` / `--dynamic-baseline <json>` / `--update-dynamic-baseline`：扫描 taskDesc/steps 中已登记的 `dynamicExamples`/`dynamicPatterns`，默认 warning；开启 `--fail-on-dynamic` 时只对**未基线化**命中 exit 2；词表非穷尽，新动态值需 owner 更新。
 - `reconcile`：对账审阅面（`list` 列举差异/来源/命中/决定历史/逆向观测；`confirm` 人工确认 → human-confirmed 硬断言；`reject` 驳回 → 边不进生成；runtime-only 逆向观测仅裁决留痕；幂等、改判追加历史；未裁决不升权；未知边 exit 1、缺参 exit 2）。
-- `task`：回归任务台账——`create` 引用 feature key（取该功能**最新用例集**；未知 key exit 2 并列出可用项；`--platform` 默认 ios+android、`--baseline latest|none`、`--priority 0–100`）、`list`/`show` 查看状态、引用解析结果与运行列表（`--json` 支持）。**中心模式**：`suite task create|list --host <id|hostname>` 只连中心 PG（`MOBILE_TESTING_DATABASE_URL`，缺配置 exit 2），**不构建本机 Runtime、不写本机 `.artemis`**；`create` 必须给 `--project <rootPath>`（远程项目根路径，未登记 exit 2），任务写 `targetHostId=<目标 host>`，`createdHostId` 记派发方本机（中心未绑定主机时为空）；下发前按目标主机 OS/能力预检（`win32 + ios` 等硬拒绝 exit 2；尚无执行机上报/离线只告警排队）；`list` 省略 `--project` 时汇总该主机所有已登记项目的任务（不猜路径）。`show/release` 仍走本机台账。`cancel <id> [--note <text>]` 取消任务：`pending` 直接 `cancelled`；`claimed/running` 先置 `stopping`，执行机确认后 `cancelled`（终态，不释放、不重试；需重跑用 `rerun`/新建任务）；取消来源/操作人/宿主/时间与备注写入任务行及审计（`source=local-cli|panel`）。中心模式 `cancel --host <id|hostname> --project <rootPath>` 只连 PG、不建本机 Runtime。
+- `task`：回归任务台账——`create` 引用 feature key（取该功能**最新用例集**；未知 key exit 2 并列出可用项；`--platform` 默认 ios+android、`--baseline latest|none`、`--priority 0–100`、`--app-asset <id>` 安装包、`--app <package>` 应用包名（runner 锁定并启动））、`list`/`show` 查看状态、引用解析结果与运行列表（`--json` 支持）。**中心模式**：`suite task create|list --host <id|hostname>` 只连中心 PG（`MOBILE_TESTING_DATABASE_URL`，缺配置 exit 2），**不构建本机 Runtime、不写本机 `.artemis`**；`create` 必须给 `--project <rootPath>`（远程项目根路径，未登记 exit 2），任务写 `targetHostId=<目标 host>`，`createdHostId` 记派发方本机（中心未绑定主机时为空）；下发前按目标主机 OS/能力预检（`win32 + ios` 等硬拒绝 exit 2；尚无执行机上报/离线只告警排队）；`list` 省略 `--project` 时汇总该主机所有已登记项目的任务（不猜路径）。`show/release` 仍走本机台账。`cancel <id> [--note <text>]` 取消任务：`pending` 直接 `cancelled`；`claimed/running` 先置 `stopping`，执行机确认后 `cancelled`（终态，不释放、不重试；需重跑用 `rerun`/新建任务）；取消来源/操作人/宿主/时间与备注写入任务行及审计（`source=local-cli|panel`）。中心模式 `cancel --host <id|hostname> --project <rootPath>` 只连 PG、不建本机 Runtime。
 - `host`：中心主机登记（同样只连 PG）——`list`/`show <id|hostname>`（id 精确优先，hostname 大小写不敏感、重名报错列 id，不猜）、`register <id|hostname>` 写 label/owner/expectedOs/expectedHostname（登记人 `cli`）、`adopt-legacy` 把 legacy（未绑定主机）项目认领到主机：`--local` 仅认领本机存在路径（`MOBILE_TESTING_HOST_ID` 或本机身份），`--host <id|hostname> --path <rootPath>` 显式认领（未登记主机 exit 2；确认「先迁移、后接入」时加 `--allow-unknown-host`，歧义 hostname 不提供逃逸）；缺省 dry-run，`--apply` 才写库并记审计（`domain=host/action=adopt-legacy`）；`--json` 只输出 `id/hostId/rootPath/name/lastSeenAt`，不回显 token。见 DESIGN §13.152。
 - `queue`：主机队列闸门——`status` 显示当前主机 `paused/by/at` 与待执行任务数（不写库、不自动登记主机）；`pause`/`resume` 写 `hosts.queue_paused` 并记审计（`action.queue.pause|resume`，本地 `channel=cli`；可选 `--note <text>` 写入审计 refs）。暂停只阻断 runner 自动领取，手动 `suite run --task` 与已领取任务不受影响。`--host <id|hostname>` 为中心模式（hostname 唯一匹配、只连 PG、不建本机 Runtime；未知主机 exit 2）。本地首次 pause/resume 时按本机身份补登记主机。见 DESIGN §13.162。
 

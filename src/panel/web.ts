@@ -2716,6 +2716,9 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       "<header>",
       `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a> · <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=tasks${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">任务与结果</a> · <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=archive&amp;task=${encodeURIComponent(task.id)}${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">任务档案</a></p>`,
       `<h1>任务 <code>${escapeHtml(task.id)}</code></h1>`,
+      task.appPackage === null || task.appPackage === ""
+        ? ""
+        : `<p>应用包名：<code>${escapeHtml(task.appPackage)}</code> · 执行前锁定并启动</p>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个设备运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });

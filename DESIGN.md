@@ -3985,8 +3985,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **中心公开地址**：`AOS_CENTER_PUBLIC_URL` 覆盖 suite 控制面的 `publicBaseUrl`；`/llm` 返回该地址下的代理 URL，避免 runner 拿到回环地址。`.env.example`/README 增加说明。
 - **smoke 结论**：任务 `aad7c37e-…` 已由 win-runner-01 领取并回写 3 条失败（`imp-4ee495af-19/20/21`，`unclassified`）；中心侧无 manifest/trace（runner 未广告 artifactBaseUrl），需要 runner 重启/配置 `AOS_RUNNER_ADVERTISE_URL` 或更新 runner 包后才能打开证据。
 - **远端证据标注**：任务详情检测 Windows/UNC manifestPath，显示「执行机本地清单 / 执行机本地 trace」并提示配置 `AOS_RUNNER_ADVERTISE_URL`；不再生成中心 404 的批次/trace 链接。
+- **应用包名**：回归任务新增可选 `appPackage`（Android package / iOS bundle id），面板下发表单与 `suite task create --app <package>` 均可填；runner 执行时转成 Artemis `locked_app_package`，执行前锁定并启动被测应用。未填时保持旧行为（不主动 launch，依赖设备当前前台应用）。
+
 - **测试**：`npm test` 3101/3101、lint 0 error、类型测试通过。
 
 ### 13.325 版本（0.2.0）
 
 > 2026-11-07。集中修复跨机 runner、记录闭环与面板交互后，版本从 0.1.0 升至 0.2.0；runner 包、adb-host 包文件名与 `AOS_MCP_VERSION` 同步更新；runner 包前缀改为 `aos-artemis-runner-`，避免与产品名/旧 Maestro runner 混淆。0.2.0 的 Windows runner 包含：任务级 `caseIds`（只重跑失败用例）、安装包自动安装、每任务刷新中心 LLM、默认 LAN 产物基址、运行结果/证据标注。升级时离线环境只需替换 `dist`（保留 `deps/`、`project/`、`.env`）。
+
+### 13.326 新增（回归任务应用包名 / 0.2.1）
+
+> 2026-11-07。真机 smoke 发现：任务只下发用例与安装包时，Artemis 不会主动 launch 被测应用，容易在设备当前前台停留到 15min poll 超时。回归任务新增可选 `appPackage`（Android package / iOS bundle id），面板「新建测试 → 参数」与 `suite task create --app <package>` 均可填；runner 读取任务字段后转成 `locked_app_package`，执行前锁定并启动应用。版本升至 0.2.1；未填包名保持旧行为（不主动 launch），不改变既有任务兼容性。

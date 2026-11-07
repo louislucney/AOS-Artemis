@@ -449,6 +449,8 @@ export interface RegressionTaskRecord {
   deviceLeaseId: string | null;
   /** 可选安装包资产 id（package）；runner 执行前下载安装，不再要求设备预装。 */
   appAssetId: string | null;
+  /** 可选应用包名（Android package / iOS bundle id）；runner 用它锁定并启动被测应用。 */
+  appPackage: string | null;
   /** 可选用例过滤（重跑失败用例）：runner 仅执行这些 caseId；空＝全部。 */
   caseIds: string[];
 }
@@ -470,6 +472,7 @@ export function normalizeRegressionTask(record: RegressionTaskRecord): Regressio
     deviceSerial: record.deviceSerial ?? null,
     deviceLeaseId: record.deviceLeaseId ?? null,
     appAssetId: record.appAssetId ?? null,
+    appPackage: record.appPackage ?? null,
     caseIds: record.caseIds ?? []
   };
 }
@@ -882,6 +885,7 @@ export interface CreateRegressionTaskInput {
   deviceSerial?: string | null;
   deviceLeaseId?: string | null;
   appAssetId?: string | null;
+  appPackage?: string | null;
   caseIds?: string[];
 }
 

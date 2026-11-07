@@ -703,6 +703,11 @@ async function suiteRunTask(
     baseOptions.appPath = taskApp.path;
     say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);
   }
+  const taskAppPackage = (task.appPackage ?? "").trim();
+  if (baseOptions.lockedAppPackage === undefined && taskAppPackage !== "") {
+    baseOptions.lockedAppPackage = taskAppPackage;
+    say(`任务应用包名：${taskAppPackage}（执行前锁定并启动）`);
+  }
   const taskCaseIds = task.caseIds ?? [];
   if (taskCaseIds.length > 0 && flags.list("case").length === 0) {
     baseOptions.caseIds = [...taskCaseIds];
@@ -2580,7 +2585,7 @@ async function suiteTaskCreate(
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>]"
+      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>]"
     );
     return 2;
   }
@@ -2594,6 +2599,7 @@ async function suiteTaskCreate(
       return 2;
     }
   }
+  const appPackage = (flags.get("app") ?? "").trim() || null;
   const resolved = resolveTaskRefsFromSets(
     await runtime.store.listCaseSets(runtime.project.rootDir),
     refs,
@@ -2616,7 +2622,8 @@ async function suiteTaskCreate(
     targetHostId: projectRecord?.hostId ?? localHostId,
     createdHostId: localHostId,
     priority,
-    appAssetId
+    appAssetId,
+    appPackage
   });
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
@@ -2963,14 +2970,14 @@ async function suiteTaskCreateOnHost(
   const rootPath = rawProject === null ? null : normalizeRootPath(rawProject);
   if (rootPath === null || rootPath === "") {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>]"
     );
     return 2;
   }
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>]"
     );
     return 2;
   }
@@ -2996,6 +3003,7 @@ async function suiteTaskCreateOnHost(
       return 2;
     }
   }
+  const appPackage = (flags.get("app") ?? "").trim() || null;
   const precheck = precheckTask(
     {
       id: host.id,
@@ -3020,7 +3028,8 @@ async function suiteTaskCreateOnHost(
     targetHostId: hostId,
     createdHostId,
     priority,
-    appAssetId
+    appAssetId,
+    appPackage
   });
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
@@ -3623,7 +3632,8 @@ async function suiteTaskShow(
     return 0;
   }
   io.log(
-    `回归任务 ${task.id} · ${task.status} · platforms ${task.platforms.join(",")} · baseline ${task.baseline}`
+    `回归任务 ${task.id} · ${task.status} · platforms ${task.platforms.join(",")} · baseline ${task.baseline}` +
+      (task.appPackage ? ` · app ${task.appPackage}` : "")
   );
   for (const entry of resolved) {
     io.log(

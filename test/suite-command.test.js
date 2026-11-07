@@ -2006,6 +2006,37 @@ test("suite run --task: >50 份仍可执行窗口外引用（不误报不可用�
   assert.equal(code, 0, errors.join(" | "));
 });
 
+test("suite run --task: task appPackage passed as locked_app_package", async () => {
+  const { runtime, store, proxy } = await setupRun({
+    cases: null,
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const { sets } = await seedCaseSets(
+    store,
+    runtime.project.rootDir,
+    path.join(runtime.configDirAbs, "design"),
+    { count: 1 }
+  );
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: sets[0].id, featureKey: "f-old" }],
+    platforms: ["android"],
+    baseline: "none",
+    createdBy: "test",
+    appPackage: "com.example.app"
+  });
+  const { code, errors } = await runCli(runtime, [
+    "run",
+    "--task",
+    task.id,
+    "--device",
+    "emulator-1"
+  ]);
+  assert.equal(code, 0, errors.join(" | "));
+  const submit = proxy.calls.find((call) => call.name === "mobile_run_task");
+  assert.equal(submit?.args?.locked_app_package, "com.example.app");
+});
+
 test("suite schedule add: >50 份仍识别窗口外功能", async () => {
   const { runtime, store } = await setupRun({ cases: null });
   await seedCaseSets(store, runtime.project.rootDir, path.join(runtime.configDirAbs, "design"));

@@ -441,10 +441,12 @@ test("dispatch preview: 可选安装包并进入表单/签名", async () => {
     source: "case-set",
     ref: setA.id,
     platforms: "android",
-    appAssetId: pkg.id
+    appAssetId: pkg.id,
+    appPackage: "com.example.app"
   });
   const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
   assert.equal(preview.appAssetId, pkg.id);
+  assert.equal(preview.appPackage, "com.example.app");
   assert.equal(preview.appPackages.length, 1);
   assert.equal(preview.appPackages[0].filename, "app-release.apk");
   const html = renderDispatchPage({
@@ -458,7 +460,10 @@ test("dispatch preview: 可选安装包并进入表单/签名", async () => {
   assert.match(html, /name="appAssetId"/);
   assert.match(html, /app-release\.apk/);
   assert.match(html, /执行机在跑用例前安装/);
+  assert.match(html, /name="appPackage"/);
+  assert.match(html, /com\.example\.app/);
   assert.match(dispatchFormSignature(params), new RegExp(pkg.id));
+  assert.match(dispatchFormSignature(params), /com\.example\.app/);
 });
 
 test("dispatch preview: 未知安装包给警告且不选中", async () => {

@@ -1525,6 +1525,9 @@ async function checkDispatchPreviewFreshness(
   if (typeof payload.appAssetId === "string" && payload.appAssetId.trim() !== "") {
     params.set("appAssetId", payload.appAssetId.trim());
   }
+  if (typeof payload.appPackage === "string" && payload.appPackage.trim() !== "") {
+    params.set("appPackage", payload.appPackage.trim());
+  }
   const host = typeof payload.host === "string" ? payload.host.trim() : "";
   if (host !== "") params.set("host", host);
   const preview = await computeDispatchPreview(
@@ -1679,6 +1682,15 @@ async function createTask(
   if (priority === null) {
     return json(400, { error: "优先级须为 0–100 的整数（priority）" });
   }
+  const rawAppPackage =
+    typeof payload.appPackage === "string" ? payload.appPackage.trim() : "";
+  let appPackage: string | null = null;
+  if (rawAppPackage !== "") {
+    if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(rawAppPackage)) {
+      return json(400, { error: "appPackage 格式非法（示例：com.example.app）" });
+    }
+    appPackage = rawAppPackage;
+  }
   const rawAppAssetId =
     typeof payload.appAssetId === "string" ? payload.appAssetId.trim() : "";
   let appAssetId: string | null = null;
@@ -1732,7 +1744,8 @@ async function createTask(
     targetHostId,
     createdHostId: dispatcherHostId,
     priority,
-    appAssetId
+    appAssetId,
+    appPackage
   });
   return json(200, { ok: true, task, ...(warnings.length > 0 ? { warnings } : {}) });
 }
@@ -2540,6 +2553,7 @@ async function rerunTask(
     createdHostId: task.createdHostId,
     priority: task.priority,
     appAssetId: task.appAssetId,
+    appPackage: task.appPackage,
     caseIds
   });
   deps.cache?.clear();

@@ -406,6 +406,7 @@ export class MemoryStore implements ProjectStore {
       deviceSerial: input.deviceSerial ?? null,
       deviceLeaseId: input.deviceLeaseId ?? null,
       appAssetId: input.appAssetId ?? null,
+      appPackage: input.appPackage ?? null,
       caseIds: [...(input.caseIds ?? [])]
     };
     this.regressionTasks.push(record);

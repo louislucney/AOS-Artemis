@@ -70,6 +70,8 @@ export interface DispatchPreview {
   priority: number;
   /** 可选安装包资产（package）；执行机在跑用例前下载安装。 */
   appAssetId: string | null;
+  /** 可选应用包名（Android package / iOS bundle id）；执行机锁定并启动被测应用。 */
+  appPackage: string;
   appPackages: Array<{ id: string; filename: string; label: string; platform: "android" | "ios" | null }>;
   /** 目标主机能力/项目不满足：前端禁用确认（离线只告警，不置位）。 */
   hostBlocked: boolean;
@@ -123,7 +125,8 @@ export function dispatchFormSignature(params: URLSearchParams): string {
   const platforms = dispatchPlatforms(params).join(",");
   const baseline = (params.get("baseline") ?? "latest").trim() === "none" ? "none" : "latest";
   const appAssetId = (params.get("appAssetId") ?? "").trim();
-  return [mode, refOrKeyword, platforms, baseline, appAssetId].join("|");
+  const appPackage = (params.get("appPackage") ?? "").trim();
+  return [mode, refOrKeyword, platforms, baseline, appAssetId, appPackage].join("|");
 }
 
 /** 预览 ID＝表单签名＋目标主机/项目＋服务端解析结果（用例集集合/用例数）短哈希；服务端复算不一致即视为过期。 */
@@ -509,6 +512,7 @@ export async function computeDispatchPreview(
           : null
     }))
     .filter((asset) => asset.platform === null || platforms.includes(asset.platform));
+  const appPackage = (params.get("appPackage") ?? "").trim();
   const requestedAppAssetId = (params.get("appAssetId") ?? "").trim();
   const appAssetId =
     requestedAppAssetId !== "" && appPackages.some((asset) => asset.id === requestedAppAssetId)
@@ -594,6 +598,7 @@ export async function computeDispatchPreview(
     projects,
     priority,
     appAssetId,
+    appPackage,
     appPackages,
     hostBlocked,
     sourceStore: { tier: sourceTier, hostId: sourceHostId, error: sourceError },
@@ -747,14 +752,16 @@ export function renderDispatchPage(view: DispatchView): string {
         }>${escapeHtml(asset.label)}${asset.platform === null ? "" : `（${asset.platform}）`}</option>`
     )
     .join("");
-  const appPackageField =
+  const appAssetField =
     preview.appPackages.length === 0
       ? `<p class="muted">安装包：项目还没有上传 APK/IPA。可在 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=assets&amp;tab=packages#asset-upload">测试资产 → 安装包</a> 上传；也可以先手动装到设备上。</p>`
       : `<p><label>安装包（可选） <select name="appAssetId" aria-label="安装包"><option value="">不安装（设备需已安装）</option>${appPackageOptions}</select></label> <span class="muted">选择后执行机在跑用例前安装；不选则要求设备已安装。</span></p>`;
+  const appPackageField = `<p><label>应用包名（可选） <input type="text" name="appPackage" aria-label="应用包名" value="${escapeHtml(preview.appPackage)}" placeholder="com.example.app"></label> <span class="muted">填写后执行机会锁定并启动该应用；不填则沿用设备当前应用。</span></p>`;
 
   const paramsBody = [
     `<fieldset class="c-fieldset"><legend>目标端</legend>${platformChecks}</fieldset>`,
     `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本用例集最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`,
+    appAssetField,
     appPackageField,
     priorityField
   ].join("\n");
@@ -795,6 +802,7 @@ export function renderDispatchPage(view: DispatchView): string {
           : (preview.appPackages.find((asset) => asset.id === preview.appAssetId)?.filename ??
             "已选择")
     }),
+    cStat({ label: "应用", value: preview.appPackage || "未指定" }),
     cStat({
       label: "设备",
       value: preview.devices.length > 0 ? preview.devices.join("、") : deviceSummary
@@ -841,7 +849,8 @@ function formSignature(){
   var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;}).sort().join(',');
   var baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
   var appAssetId=(form.querySelector('select[name="appAssetId"]')||{value:''}).value;
-  return [mode,refOrKeyword,platforms,baseline,appAssetId].join('|');
+  var appPackage=((form.querySelector('input[name="appPackage"]')||{value:''}).value||'').trim();
+  return [mode,refOrKeyword,platforms,baseline,appAssetId,appPackage].join('|');
 }
 function refreshStale(){
   var host=(form.querySelector('select[name="host"]')||{value:''}).value;
@@ -884,7 +893,9 @@ go.addEventListener('click',function(){
   var appAssetId=appSel?appSel.value:'';
   var appLabel=appSel&&appSel.selectedIndex>=0?appSel.options[appSel.selectedIndex].text:'';
   var appText=appAssetId===''?'不安装（设备需已安装）':('安装 '+appLabel);
-  var text='将创建回归任务：目标主机「'+hostName+'」 · 来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · '+appText+' · 优先级 P'+priority+' · 执行机：'+runner;
+  var appPackage=((form.querySelector('input[name="appPackage"]')||{value:''}).value||'').trim();
+  var appPackageText=appPackage===''?'应用未指定':('应用 '+appPackage);
+  var text='将创建回归任务：目标主机「'+hostName+'」 · 来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · '+appText+' · '+appPackageText+' · 优先级 P'+priority+' · 执行机：'+runner;
   window.aosInlineConfirm(go,text,function(){
     var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
     var payload={project:island.project,previewId:island.previewId,source:mode};
@@ -895,6 +906,7 @@ go.addEventListener('click',function(){
     payload.platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
     payload.baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
     payload.appAssetId=appAssetId;
+    payload.appPackage=appPackage;
     payload.priority=priority;
     go.disabled=true;if(status)status.textContent='提交中…';
     fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
