@@ -3963,5 +3963,6 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **结果闭环**（`panel/web.ts`）：任务详情设备运行行新增「批次」（manifest basename）、「轨迹」（archive kind=trace&q=runId）、失败时「去失败分析」；批次链接使用 basename 以匹配 `batch` 路由。
 - **面板口径/入口**：对比页任务计数过滤 `jobSpec !== null`（历史 Web 任务不再显示 `失败 15`）；项目概览先列项目表再列主机/新增项目；`任务与结果` 空态给「新建测试」按钮；失败分析空态给 CTA；批量裁决默认不选并强制选择；`安装包` tab 预选 package 上传类型；`[hidden]` 强制隐藏；secret 复选框不再误显示；`&section` 链接转义并清理伪项目 `ESSO-GU§ion=create`。
 - **设备页**（`console/pages.ts`、`panel/web.ts`、`console/shell.ts`）：`?section=devices&project=…` 保留项目上下文/项目切换器；每行「去下发」携带 host+platform 进入向导；表格列宽与移动端导航换行改善。
+- **结果/运营细节**：任务详情的「去失败分析」带 `task=<id>`，失败分析按任务过滤并可一键查看全部；任务 CLI 命令加「复制命令」；全局搜索项目列显示项目名而非绝对路径；`/usage` 标题改「使用统计」，先展示有数据的工具概览，再展示 Token 消耗；运维页新增「接入配置」入口（项目接入/设备/资产）。
 - **响应式/可达性**：移动导航改为换行展示（不再隐藏设备/档案/运维/使用统计）；dropzone 加 `:focus-visible`；减少动态时保留手动「刷新」；表格 `overflow-wrap` 从 `anywhere` 改 `break-word`，避免 `android`/项目名被拆成一字一行；对比表固定最小宽度 + 横向滚动。
 - **测试**：`test/console-dispatch.test.js`（安装包/表单）、`test/panel-console-actions.test.js`（跨机 runner 下发、appAssetId）、`test/panel-compare.test.js`（Web 任务不计入积压）、`test/panel-web.test.js`（批次/轨迹/失败分析链接）、`test/web-devices-ui.test.js`（项目上下文/去下发）；全量 `3099/3099`，lint 0 error。

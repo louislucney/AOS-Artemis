@@ -774,7 +774,7 @@ export function renderUsageHtml(view: UsageWebView): string {
         })
       };
   return renderConsoleShell({
-    title: `Token 消耗 · ${projectLabel}`,
+    title: `使用统计 · ${projectLabel}`,
     active: "usage",
     nav: embedded ? DEFAULT_CONSOLE_NAV : USAGE_STANDALONE_NAV,
     project: embedded ? (view.project?.rootPath ?? null) : null,
@@ -795,14 +795,14 @@ export function renderUsageHtml(view: UsageWebView): string {
       '<div id="usage-page">',
       "<header>",
       backLine,
-      "<h1>Token 消耗</h1>",
-      renderSwitcher(view),
+      "<h1>使用统计</h1>",
+      embedded ? "" : renderSwitcher(view),
       renderBadges(view),
       "</header>",
-      renderTokenUsage(view),
       renderOverview(view),
       renderTools(view),
       renderSignals(view),
+      renderTokenUsage(view),
       renderEvents(view),
       "</div>"
     ].join("\n")

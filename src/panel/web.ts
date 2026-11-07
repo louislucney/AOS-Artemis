@@ -307,7 +307,13 @@ type PanelView =
   | { kind: "project"; rootPath: string; hostId: string | null; detail: PanelProjectDetail; active?: ConsoleNavKey | null }
   | { kind: "search"; data: SearchPageData }
   | { kind: "task"; rootPath: string; hostId: string | null; detail: PanelTaskDetail; flash?: string }
-  | { kind: "review"; rootPath: string; hostId: string | null; detail: { items: PanelReviewItem[]; warnings: string[] } }
+  | {
+      kind: "review";
+      rootPath: string;
+      hostId: string | null;
+      detail: { items: PanelReviewItem[]; warnings: string[] };
+      taskId?: string;
+    }
   | { kind: "stats"; rootPath: string; hostId: string | null; detail: PanelStatsView }
   | { kind: "batch"; rootPath: string; hostId: string | null; detail: PanelBatchDetail };
 
@@ -823,8 +829,9 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     return await loadLibraryView(projectStore, resolved);
   }
   if (section === "tasks") {
+    const taskView = trimmed(url.searchParams.get("view"));
     const taskId = trimmed(url.searchParams.get("task"));
-    if (taskId !== null) {
+    if (taskId !== null && taskView !== "review" && taskView !== "stats") {
       const task = await projectStore
         .getRegressionTask(resolved.rootPath, taskId)
         .catch(() => null);
@@ -842,10 +849,18 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         ...(dispatched === null ? {} : { flash: dispatched })
       };
     }
-    const taskView = trimmed(url.searchParams.get("view"));
     if (taskView === "review") {
-      const detail = await buildPanelReviewQueue(panelDeps, resolved.rootPath, { limit: 10 });
-      return { kind: "review", rootPath: resolved.rootPath, hostId: resolved.hostId, detail };
+      const detail = await buildPanelReviewQueue(panelDeps, resolved.rootPath, {
+        limit: 10,
+        ...(taskId === null ? {} : { taskId })
+      });
+      return {
+        kind: "review",
+        rootPath: resolved.rootPath,
+        hostId: resolved.hostId,
+        detail,
+        ...(taskId === null ? {} : { taskId })
+      };
     }
     if (taskView === "stats") {
       const detail = await buildPanelStatsView(panelDeps, resolved.rootPath);
@@ -2492,7 +2507,9 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       links.push(
         `<a class="c-button" href="/panel?project=${encodeURIComponent(
           view.rootPath
-        )}&amp;section=tasks&amp;view=review${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">去失败分析</a>`
+        )}&amp;section=tasks&amp;view=review&amp;task=${encodeURIComponent(
+          task.id
+        )}${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">去失败分析</a>`
       );
     }
     return links.join(" ");
@@ -2640,7 +2657,12 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       "</section>",
       '<section id="run-hint">',
       "<h2>触发执行</h2>",
-      `<p class="muted">在线执行机会自动领取执行；也可手动：<code>node dist/cli.js suite run --task ${escapeHtml(task.id)} --device &lt;serial&gt;</code>。产物在执行机磁盘（上方清单路径），中心侧仅展示路径。</p>`,
+      `<p class="muted">在线执行机会自动领取执行；也可手动：<code>node dist/cli.js suite run --task ${escapeHtml(
+        task.id
+      )} --device &lt;serial&gt;</code> <button class="c-button" type="button" data-copy="${escapeHtml(
+        `node dist/cli.js suite run --task ${task.id} --device <serial>`
+      )}">复制命令</button>。产物在执行机磁盘（上方清单路径），中心侧仅展示路径。</p>`,
+      `<script>(function(){document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-copy]'):null;if(!b)return;var text=b.getAttribute('data-copy')||'';var done=function(){b.textContent='已复制';setTimeout(function(){b.textContent='复制命令';},1500);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(function(){b.textContent='复制失败';});}else{b.textContent='复制失败';}});})();</script>`,
       "</section>",
       "</main>"
     ].join("\n"),
@@ -2654,6 +2676,7 @@ function renderReviewPage(view: {
   rootPath: string;
   hostId: string | null;
   detail: { items: PanelReviewItem[]; warnings: string[] };
+  taskId?: string;
 }): string {
   const { items, warnings } = view.detail;
   const appDefects = items.filter((item) => item.verdict === "app-defect");
@@ -2788,7 +2811,17 @@ function renderReviewPage(view: {
         project: view.rootPath,
         hostId: view.hostId
       }),
-      `<p class="muted">最近 10 次运行的失败用例 · 共 ${items.length} 条 · 未裁决 ${undecided} 条</p>`,
+      `<p class="muted">${
+        view.taskId === undefined
+          ? "最近 10 次运行的失败用例"
+          : `任务 <code>${escapeHtml(view.taskId)}</code> 的失败用例`
+      } · 共 ${items.length} 条 · 未裁决 ${undecided} 条${
+        view.taskId === undefined
+          ? ""
+          : ` · <a href="/panel?project=${encodeURIComponent(
+              view.rootPath
+            )}&amp;section=tasks&amp;view=review${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">查看全部失败</a>`
+      }</p>`,
       warningsHtml,
       "</header>",
       "<main>",
@@ -3789,6 +3822,7 @@ async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPag
       }
       data.caseSets.push({
         project: project.rootPath,
+        projectName: project.name,
         hostId: project.hostId,
         id: set.id,
         basename: set.basename,
@@ -3804,7 +3838,13 @@ async function buildSearch(deps: PanelWebDeps, query: string): Promise<SearchPag
         data.truncated = true;
         break;
       }
-      data.tasks.push({ project: project.rootPath, hostId: project.hostId, id: task.id, status: task.status });
+      data.tasks.push({
+        project: project.rootPath,
+        projectName: project.name,
+        hostId: project.hostId,
+        id: task.id,
+        status: task.status
+      });
     }
   }
   return data;

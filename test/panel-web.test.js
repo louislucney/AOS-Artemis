@@ -922,6 +922,17 @@ test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404"
   assert.match(html.body, />批次<\/a>/, "运行行可打开批次");
   assert.match(html.body, />轨迹<\/a>/, "运行行可打开轨迹");
   assert.match(html.body, />去失败分析<\/a>/, "失败运行可去失败分析");
+  assert.match(html.body, new RegExp(`view=review&amp;task=${task.id}`), "失败分析链接带任务过滤");
+  const review = await handlePanelRequest(
+    new URL(
+      `http://x/panel?project=${encodeURIComponent(projectDir)}&section=tasks&view=review&task=${encodeURIComponent(task.id)}`
+    ),
+    deps
+  );
+  assert.equal(review.status, 200);
+  assert.match(review.body, new RegExp(`任务 <code>${task.id}</code> 的失败用例`));
+  assert.match(review.body, /case-1/);
+  assert.match(review.body, /查看全部失败/);
   assert.match(html.body, /<h1>任务 <code>/);
   assert.match(html.body, /partial/);
   assert.match(html.body, /登录流程/);

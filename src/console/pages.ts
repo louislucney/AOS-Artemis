@@ -1488,13 +1488,20 @@ export interface SearchPageData {
   projects: Array<{ name: string; rootPath: string; hostId: string | null }>;
   caseSets: Array<{
     project: string;
+    projectName: string;
     hostId: string | null;
     id: string;
     basename: string;
     source: string;
     features: string;
   }>;
-  tasks: Array<{ project: string; hostId: string | null; id: string; status: string }>;
+  tasks: Array<{
+    project: string;
+    projectName: string;
+    hostId: string | null;
+    id: string;
+    status: string;
+  }>;
   truncated: boolean;
 }
 
@@ -1509,14 +1516,14 @@ export function renderSearchPage(data: SearchPageData): string {
     `<code>${escapeHtml(project.rootPath)}</code>`
   ]);
   const caseSetRows = data.caseSets.map((entry) => [
-    projectLink(entry.project, entry.project, entry.hostId),
+    projectLink(entry.projectName, entry.project, entry.hostId),
     `<code>${escapeHtml(entry.basename)}</code>`,
     escapeHtml(entry.source),
     escapeHtml(entry.features),
     `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&amp;section=create&amp;type=suite&amp;source=case-set&amp;ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId).replace(/&/g, "&amp;")}">下发该用例集</a>`
   ]);
   const taskRows = data.tasks.map((entry) => [
-    projectLink(entry.project, entry.project, entry.hostId),
+    projectLink(entry.projectName, entry.project, entry.hostId),
     `<a href="/panel?project=${encodeURIComponent(entry.project)}&amp;section=tasks&amp;task=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId).replace(/&/g, "&amp;")}"><code>${escapeHtml(entry.id)}</code></a>`,
     escapeHtml(runStatusLabel(entry.status))
   ]);
@@ -1598,6 +1605,17 @@ export function renderOpsPage(data: OpsPageData): string {
         active: "ops",
         project: data.rootPath,
         hostId: data.hostId ?? null
+      }),
+      cCard({
+        title: "接入配置",
+        subtitle: "LLM / Figma / Jira / 执行机 / 项目登记",
+        body: `<p>凭据与接入状态在项目页「接入」，执行机与设备在「设备」页；本服务不在此页保存明文密钥。</p><p><a class="c-button" href="/panel?project=${encodeURIComponent(
+          data.rootPath
+        )}#integration">查看项目接入</a> <a class="c-button" href="/panel?project=${encodeURIComponent(
+          data.rootPath
+        )}&amp;section=devices">设备与执行机</a> <a class="c-button" href="/panel?project=${encodeURIComponent(
+          data.rootPath
+        )}&amp;section=assets">测试资产</a></p>`
       }),
       cCard({
         title: "存储",

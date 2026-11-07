@@ -1525,13 +1525,16 @@ export async function buildPanelTaskDetail(
 export async function buildPanelReviewQueue(
   deps: PanelDeps,
   rootPath: string,
-  options: { limit?: number } = {}
+  options: { limit?: number; taskId?: string } = {}
 ): Promise<{ items: PanelReviewItem[]; warnings: string[] }> {
   const warnings: string[] = [];
   const limit = Math.max(Math.trunc(options.limit ?? 10), 1);
   let runs: Awaited<ReturnType<ProjectStore["listSuiteRuns"]>> = [];
   try {
-    runs = await deps.store.listSuiteRuns(rootPath, { limit });
+    runs = await deps.store.listSuiteRuns(rootPath, {
+      limit,
+      ...(options.taskId === undefined ? {} : { taskId: options.taskId })
+    });
   } catch (error) {
     warnings.push(`运行读取失败：${errorMessage(error)}`);
   }
