@@ -778,7 +778,7 @@ test("panel web: 进程内缓存 TTL（TTL 内命中、过期重算）", async (
   assert.notEqual(bypass.generatedAt, third.generatedAt, "noCache 绕过 TTL 缓存");
 });
 
-test("panel web: Web 任务不显示套件重新派发，改为重新下发网页测试", async () => {
+test("panel web: 旧 Web 任务不再提供详情页", async () => {
   const { deps, projectDir, store } = await makeHarness();
   const task = await store.createRegressionTask({
     rootPath: projectDir,
@@ -800,11 +800,8 @@ test("panel web: Web 任务不显示套件重新派发，改为重新下发网�
     ),
     deps
   );
-  assert.equal(html.status, 200);
-  assert.match(html.body, /网页任务详情/);
-  assert.match(html.body, /id="web-job-clone"/);
-  assert.match(html.body, /panel\/api\/jobs\/clone/);
-  assert.doesNotMatch(html.body, /data-task-action="rerun"/);
+  assert.equal(html.status, 404);
+  assert.doesNotMatch(html.body, /网页任务详情/);
 });
 
 test("panel web: no-cache 请求头识别（reload / 轮询）", () => {

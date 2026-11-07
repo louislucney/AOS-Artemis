@@ -291,7 +291,7 @@ export async function computeDispatchPreview(
         hostBlocked = true;
       } else if (targetProject === null) {
         warnings.push(
-          `主机「${targetHost.id}」未登记项目「${rootPath}」：套件回归需要项目目录；请先在目标机接入项目（网页测试不需要登记）`
+          `主机「${targetHost.id}」未登记项目「${rootPath}」：套件回归需要项目目录；请先在目标机接入项目`
         );
         hostBlocked = true;
       }
@@ -779,7 +779,7 @@ go.addEventListener('click',function(){
     : [
         `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（用例集明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
         noProjects
-          ? `<p class="note">该主机尚未登记项目：套件回归需要项目目录；请先在该主机接入项目并刷新本页（网页测试不需要登记）。设备连接状态见 <a href="/panel?section=devices">设备页</a>。</p>`
+          ? `<p class="note">该主机尚未登记项目：套件回归需要项目目录；请先在该主机接入项目并刷新本页。设备连接状态见 <a href="/panel?section=devices">设备页</a>。</p>`
           : projectMissing
             ? `<p class="note">请先选择该主机上的项目，再刷新预览。</p>`
             : needsHostPick && !legacyHostless

@@ -206,7 +206,7 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
   assert.match(html, /accounts\.json/, "测试资料文件名");
   assert.match(html, /app\.apk/, "安装包文件名");
   assert.match(html, /\/panel\/api\/projects\/assets/, "multipart 上传端点");
-  assert.match(html, /Maestro 脚本生成已移除/, "脚本生成卡片已移除");
+  assert.doesNotMatch(html, /脚本集（历史）/, "不再提供历史脚本集入口");
   assert.doesNotMatch(html, /id="script-gen-form"/, "不再提供脚本生成表单");
   assert.doesNotMatch(html, /\/panel\/api\/projects\/scripts\/generate/, "不再提供脚本生成端点");
 
@@ -323,7 +323,7 @@ test("web assets JSON view exposes assets and mappings", async (t) => {
   assert.ok(payload.assets.some((entry) => entry.id === asset.id), "含主资产");
   assert.equal(payload.mappings.length, 1);
   assert.equal(payload.packages.length, 1);
-  assert.equal(payload.scripts.length, 1);
+  assert.equal(payload.scripts, undefined);
   assert.equal(payload.appPackage, null);
 
   assert.equal(payload.mappings[0].id, mapping.id);

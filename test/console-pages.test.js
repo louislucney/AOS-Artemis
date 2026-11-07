@@ -8,7 +8,7 @@ import test from "node:test";
 import { FileStore } from "../dist/db/file.js";
 import { MemoryStore } from "../dist/db/memory.js";
 import { handlePanelRequest } from "../dist/panel/web.js";
-import { renderTasksPage, renderWebJobsPage } from "../dist/console/pages.js";
+import { renderTasksPage } from "../dist/console/pages.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject } from "./helpers.js";
 
 async function setup() {
@@ -492,19 +492,17 @@ test("console pages: 新建测试 landing 只保留套件回归入口", async ()
 
 test("console pages: 任务列表分页（25/页，保留搜索条件）", () => {
   const tasks = Array.from({ length: 30 }, (_, index) => ({
-    task: {
-      id: `task-${String(index).padStart(2, "0")}`,
-      status: "completed",
-      priority: 0,
-      refs: [],
-      runIds: [],
-      claimedHostId: null,
-      targetHostId: null,
-      deviceSerial: null,
-      createdAt: "2026-11-05T00:00:00.000Z"
-    },
-    spec: null,
-    result: null
+    id: `task-${String(index).padStart(2, "0")}`,
+    status: "completed",
+    priority: 0,
+    refs: [],
+    runIds: [],
+    claimedHostId: null,
+    targetHostId: null,
+    deviceSerial: null,
+    platforms: [],
+    createdAt: "2026-11-05T00:00:00.000Z",
+    jobSpec: null
   }));
   const first = renderTasksPage({
     rootPath: "/w/p",
@@ -536,26 +534,7 @@ test("console pages: 任务列表分页（25/页，保留搜索条件）", () =>
   assert.match(second, /section=tasks&amp;task=task-29/);
 });
 
-test("console pages: 网页测试下发页显示 Maestro 已移除", () => {
-  const html = renderWebJobsPage({
-    rootPath: "/w/p",
-    rootLabel: "p",
-    hostId: null,
-    projectStatus: "active",
-    jobs: [],
-    assets: [],
-    runners: [],
-    leases: [],
-    nowMs: 0,
-    runnerTtlMs: 1,
-    projectChoices: []
-  });
-  assert.match(html, /Maestro 网页测试已移除/);
-  assert.doesNotMatch(html, /id="web-job-form"/);
-  assert.doesNotMatch(html, /上传新安装包/);
-});
-
-test("console pages: 任务与结果同时渲染网页任务", () => {
+test("console pages: 任务与结果只渲染套件回归任务", () => {
   const html = renderTasksPage({
     rootPath: "/w/p",
     rootLabel: "p",
@@ -564,28 +543,41 @@ test("console pages: 任务与结果同时渲染网页任务", () => {
     filter: "all",
     tasks: [
       {
-        task: {
-          id: "web-task-1",
-          status: "completed",
-          priority: 2,
-          refs: [],
-          runIds: [],
-          claimedHostId: "h-runner",
-          targetHostId: "h-runner",
-          deviceSerial: "emulator-5554",
-          createdAt: "2026-11-05T00:00:00.000Z"
-        },
-        spec: {
-          executionMode: "llm",
-          packageAssetId: "pkg-1",
-          assetSnapshot: [{ kind: "package", filename: "app.apk" }]
-        },
-        result: { gate: { result: "passed" } }
+        id: "suite-task-1",
+        status: "completed",
+        priority: 2,
+        refs: [{ caseSetId: "set-1", featureKey: "login" }],
+        runIds: ["run-1"],
+        claimedHostId: "h-runner",
+        targetHostId: "h-runner",
+        deviceSerial: "emulator-5554",
+        createdAt: "2026-11-05T00:00:00.000Z",
+        jobSpec: null,
+        executionMode: "maestro",
+        platforms: ["android"],
+        baseline: "latest",
+        createdBy: "panel",
+        attempts: 1,
+        createdHostId: null,
+        lastProgressAt: null,
+        startedAt: null,
+        cancelSource: null,
+        cancelledBy: null,
+        cancelledHostId: null,
+        cancelledAt: null,
+        cancelNote: null,
+        cancelRequestedAt: null,
+        claimedBy: null,
+        claimedAt: null,
+        claimedInstanceId: null,
+        deviceLeaseId: null,
+        projectId: null
       }
     ]
   });
-  assert.match(html, /网页测试 · LLM/);
-  assert.match(html, /app\.apk/);
-  assert.match(html, /passed/);
-  assert.match(html, /section=tasks&amp;task=web-task-1/);
+  assert.match(html, /套件回归/);
+  assert.match(html, /1 份用例集/);
+  assert.match(html, /1 次运行/);
+  assert.match(html, /section=tasks&amp;task=suite-task-1/);
+  assert.doesNotMatch(html, /网页测试/);
 });

@@ -3932,3 +3932,13 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **runner 落盘**（`suite-command.ts` `materializeTaskDocuments`）：把 documents 写到本地 `<configDir>/design/case-sets/<caseSetId>-<base64url(featureKey)>.json`，flows 写到 `<configDir>/design/flows.json`；`suiteRunTask` 把 `refs[].jsonPath` 指向本地文件后再执行。xlsx/md 不随任务下发（结果/报告仍在中心项目侧）。
 - **边界**：只下发 tests.json/flows；设计截图/UI contract/参考图等大资产不下发（UI diff 默认关闭；需要时另做资产包）。Excel 源文件/APK 资产上传链路仍沿用现有 Web 资产模型，不在本次范围。
 - **测试**：`test/runner-control-suite.test.js` 覆盖 `/default-project`、bundle documents/flows、不同本地 root 的 claim、`buildRemoteSuiteRuntime` 控制面 root 重写；`test/runner-task-materialize.test.js` 覆盖 JSON/flows 落盘与 null bundle；全量测试/lint 保持绿。
+
+### 13.321 清理（面板移除 Maestro 网页测试残留入口）
+
+> 2026-11-07。Maestro 已移除，但面板仍保留“网页测试（历史）”“MCP 原生执行”卡片、`type=web` 死页面、Web 任务列表与历史脚本集 tab，用户会误以为下发任务已消失。统一收口为只保留套件回归入口；历史 Web 任务数据不删除，但不再从面板展示。
+
+- **入口**：`/panel?...&section=create&type=web` 与旧 `/panel?...&section=jobs` 均 302 到套件回归（`type=suite`）/任务列表；`section=create` 落地页只保留「套件回归」卡片。
+- **页面**：删除 `renderWebJobsPage` / `renderWebJobPage` 与 `web-jobs`/`web-job` 视图；`section=tasks` 只列出 `jobSpec=null` 的套件任务，旧 Web 任务详情返回 404；资产页移除「脚本集（历史）」tab 与脚本生成卡片；设备页移除 Maestro 文案。
+- **动作**：删除 `/panel/api/jobs/clone`（网页测试重新下发）与任务详情的 `clone-web` 按钮；任务详情只保留暂停/停止/释放/重新派发（套件）。
+- **保留**：`src/web/` 的 Web 资产/结果/任务数据模型、`/panel/api/jobs` 历史读取与 web LLM worker 后端不动；历史任务/结果仍在存储中，只是面板不展示。
+- **测试**：`test/console-pages.test.js`、`test/panel-web.test.js`、`test/panel-console-actions.test.js`、`test/panel-legacy-redirect.test.js`、`test/web-assets-ui.test.js` 同步覆盖；全量 `3094/3094` 通过，lint 0 error。

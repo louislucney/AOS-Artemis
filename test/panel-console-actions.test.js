@@ -49,7 +49,7 @@ test("console actions: 同源守卫（cross-site 403；自定义头放行）", a
   assert.equal(allowed.status, 404, "守卫通过后进入业务（未知任务 404）");
 });
 
-test("console actions: 套件任务不能走网页测试重新下发", async () => {
+test("console actions: 网页测试重新下发端点已移除", async () => {
   const { deps, rootPath, store } = await setup();
   const task = await store.createRegressionTask({
     rootPath,
@@ -62,8 +62,7 @@ test("console actions: 套件任务不能走网页测试重新下发", async () 
     request("/panel/api/jobs/clone", { project: rootPath, taskId: task.id }),
     deps
   );
-  assert.equal(response.status, 400);
-  assert.match(JSON.parse(response.body).error, /不是网页测试任务/);
+  assert.equal(response.status, 404);
 });
 
 test("console actions: 释放/停止/重新派发三动作（claimed 可释放；停止中/终态拒绝；未知 404；落审计）", async () => {

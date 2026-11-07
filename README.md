@@ -274,9 +274,9 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 
 | 版块 | 内容与动作 |
 |---|---|
-| `assets` **测试资产** | `overview\|case-sets\|excel\|packages\|materials\|reference\|scripts`（scripts 为历史只读）；用例集、Excel/CSV、安装包、测试资料、参考图统一管理；Excel 列映射/导入/上传需 maintainer+。**Maestro 脚本生成已移除**。 |
-| `create` **新建测试** | 套件回归四步下发向导；**Android 真机用 MCP 原生 `run_regression` / `mobile_run_task`（`appPath` 安装 APK）**；Maestro 网页测试入口已移除，历史 Web 任务只读。 |
-| `tasks` **任务与结果** | 套件回归与网页测试统一列表（类型徽标/状态/设备/门禁/失败域），25 条/页分页并保留搜索/筛选；统一详情 `section=tasks&task=<id>` 按类型渲染（套件：运行/引用/跨端+rerun；网页：逐用例/参考图/证据/写回+重新下发）；`view=review\|stats` 为待处理失败与统计子视图 |
+| `assets` **测试资产** | `overview\|case-sets\|excel\|packages\|materials\|reference`；用例集、Excel/CSV、安装包、测试资料、参考图统一管理；Excel 列映射/导入/上传需 maintainer+。Maestro 脚本集入口已移除。 |
+| `create` **新建测试** | 只保留套件回归四步下发向导；**Android 真机用 MCP 原生 `run_regression` / `mobile_run_task`（`appPath` 安装 APK）**；旧网页测试入口自动跳回套件回归。 |
+| `tasks` **任务与结果** | 套件回归任务列表（状态/设备/门禁/失败域），25 条/页分页并保留搜索/筛选；详情 `section=tasks&task=<id>` 展示运行/引用/跨端+重新派发；`view=review\|stats` 为待处理失败与统计子视图。历史 Web 任务数据保留但不在面板展示 |
 | `devices` **设备台账** | 全局只读设备列表：执行机在线/离线、平台、模拟器/真机、型号/系统版本、`空闲`/`占用`/`离线`、当前 job 与租约到期、最后心跳、工具；按 `state=idle|busy|offline`、`platform=android|ios` 过滤；空闲＝在线且无有效租约/执行中 job；页面只读、不展示 token/secret |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |

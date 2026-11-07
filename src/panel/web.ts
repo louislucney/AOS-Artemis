@@ -3,7 +3,6 @@ import path from "node:path";
 
 import { AmbiguousProjectError } from "../db/types.js";
 import type {
-  DeviceLeaseRecord,
   HostRecord,
   ProjectRecord,
   ProjectStore,
@@ -38,12 +37,9 @@ import {
   renderSearchPage,
   renderDevicesPage,
   renderWebAssetsPage,
-  renderWebJobPage,
-  renderWebJobsPage,
   type DeviceListEntry,
   type LibraryPageData,
-  type SearchPageData,
-  type WebJobListEntry
+  type SearchPageData
 } from "../console/pages.js";
 import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
 import type { AuditEventRecord, CaseSetRecord, ExcelMappingRecord, ProjectEventRecord, WebAssetRecord } from "../db/types.js";
@@ -60,8 +56,7 @@ import {
 import { storeKindLabel } from "../db/labels.js";
 import { listWebAssets } from "../web/assets.js";
 import { listExcelMappings } from "../web/excel-mapping.js";
-import { parseWebJobSpec, type WebJobSpec } from "../web/job-spec.js";
-import { readWebJobResult, type WebJobResultDocument } from "../web/results.js";
+import { parseWebJobSpec } from "../web/job-spec.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import type { WarningSummary } from "../design/warnings.js";
 import {
@@ -227,8 +222,7 @@ type PanelView =
       rootPath: string;
       hostId: string | null;
       rootLabel: string;
-      projectStatus: "active" | "archived" | null;
-      tasks: WebJobListEntry[];
+      tasks: RegressionTaskRecord[];
       filter: "all" | "active";
       page?: number;
       query: string;
@@ -253,44 +247,13 @@ type PanelView =
       appPackage: string | null;
       assets: WebAssetRecord[];
       packages: WebAssetRecord[];
-      scripts: WebAssetRecord[];
       materials: WebAssetRecord[];
       references: WebAssetRecord[];
       uploadKind?: "excel" | "package" | "materials" | "reference";
-      tab?: "overview" | "case-sets" | "excel" | "packages" | "materials" | "reference" | "scripts";
+      tab?: "overview" | "case-sets" | "excel" | "packages" | "materials" | "reference";
       sets?: CaseSetRecord[];
       usage?: Record<string, number>;
       mappings: ExcelMappingRecord[];
-    }
-  | {
-      kind: "web-jobs";
-      rootPath: string;
-      hostId: string | null;
-      rootLabel: string;
-      projectStatus: "active" | "archived" | null;
-      jobs: WebJobListEntry[];
-      assets: WebAssetRecord[];
-      runners: WebRunnerRecord[];
-      leases: DeviceLeaseRecord[];
-      nowMs: number;
-      runnerTtlMs: number;
-      projectChoices: Array<{ name: string; rootPath: string; hostId: string | null }>;
-      embeddedCreate?: "web";
-    }
-  | {
-      kind: "web-job";
-      rootPath: string;
-      hostId: string | null;
-      rootLabel: string;
-      task: RegressionTaskRecord;
-      spec: WebJobSpec | null;
-      result: WebJobResultDocument | null;
-      device: {
-        serial: string | null;
-        model: string | null;
-        osVersion: string | null;
-        source: "result" | "inventory" | "unknown";
-      };
     }
   | {
       kind: "devices";
@@ -748,30 +711,6 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     };
   }
 
-  if (sectionParam === "jobs" && projectKey === null) {
-    const projects = (await deps.store.listProjects().catch(() => []))
-      .slice()
-      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
-    return {
-      kind: "web-jobs",
-      rootPath: "",
-      hostId: hostParam,
-      rootLabel: "未选择项目",
-      projectStatus: null,
-      jobs: [],
-      assets: [],
-      runners: [],
-      leases: [],
-      nowMs: deps.now?.() ?? Date.now(),
-      runnerTtlMs: runnerTtlFrom(deps.env ?? process.env),
-      projectChoices: projects.map((project) => ({
-        name: project.name,
-        rootPath: project.rootPath,
-        hostId: project.hostId ?? null
-      }))
-    };
-  }
-
   const resolved =
     projectKey === null ? null : await resolveProjectKey(deps, projectKey, hostParam ?? undefined);
   const projectStore =
@@ -864,16 +803,14 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         : tabRaw === "excel" ||
             tabRaw === "packages" ||
             tabRaw === "materials" ||
-            tabRaw === "reference" ||
-            tabRaw === "scripts"
+            tabRaw === "reference"
           ? tabRaw
           : "overview";
     const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
     const usage = await buildAssetUsage(projectStore, resolved.rootPath);
-    const [excelAssets, packages, scripts, materials, references, mappings, sets] = await Promise.all([
+    const [excelAssets, packages, materials, references, mappings, sets] = await Promise.all([
       listWebAssets(projectStore, resolved.rootPath, "excel"),
       listWebAssets(projectStore, resolved.rootPath, "package"),
-      listWebAssets(projectStore, resolved.rootPath, "scripts"),
       listWebAssets(projectStore, resolved.rootPath, "materials"),
       listWebAssets(projectStore, resolved.rootPath, "reference"),
       listExcelMappings(projectStore, resolved.rootPath),
@@ -893,7 +830,6 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       appPackage: webProject?.appPackage ?? null,
       assets: excelAssets,
       packages,
-      scripts,
       materials,
       references,
       uploadKind,
@@ -901,82 +837,6 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       sets,
       usage: usage.assets,
       mappings
-    };
-  }
-  const loadWebJob = async (jobId: string): Promise<PanelView> => {
-    const task = await projectStore
-      .getRegressionTask(resolved.rootPath, jobId)
-      .catch(() => null);
-    if (task === null || task.jobSpec === null) {
-      throw new PanelNotFoundError(`未知 Web 任务 "${jobId}"`);
-    }
-    const spec = parseWebJobSpec(task.jobSpec);
-    const result = await readWebJobResult(resolved.rootPath, task.id).catch(() => null);
-    const runners = await projectStore.listWebRunners().catch(() => []);
-    const boundHost = task.claimedHostId ?? task.targetHostId ?? spec?.targetHostId ?? null;
-    const serial = task.deviceSerial ?? spec?.deviceSerial ?? null;
-    const runner = runners.find((record) => record.hostId === boundHost) ?? null;
-    const inventory =
-      serial === null
-        ? null
-        : (runner?.devices.find((device) => device.serial === serial) ?? null);
-    const device =
-      result !== null && result.device !== undefined && result.device !== null
-        ? {
-            serial: result.device.serial ?? serial,
-            model: result.device.model ?? null,
-            osVersion: result.device.osVersion ?? null,
-            source: "result" as const
-          }
-        : inventory !== null
-          ? {
-              serial,
-              model: inventory.model ?? null,
-              osVersion: inventory.osVersion ?? null,
-              source: "inventory" as const
-            }
-          : { serial, model: null, osVersion: null, source: "unknown" as const };
-    return {
-      kind: "web-job",
-      rootPath: resolved.rootPath,
-      hostId: resolved.hostId,
-      rootLabel: resolved.name,
-      task,
-      spec,
-      result,
-      device
-    };
-  };
-  if (section === "jobs") {
-    const nowMs = deps.now?.() ?? Date.now();
-    const jobId = trimmed(url.searchParams.get("job"));
-    if (jobId !== null) return await loadWebJob(jobId);
-    const tasks = await projectStore.listRegressionTasks(resolved.rootPath, 50).catch(() => []);
-    const jobs: WebJobListEntry[] = [];
-    for (const task of tasks) {
-      if (task.jobSpec === null) continue;
-      const result = await readWebJobResult(resolved.rootPath, task.id).catch(() => null);
-      jobs.push({ task, spec: parseWebJobSpec(task.jobSpec), result });
-    }
-    const [webProject, assets, runners, leases] = await Promise.all([
-      projectStore.getWebProject(resolved.rootPath).catch(() => null),
-      listWebAssets(projectStore, resolved.rootPath),
-      projectStore.listWebRunners().catch(() => []),
-      projectStore.listDeviceLeases().catch(() => [])
-    ]);
-    return {
-      kind: "web-jobs",
-      rootPath: resolved.rootPath,
-      hostId: resolved.hostId,
-      rootLabel: resolved.name,
-      projectStatus: webProject?.status ?? null,
-      jobs,
-      assets,
-      runners,
-      leases,
-      nowMs,
-      runnerTtlMs: runnerTtlFrom(deps.env ?? process.env),
-      projectChoices: []
     };
   }
   if (section === "library") {
@@ -988,8 +848,9 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       const task = await projectStore
         .getRegressionTask(resolved.rootPath, taskId)
         .catch(() => null);
-      if (task === null) throw new PanelNotFoundError(`未知任务 "${taskId}"`);
-      if (task.jobSpec !== null) return await loadWebJob(taskId);
+      if (task === null || task.jobSpec !== null) {
+        throw new PanelNotFoundError(`未知任务 "${taskId}"`);
+      }
       const detail = await buildPanelTaskDetail(panelDeps, resolved.rootPath, taskId);
       if (!detail) throw new PanelNotFoundError(`未知任务 "${taskId}"`);
       const dispatched = trimmed(url.searchParams.get("dispatched"));
@@ -1012,23 +873,13 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     }
     const filter = trimmed(url.searchParams.get("filter")) === "active" ? "active" : "all";
     const tasks = await projectStore.listRegressionTasks(resolved.rootPath, 100).catch(() => []);
-    const entries: WebJobListEntry[] = await Promise.all(
-      tasks.map(async (task) => {
-        if (task.jobSpec === null) return { task, spec: null, result: null };
-        const spec = parseWebJobSpec(task.jobSpec);
-        const result = await readWebJobResult(resolved.rootPath, task.id).catch(() => null);
-        return { task, spec, result };
-      })
-    );
-    const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
     const pageRaw = Number(trimmed(url.searchParams.get("page")) ?? "1");
     return {
       kind: "tasks",
       rootPath: resolved.rootPath,
       hostId: resolved.hostId,
       rootLabel: resolved.name,
-      projectStatus: webProject?.status ?? null,
-      tasks: entries,
+      tasks: tasks.filter((task) => task.jobSpec === null),
       filter,
       page: Number.isFinite(pageRaw) && pageRaw >= 1 ? Math.trunc(pageRaw) : 1,
       query: trimmed(url.searchParams.get("q")) ?? ""
@@ -1234,14 +1085,12 @@ function toJsonView(view: PanelView): Record<string, unknown> {
       project: view.rootPath,
       filter: view.filter,
       query: view.query,
-      tasks: view.tasks.map((entry) => ({
-        id: entry.task.id,
-        status: entry.task.status,
-        type: entry.spec === null ? "suite" : "web",
-        executionMode: entry.spec?.executionMode ?? null,
-        packageAssetId: entry.spec?.packageAssetId ?? null,
-        refs: entry.task.refs.length,
-        result: entry.result?.gate.result ?? null
+      tasks: view.tasks.map((task) => ({
+        id: task.id,
+        status: task.status,
+        type: "suite",
+        refs: task.refs.length,
+        result: `${task.runIds.length} 次运行`
       }))
     };
   }
@@ -1267,32 +1116,10 @@ function toJsonView(view: PanelView): Record<string, unknown> {
       appPackage: view.appPackage,
       assets: view.assets,
       packages: view.packages,
-      scripts: view.scripts,
       materials: view.materials,
       references: view.references,
       uploadKind: view.uploadKind,
       mappings: view.mappings
-    };
-  }
-  if (view.kind === "web-jobs") {
-    return {
-      ok: true,
-      view: "web-jobs",
-      project: view.rootPath === "" ? null : view.rootPath,
-      jobs: view.jobs,
-      assets: view.assets,
-      projectChoices: view.projectChoices
-    };
-  }
-  if (view.kind === "web-job") {
-    return {
-      ok: true,
-      view: "web-job",
-      project: view.rootPath,
-      task: view.task,
-      spec: view.spec,
-      result: view.result,
-      device: view.device
     };
   }
   if (view.kind === "archive") return { ok: true, view: "archive", artifacts: view.artifacts, page: view.page };
@@ -2758,7 +2585,6 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         const cancelConfirm = `确认取消该任务？${running || stopping ? "执行机将在当前用例边界停止并确认（状态先为「停止中」，确认后「已取消」）。" : "任务尚未执行，将直接标记为「已取消」。"}取消为终态：不释放、不自动重试；需重跑请用「重新派发」或新建任务。`;
         const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生设备运行 ${detail.runs.length} 个保留）；状态先为「停止中」，执行机确认后转「已取消」。`;
         const rerunConfirm = "确认重新派发？将按原引用/端/基线创建一个新任务（当前任务保留）。";
-        const isWebTask = task.jobSpec !== null;
         const buttons = [
           cancellable
             ? `<button class="c-button c-button-danger" type="button" data-task-action="cancel" data-confirm="${escapeHtml(cancelConfirm)}">取消任务</button>`
@@ -2769,18 +2595,15 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
           stopping
             ? '<span class="muted">停止中：等待执行机确认（离线时为下次心跳读取）；确认后为「已取消」终态</span>'
             : "",
-          !isWebTask && !running && !stopping && task.status !== "pending"
+          !running && !stopping && task.status !== "pending"
             ? `<button class="c-button c-button-primary" type="button" data-task-action="rerun" data-confirm="${escapeHtml(rerunConfirm)}">重新派发</button>`
-            : "",
-          isWebTask && !running && !stopping && task.status !== "pending" && task.status !== "claimed"
-            ? `<button class="c-button c-button-primary" type="button" data-task-action="clone-web" data-confirm="确认按原 Excel/安装包/执行方式/设备要求重新下发一个网页测试任务？">重新下发网页测试</button>`
             : "",
           task.status === "pending" ? '<span class="muted">等待执行机领取</span>' : "",
           running ? '<span class="muted">运行中可直接释放回队列，或先「取消任务」等执行机确认</span>' : ""
         ]
           .filter((part) => part !== "")
           .join(" ");
-        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var hostId=${JSON.stringify(view.hostId).replace(/</g, "\\u003c")};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun','clone-web':'/panel/api/jobs/clone',cancel:'/panel/api/tasks/cancel'};var noteEl=document.getElementById('task-cancel-note');function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId,host:hostId,note:action==='cancel'&&noteEl?noteEl.value:undefined})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='clone-web'){var jobId=res.j.job&&res.j.job.id?res.j.job.id:(res.j.task&&res.j.task.id?res.j.task.id:'');window.aosFlash&&aosFlash('已重新下发网页测试 '+jobId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&section=tasks&task='+encodeURIComponent(jobId)+${JSON.stringify(hostSuffix(view.hostId))};return;}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&section=tasks&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':action==='cancel'?(res.j&&res.j.status==='cancelled'?'任务已取消':'已请求取消（等待执行机确认）')+' · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
+        const actionsScript = `<script>(function(){var project=${projectJson};var taskId=${taskJson};var hostId=${JSON.stringify(view.hostId).replace(/</g, "\\u003c")};var statusEl=document.getElementById('task-action-status');function show(m,ok){statusEl.textContent=m;statusEl.className=ok?'c-banner c-banner-accent':'c-banner c-banner-warn';statusEl.hidden=false;}var paths={stop:'/panel/api/tasks/stop',release:'/panel/api/tasks/release',rerun:'/panel/api/tasks/rerun',cancel:'/panel/api/tasks/cancel'};var noteEl=document.getElementById('task-cancel-note');function aosBindTaskActions(){document.querySelectorAll('[data-task-action]').forEach(function(b){if(b.getAttribute('data-aos-bound')==='1')return;b.setAttribute('data-aos-bound','1');b.addEventListener('click',function(){var action=b.getAttribute('data-task-action');window.aosInlineConfirm(b,b.getAttribute('data-confirm')||'确认执行该动作？',function(){b.disabled=true;fetch(paths[action],{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:project,taskId:taskId,host:hostId,note:action==='cancel'&&noteEl?noteEl.value:undefined})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||('HTTP '+res.status));}if(action==='rerun'){var newId=res.j.task&&res.j.task.id?res.j.task.id:'';window.aosFlash&&aosFlash('已重新派发新任务 '+newId+' · 已写入审计');location.href='/panel?project='+encodeURIComponent(project)+'&section=tasks&task='+encodeURIComponent(newId)+${JSON.stringify(hostSuffix(view.hostId))};return;}window.aosFlash&&aosFlash(action==='stop'?'已请求停止（等待执行机确认） · 已写入审计':action==='cancel'?(res.j&&res.j.status==='cancelled'?'任务已取消':'已请求取消（等待执行机确认）')+' · 已写入审计':'已释放任务回队列 · 已写入审计');location.reload();}).catch(function(e){b.disabled=false;show('动作失败：'+(e&&e.message?e.message:e),false);});});});});}window.aosBindTaskActions=aosBindTaskActions;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindTaskActions();if(typeof prevHook==='function')prevHook();};aosBindTaskActions();})();</script>`;
         return [
           `<p id="task-actions">${badge} ${priorityBadge} ${buttons}${cancellable ? ' <label class="muted">取消备注 <input type="text" id="task-cancel-note" size="24" placeholder="可选（写入任务与审计）"></label>' : ""}</p>`,
           `<p id="task-action-status" role="status" class="c-banner" hidden></p>`,
@@ -3830,10 +3653,6 @@ function activeForView(view: PanelView): ConsoleNavKey | null {
       return "tasks";
     case "dispatch":
       return view.embeddedCreate ? "create" : "dispatch";
-    case "web-jobs":
-      return view.embeddedCreate ? "create" : "jobs";
-    case "web-job":
-      return "tasks";
     case "web-assets":
       return "assets";
     case "devices":
@@ -4092,7 +3911,6 @@ function renderPanelHtml(
       rootPath: view.rootPath,
       rootLabel: view.rootLabel,
       hostId: view.hostId,
-      projectStatus: view.projectStatus,
       tasks: view.tasks,
       filter: view.filter,
       page: view.page,
@@ -4153,7 +3971,6 @@ function renderPanelHtml(
       appPackage: view.appPackage,
       assets: view.assets,
       packages: view.packages,
-      scripts: view.scripts,
       materials: view.materials,
       references: view.references,
       uploadKind: view.uploadKind,
@@ -4161,37 +3978,6 @@ function renderPanelHtml(
       sets: view.sets,
       usage: view.usage,
       mappings: view.mappings,
-      capabilities: deps.capabilities,
-      storeHealth: currentShell.storeHealth
-    });
-  }
-  if (view.kind === "web-jobs") {
-    return renderWebJobsPage({
-      rootPath: view.rootPath,
-      rootLabel: view.rootLabel,
-      hostId: view.hostId,
-      projectStatus: view.projectStatus,
-      jobs: view.jobs,
-      assets: view.assets,
-      runners: view.runners,
-      leases: view.leases,
-      nowMs: view.nowMs,
-      runnerTtlMs: view.runnerTtlMs,
-      projectChoices: view.projectChoices,
-      embeddedCreate: view.embeddedCreate === "web",
-      capabilities: deps.capabilities,
-      storeHealth: currentShell.storeHealth
-    });
-  }
-  if (view.kind === "web-job") {
-    return renderWebJobPage({
-      rootPath: view.rootPath,
-      rootLabel: view.rootLabel,
-      hostId: view.hostId,
-      task: view.task,
-      spec: view.spec,
-      result: view.result,
-      device: view.device,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });

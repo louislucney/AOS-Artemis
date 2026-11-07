@@ -5,19 +5,14 @@ import type { ArtifactRecord } from "../artifacts/index.js";
 import type {
   AuditEventRecord,
   CaseSetRecord,
-  DeviceLeaseRecord,
   ExcelMappingRecord,
   ProjectEventRecord,
   RegressionTaskRecord,
   RunnerTools,
-  WebAssetRecord,
-  WebRunnerRecord
+  WebAssetRecord
 } from "../db/types.js";
-import type { WebJobSpec } from "../web/job-spec.js";
-import type { WebJobResultDocument } from "../web/results.js";
 import { parseQuarantine } from "../figma/quarantine.js";
 import { formatBytes } from "../figma/retention.js";
-import { isRunnerOnline } from "../runner/status.js";
 import { escapeHtml } from "../util.js";
 import { cBadge, cCard, cEmpty, cStat, cTable } from "./components.js";
 import { relativeTime } from "./time.js";
@@ -183,8 +178,7 @@ export type AssetsTab =
   | "excel"
   | "packages"
   | "materials"
-  | "reference"
-  | "scripts";
+  | "reference";
 
 export interface WebAssetsPageData {
   rootPath: string;
@@ -194,7 +188,6 @@ export interface WebAssetsPageData {
   appPackage?: string | null;
   assets: WebAssetRecord[];
   packages?: WebAssetRecord[];
-  scripts?: WebAssetRecord[];
   materials?: WebAssetRecord[];
   references?: WebAssetRecord[];
   /** 由 `?kind=package#asset-upload` / `?kind=materials#asset-upload` 预选上传类型。 */
@@ -258,13 +251,6 @@ function assetVersionNumbers(assets: WebAssetRecord[]): Map<string, number> {
   return numbers;
 }
 
-function assetVersionLabel(asset: WebAssetRecord, numbers: Map<string, number>): string {
-  const version = numbers.get(asset.id) ?? asset.version;
-  const platform = assetPlatform(asset);
-  if (platform === null) return `v${version}`;
-  return `${platform === "android" ? "Android" : "iOS"} v${version}`;
-}
-
 /** 测试资产（Excel 原件版本 + 列映射）：上传/预览/保存均走面板动作 API；
  * 写动作按 capabilities.actions 与角色（maintainer/admin）收口，UI 只做可达性提示。 */
 export function renderWebAssetsPage(data: WebAssetsPageData): string {
@@ -305,10 +291,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     )
     .join("");
   const packages = data.packages ?? [];
-  const scripts = data.scripts ?? [];
   const materials = data.materials ?? [];
   const packageVersionNumbers = assetVersionNumbers(packages);
-  const scriptVersionNumbers = assetVersionNumbers(scripts);
   const packageRows = packages.map((asset) => [
     `<code>${escapeHtml(asset.filename)}</code>`,
     assetPlatform(asset) === "android"
@@ -322,25 +306,6 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     relativeTime(asset.createdAt),
     String(usage[asset.id] ?? 0)
   ]);
-  const scriptRows = scripts.map((asset) => {
-    const metadata = asset.metadata ?? {};
-    const platform = typeof metadata.platform === "string" ? metadata.platform : "—";
-    const origin = metadata.origin === "generated" ? "生成" : "人工";
-    const ready = typeof metadata.ready === "number" ? String(metadata.ready) : "—";
-    const partial = typeof metadata.partial === "number" ? String(metadata.partial) : "—";
-    const unresolved = typeof metadata.unresolved === "number" ? String(metadata.unresolved) : "—";
-    return [
-      `<code>${escapeHtml(asset.filename)}</code>`,
-      `<code>v${scriptVersionNumbers.get(asset.id) ?? asset.version}</code>`,
-      `<code>${escapeHtml(platform)}</code>`,
-      escapeHtml(origin),
-      `<code>${escapeHtml(ready)}</code>`,
-      `<code>${escapeHtml(partial)}</code>`,
-      `<code>${escapeHtml(unresolved)}</code>`,
-      relativeTime(asset.createdAt),
-      String(usage[asset.id] ?? 0)
-    ];
-  });
   const materialRows = materials.map((asset) => {
     const secret = asset.metadata?.secret === true;
     return [
@@ -409,19 +374,12 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     actionsReason
   ].join("\n");
 
-  const scriptGenBody = [
-    `<p class="muted">Maestro 脚本生成已移除；Android 请使用 MCP 原生 <code>run_regression</code> / <code>mobile_run_task</code>。</p>`,
-    actionsReason
-  ].join("\n");
-
   const fieldsJson = JSON.stringify(
     CANONICAL_FIELDS.map((field) => ({ field, label: CANONICAL_FIELD_LABELS[field] }))
   ).replace(/</g, "\\u003c");
   const script = actionsOff
     ? ""
     : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};var fields=${fieldsJson};function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}function setBusy(btn,busy){if(!btn)return;if(busy){if(!btn.dataset.idleLabel)btn.dataset.idleLabel=btn.textContent;btn.disabled=true;if(btn.dataset.busyLabel)btn.textContent=btn.dataset.busyLabel;}else{btn.disabled=false;if(btn.dataset.idleLabel)btn.textContent=btn.dataset.idleLabel;}}function jsonPost(url,body){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});});}var preview=null;var saveBtn=document.getElementById('mapping-save');if(saveBtn)saveBtn.disabled=true;var uForm=document.getElementById('asset-upload-form');var uStatus=document.getElementById('asset-upload-status');var uploadBtn=document.getElementById('asset-upload-submit');var input=document.getElementById('asset-file');var uDrop=document.getElementById('asset-drop');var uFileName=document.getElementById('asset-file-name');function uKind(){var kindSel=document.getElementById('asset-kind');var v=kindSel?kindSel.value:'';return v==='package'||v==='materials'||v==='reference'?v:'excel';}function uKindOf(file){var lower=file?String(file.name||'').toLowerCase():'';if(lower.endsWith('.apk')||lower.endsWith('.ipa'))return 'package';if(lower.endsWith('.png')||lower.endsWith('.jpg')||lower.endsWith('.jpeg')||lower.endsWith('.webp')||lower.endsWith('.pen'))return 'reference';if(lower.endsWith('.xlsx'))return 'excel';if(lower.endsWith('.zip')||lower.endsWith('.json')||lower.endsWith('.txt'))return 'materials';if(lower.endsWith('.csv')){var current=uKind();return current==='materials'?'materials':'excel';}return uKind();}function uSyncKind(file){var kind=uKindOf(file);var kindSel=document.getElementById('asset-kind');if(kindSel&&(kind==='package'||kind==='excel'||kind==='materials'||kind==='reference'))kindSel.value=kind;var secretRow=document.getElementById('asset-secret-row');if(secretRow)secretRow.hidden=kind!=='materials';return kind;}function uExtOk(name,kind){var lower=String(name||'').toLowerCase();if(kind==='package')return lower.endsWith('.apk')||lower.endsWith('.ipa');if(kind==='materials')return lower.endsWith('.zip')||lower.endsWith('.json')||lower.endsWith('.csv')||lower.endsWith('.txt');if(kind==='reference')return lower.endsWith('.png')||lower.endsWith('.jpg')||lower.endsWith('.jpeg')||lower.endsWith('.webp')||lower.endsWith('.pen');return lower.endsWith('.xlsx')||lower.endsWith('.csv');}var uKindSelect=document.getElementById('asset-kind');if(uKindSelect){uKindSelect.addEventListener('change',function(){var secretRow=document.getElementById('asset-secret-row');if(secretRow)secretRow.hidden=uKindSelect.value!=='materials';});}function uUpdateName(){if(!uFileName)return;var f=input&&input.files?input.files[0]:null;uFileName.textContent=f?f.name:'未选择文件';if(f)uSyncKind(f);}if(uForm){uForm.addEventListener('submit',function(e){e.preventDefault();if(uploadBtn&&uploadBtn.disabled)return;var file=input&&input.files?input.files[0]:null;var kind=uSyncKind(file);if(!file){if(uStatus)uStatus.textContent='请选择文件';return;}if(!uExtOk(file.name,kind)){if(uStatus)uStatus.textContent=kind==='package'?'安装包仅支持 .apk/.ipa':kind==='materials'?'测试资料仅支持 .zip/.json/.csv/.txt':kind==='reference'?'参考图仅支持 .png/.jpg/.jpeg/.webp/.pen':'Excel 仅支持 .xlsx/.csv';return;}var fd=new FormData();fd.append('project',root);fd.append('kind',kind);if(host)fd.append('host',host);var secret=document.getElementById('asset-secret');if(kind==='materials'&&secret&&secret.checked)fd.append('secret','true');fd.append('file',file);if(uStatus)uStatus.textContent='上传中…';setBusy(uploadBtn,true);fetch('/panel/api/projects/assets',{method:'POST',headers:{'X-AOS-Console':'1'},body:fd}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){var uploaded=res.j.assets&&res.j.assets.length?res.j.assets.length:1;window.aosFlash&&aosFlash('已上传 '+(uploaded>1?uploaded+' 个参考图':res.j.asset.filename+'（v'+res.j.asset.version+'）')+' · 已写入审计');setBusy(uploadBtn,false);var url=new URL(location.href);url.hash='';url.searchParams.set('_uploaded',String(Date.now()));location.href=url.toString();}else{setBusy(uploadBtn,false);if(uStatus)uStatus.textContent='上传失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){setBusy(uploadBtn,false);if(uStatus)uStatus.textContent='上传失败：'+err;});});}if(uDrop&&input){uDrop.addEventListener('click',function(){input.click();});uDrop.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();input.click();}});['dragenter','dragover'].forEach(function(name){uDrop.addEventListener(name,function(e){e.preventDefault();uDrop.classList.add('is-dragover');});});['dragleave','drop'].forEach(function(name){uDrop.addEventListener(name,function(e){e.preventDefault();uDrop.classList.remove('is-dragover');});});uDrop.addEventListener('drop',function(e){var files=e.dataTransfer&&e.dataTransfer.files;if(!files||files.length===0)return;var file=files[0];var kind=uSyncKind(file);if(!uExtOk(file.name,kind)){if(uStatus)uStatus.textContent=kind==='package'?'安装包仅支持 .apk/.ipa':kind==='materials'?'测试资料仅支持 .zip/.json/.csv/.txt':kind==='reference'?'参考图仅支持 .png/.jpg/.jpeg/.webp/.pen':'Excel 仅支持 .xlsx/.csv';return;}try{input.files=files;}catch(err){var dt=new DataTransfer();dt.items.add(file);input.files=dt.files;}uUpdateName();if(uStatus)uStatus.textContent='已选择文件，点击「上传资产」';});input.addEventListener('click',function(e){e.stopPropagation();});input.addEventListener('change',uUpdateName);uUpdateName();}var pForm=document.getElementById('mapping-preview-form');var sel=document.getElementById('asset-select');var pStatus=document.getElementById('mapping-status');var previewBox=document.getElementById('mapping-preview');var previewBtn=document.getElementById('mapping-preview-submit');var rowInput=document.getElementById('asset-header-row');function resetPreview(){preview=null;if(saveBtn)saveBtn.disabled=true;if(previewBox)previewBox.innerHTML='<p class="muted">选择资产并预览表头后，可确认建议映射并保存。</p>';if(pStatus)pStatus.textContent='';}if(sel)sel.addEventListener('change',resetPreview);if(rowInput){rowInput.addEventListener('change',resetPreview);rowInput.addEventListener('input',resetPreview);}if(pForm){pForm.addEventListener('submit',function(e){e.preventDefault();if(previewBtn&&previewBtn.disabled)return;if(!sel||!sel.value){if(pStatus)pStatus.textContent='请选择资产';return;}var headerRow=parseInt(rowInput&&rowInput.value?rowInput.value:'1',10);if(!headerRow||headerRow<1)headerRow=1;var requestedAsset=sel.value;var requestedHeaderRow=headerRow;preview=null;if(saveBtn)saveBtn.disabled=true;if(pStatus)pStatus.textContent='读取中…';setBusy(previewBtn,true);jsonPost('/panel/api/projects/excel/preview',{project:root,host:host,assetId:requestedAsset,headerRow:requestedHeaderRow}).then(function(res){if(sel.value!==requestedAsset||parseInt(rowInput&&rowInput.value?rowInput.value:'1',10)!==requestedHeaderRow){setBusy(previewBtn,false);return;}if(!res.ok||!res.j||!res.j.ok){setBusy(previewBtn,false);if(pStatus)pStatus.textContent='预览失败：'+((res.j&&res.j.error)||('HTTP '+res.status));return;}var j=res.j;var suggested=j.suggested||{};preview={assetId:requestedAsset,sheetName:j.sheetName,headerRow:requestedHeaderRow,columnMap:suggested};var rows=fields.map(function(f){var header=suggested[f.field]||'';return '<tr><td>'+esc(f.label)+'</td><td>'+(header?'<code>'+esc(header)+'</code>':'<span class="muted">—</span>')+'</td></tr>';});if(previewBox)previewBox.innerHTML='<div class="c-table-wrap"><table class="c-table"><caption>映射预览</caption><thead><tr><th scope="col">规范字段</th><th scope="col">建议表头</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div><p class="muted">工作表 '+esc(j.sheetName)+' · 表头行 '+requestedHeaderRow+' · 指纹 <code>'+esc(String(j.fingerprint||'').slice(0,12))+'</code></p>';if(pStatus)pStatus.textContent='预览完成，可保存';setBusy(previewBtn,false);if(saveBtn)saveBtn.disabled=false;}).catch(function(err){setBusy(previewBtn,false);if(pStatus)pStatus.textContent='预览失败：'+err;});});}if(saveBtn){saveBtn.addEventListener('click',function(){if(!preview){if(pStatus)pStatus.textContent='请先预览映射';return;}if(pStatus)pStatus.textContent='保存中…';setBusy(saveBtn,true);jsonPost('/panel/api/projects/excel/mapping',{project:root,host:host,assetId:preview.assetId,sheetName:preview.sheetName,headerRow:preview.headerRow,columnMap:preview.columnMap}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已保存列映射 · 已写入审计');location.reload();}else{setBusy(saveBtn,false);if(pStatus)pStatus.textContent='保存失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){setBusy(saveBtn,false);if(pStatus)pStatus.textContent='保存失败：'+err;});});}document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('button[data-import-excel]'):null;if(!b)return;var id=b.getAttribute('data-import-excel');if(!id)return;b.disabled=true;jsonPost('/panel/api/import',{project:root,host:host,assetId:id}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已导入用例库 · 可到用例库下发');location.reload();}else{b.disabled=false;if(uStatus)uStatus.textContent='导入用例库失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}}).catch(function(err){b.disabled=false;if(uStatus)uStatus.textContent='导入用例库失败：'+err;});});})();</script>`;
-
-  const scriptGenScript = "";
 
   const activeTab: AssetsTab = data.tab ?? "overview";
   const legacy = data.tab === undefined;
@@ -434,8 +392,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     ["excel", "Excel"],
     ["packages", "安装包"],
     ["materials", "测试资料"],
-    ["reference", "参考图"],
-    ["scripts", "脚本集（历史）"]
+    ["reference", "参考图"]
   ];
   const tabBar = `<nav class="c-flow-switch" aria-label="测试资产类型">${tabLabels
     .map(([tab, label]) =>
@@ -468,7 +425,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};var form=document.getElementById('figma-reference-form');if(!form)return;var status=document.getElementById('figma-reference-status');var btn=document.getElementById('figma-reference-submit');form.addEventListener('submit',function(e){e.preventDefault();var url=document.getElementById('figma-reference-url').value.trim();var node=document.getElementById('figma-reference-node').value.trim();if(!url){if(status)status.textContent='请填写 Figma URL';return;}if(btn)btn.disabled=true;fetch('/panel/api/projects/assets/figma',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify({project:root,host:host,figmaUrl:url,nodeId:node})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){window.aosFlash&&aosFlash('已导入 Figma 参考图 '+res.j.asset.filename+' · 已写入审计');location.reload();return;}if(btn)btn.disabled=false;if(status)status.textContent='导入失败：'+((res.j&&res.j.error)||('HTTP '+res.status));}).catch(function(err){if(btn)btn.disabled=false;if(status)status.textContent='导入失败：'+err;});});})();</script>`;
   const overviewCard = cCard({
     title: "资产概览",
-    subtitle: "所有测试输入都在这里；用例集和网页测试资产不再分家",
+    subtitle: "所有测试输入都在这里；用例集与测试资产统一管理",
     body: [
       '<div class="cards">',
       `<div class="card"><div class="k">用例集</div><div class="v">${data.sets?.length ?? 0}</div><div class="muted"><a href="${escapeHtml(
@@ -486,9 +443,6 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       `<div class="card"><div class="k">参考图</div><div class="v">${references.length}</div><div class="muted"><a href="${escapeHtml(
         tabHref("reference")
       )}">查看参考图</a></div></div>`,
-      `<div class="card"><div class="k">历史脚本集</div><div class="v">${scripts.length}</div><div class="muted"><a href="${escapeHtml(
-        tabHref("scripts")
-      )}">查看历史脚本集</a></div></div>`,
       "</div>",
       '<p class="muted">下一步：去 <a href="/panel?project=' +
         encodeURIComponent(data.rootPath) +
@@ -550,22 +504,6 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       empty: "暂无参考图（上方上传 .png/.jpg/.jpeg/.webp）"
     })
   })}</div>`;
-  const scriptsCard = cCard({
-    title: "历史脚本集",
-    subtitle: `共 ${scripts.length} 个 scripts 版本（只读保留）`,
-    body: cTable({
-      columns: ["文件名", "版本", "平台", "来源", "ready", "partial", "unresolved", "生成时间", "被使用"],
-      rows: scriptRows,
-      caption: "生成的脚本集",
-      empty: "暂无脚本集（上方生成）"
-    })
-  });
-  const scriptGenCard = cCard({
-    title: "MCP 原生执行",
-    subtitle: "Maestro 脚本生成已移除；Android 请用 run_regression / mobile_run_task",
-    body: scriptGenBody
-  });
-
   const sections: string[] = [
     "<h1>测试资产</h1>",
     tabBar,
@@ -580,8 +518,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   if (show("packages")) sections.push(packageCard);
   if (show("materials")) sections.push(materialsCard);
   if (show("reference")) sections.push(referenceCard, figmaReferenceCard);
-  if (show("scripts")) sections.push(scriptGenCard, scriptsCard);
-  sections.push(script, scriptGenScript);
+  sections.push(script);
   if (show("reference")) sections.push(figmaReferenceScript);
 
   return renderConsoleShell({
@@ -648,18 +585,12 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
   });
 }
 
-export interface WebJobListEntry {
-  task: RegressionTaskRecord;
-  spec: WebJobSpec | null;
-  result: WebJobResultDocument | null;
-}
-
 export interface TasksPageData {
   rootPath: string;
   rootLabel: string;
   hostId?: string | null;
   projectStatus?: "active" | "archived" | null;
-  tasks: WebJobListEntry[];
+  tasks: RegressionTaskRecord[];
   filter?: "all" | "active";
   query?: string;
   page?: number;
@@ -674,23 +605,23 @@ export function renderTasksPage(data: TasksPageData): string {
   const tasksUrl = (extra = ""): string => `/panel?${projectQuery}&section=tasks${extra}${hostQuery}`;
   const createHref = `/panel?${projectQuery}&section=create${hostQuery}`;
   const query = (data.query ?? "").trim().toLowerCase();
-  const visible = data.tasks.filter((entry) => {
+  const visible = data.tasks.filter((task) => {
+    if (task.jobSpec !== null) return false;
     if (
       data.filter === "active" &&
-      !["pending", "claimed", "running", "stopping"].includes(entry.task.status)
+      !["pending", "claimed", "running", "stopping"].includes(task.status)
     ) {
       return false;
     }
     if (query === "") return true;
     const haystack = [
-      entry.task.id,
-      entry.task.status,
-      entry.task.claimedHostId ?? "",
-      entry.task.targetHostId ?? "",
-      entry.task.deviceSerial ?? "",
-      entry.spec?.executionMode ?? "suite",
-      entry.spec?.packageAssetId ?? "",
-      ...(entry.spec?.assetSnapshot.map((asset) => asset.filename) ?? [])
+      task.id,
+      task.status,
+      task.claimedHostId ?? "",
+      task.targetHostId ?? "",
+      task.deviceSerial ?? "",
+      task.platforms.join(" "),
+      ...task.refs.map((ref) => ref.caseSetId ?? "")
     ]
       .join(" ")
       .toLowerCase();
@@ -722,43 +653,25 @@ export function renderTasksPage(data: TasksPageData): string {
             : '<span class="c-flow-option is-disabled">下一页</span>'
         }</nav>`
       : "";
-  const rows = pageItems.map((entry) => {
-    const task = entry.task;
-    const isWeb = entry.spec !== null;
-    const type = isWeb
-      ? entry.spec?.executionMode === "llm"
-        ? "网页测试 · LLM"
-        : "网页测试 · Maestro"
-      : "套件回归";
+  const rows = pageItems.map((task) => {
     const detail = `/panel?${projectQuery}&section=tasks&task=${encodeURIComponent(
       task.id
     )}${hostQuery}`;
-    const input = isWeb
-      ? entry.spec?.assetSnapshot.find((asset) => asset.kind === "package")?.filename ??
-        entry.spec?.packageAssetId ??
-        "—"
-      : `${task.refs.length} 份用例集`;
-    const result = isWeb
-      ? entry.result === null
-        ? "—"
-        : entry.result.gate.result
-      : `${task.runIds.length} 次运行`;
     return [
       `<a href="${escapeHtml(detail)}"><code>${escapeHtml(task.id.slice(0, 12))}</code></a>`,
-      cBadge({ label: type, tone: isWeb ? "accent" : "neutral" }),
       cBadge({
         label: `P${task.priority}`,
         tone: task.priority > 0 ? "warning" : "neutral",
         title: "优先级（越大越先领取）"
       }),
-      cBadge({ label: webJobStatusLabel(task.status), tone: webJobStatusTone(task.status) }),
+      cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) }),
       escapeHtml(data.rootLabel),
       `<span class="muted">${escapeHtml(task.claimedHostId ?? task.targetHostId ?? "—")} · ${escapeHtml(
         task.deviceSerial ?? "—"
       )}</span>`,
-      escapeHtml(input),
+      escapeHtml(`${task.refs.length} 份用例集`),
       `<span title="${escapeHtml(task.createdAt)}">${relativeTime(task.createdAt)}</span>`,
-      escapeHtml(result),
+      escapeHtml(`${task.runIds.length} 次运行`),
       `<a class="c-button" href="${escapeHtml(detail)}">详情</a>`
     ];
   });
@@ -786,7 +699,7 @@ export function renderTasksPage(data: TasksPageData): string {
     body: [
       "<h1>任务与结果</h1>",
       tabBar,
-      `<p class="muted">套件回归与网页测试统一在这里查看；状态、执行机、输入和结果同表。 <a class="c-button" href="${escapeHtml(
+      `<p class="muted">套件回归任务与结果：状态、执行机、输入和结果同表。 <a class="c-button" href="${escapeHtml(
         createHref
       )}">新建测试</a></p>`,
       `<form method="get" action="/panel" class="c-form" role="search"><input type="hidden" name="project" value="${escapeHtml(
@@ -795,14 +708,14 @@ export function renderTasksPage(data: TasksPageData): string {
         data.hostId ? `<input type="hidden" name="host" value="${escapeHtml(data.hostId)}">` : ""
       }<label>搜索任务 <input name="q" value="${escapeHtml(
         data.query ?? ""
-      )}" placeholder="任务 ID / 状态 / 安装包 / 设备" aria-label="搜索任务"></label> <button class="c-button" type="submit">搜索</button></form>`,
+      )}" placeholder="任务 ID / 状态 / 设备 / 用例集" aria-label="搜索任务"></label> <button class="c-button" type="submit">搜索</button></form>`,
       cCard({
         title: "任务列表",
         subtitle: `共 ${visible.length} 条${data.filter === "active" ? "（进行中）" : ""}${
           totalPages > 1 ? ` · 第 ${page}/${totalPages} 页` : ""
         }`,
         body: cTable({
-          columns: ["任务", "类型", "优先级", "状态", "项目", "执行机/设备", "输入", "创建", "结果", "操作"],
+          columns: ["任务", "优先级", "状态", "项目", "执行机/设备", "输入", "创建", "结果", "操作"],
           rows,
           caption: "任务与结果",
           empty: "还没有任务；点右上角「新建测试」开始。"
@@ -845,42 +758,7 @@ export interface DevicesPageData {
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
 
-export interface WebJobsPageData {
-  /** 空串＝未选择项目（渲染项目选择器）。 */
-  rootPath: string;
-  rootLabel: string;
-  hostId?: string | null;
-  projectStatus?: "active" | "archived" | null;
-  jobs: WebJobListEntry[];
-  assets: WebAssetRecord[];
-  runners: WebRunnerRecord[];
-  leases: DeviceLeaseRecord[];
-  nowMs: number;
-  runnerTtlMs: number;
-  projectChoices: Array<{ name: string; rootPath: string; hostId: string | null }>;
-  embeddedCreate?: boolean;
-  capabilities?: ConsoleCapabilities;
-  storeHealth?: ConsoleShellInput["storeHealth"];
-}
-
-export interface WebJobPageData {
-  rootPath: string;
-  rootLabel: string;
-  hostId?: string | null;
-  task: RegressionTaskRecord;
-  spec: WebJobSpec | null;
-  result: WebJobResultDocument | null;
-  device: {
-    serial: string | null;
-    model: string | null;
-    osVersion: string | null;
-    source: "result" | "inventory" | "unknown";
-  };
-  capabilities?: ConsoleCapabilities;
-  storeHealth?: ConsoleShellInput["storeHealth"];
-}
-
-const WEB_JOB_STATUS_LABELS: Record<string, string> = {
+const TASK_STATUS_LABELS: Record<string, string> = {
   pending: "待执行",
   claimed: "已领取",
   running: "执行中",
@@ -892,11 +770,11 @@ const WEB_JOB_STATUS_LABELS: Record<string, string> = {
   failed: "失败"
 };
 
-function webJobStatusLabel(status: string): string {
-  return WEB_JOB_STATUS_LABELS[status] ?? status;
+function taskStatusLabel(status: string): string {
+  return TASK_STATUS_LABELS[status] ?? status;
 }
 
-function webJobStatusTone(status: string): "neutral" | "accent" | "success" | "warning" | "error" {
+function taskStatusTone(status: string): "neutral" | "accent" | "success" | "warning" | "error" {
   if (status === "completed") return "success";
   if (status === "failed") return "error";
   if (status === "claimed" || status === "running") return "accent";
@@ -904,161 +782,6 @@ function webJobStatusTone(status: string): "neutral" | "accent" | "success" | "w
   return "neutral";
 }
 
-function webCreateHref(rootPath: string, hostId: string | null): string {
-  const params = new URLSearchParams({ project: rootPath, section: "create", type: "web" });
-  if (hostId !== null) params.set("host", hostId);
-  return `/panel?${params.toString()}`;
-}
-
-function webTaskHref(rootPath: string, taskId: string, hostId: string | null): string {
-  const params = new URLSearchParams({ project: rootPath, section: "tasks", task: taskId });
-  if (hostId !== null) params.set("host", hostId);
-  return `/panel?${params.toString()}`;
-}
-
-const TERMINAL_WEB_JOB_STATUSES = new Set<string>([
-  "completed",
-  "failed",
-  "partial",
-  "cancelled",
-  "stopped",
-  "error"
-]);
-
-function jobBinding(task: RegressionTaskRecord, spec: WebJobSpec | null): {
-  bound: boolean;
-  released: boolean;
-  pinned: boolean;
-  hostId: string | null;
-  serial: string | null;
-  pending: boolean;
-  reason: string | null;
-} {
-  const hostId = task.claimedHostId ?? task.targetHostId ?? spec?.targetHostId ?? null;
-  const serial = task.deviceSerial ?? spec?.deviceSerial ?? null;
-  // 活动租约只看任务行（spec.deviceLeaseId 是创建时快照，终态回写不会更新它）。
-  const leaseId = task.deviceLeaseId;
-  const terminal = TERMINAL_WEB_JOB_STATUSES.has(task.status);
-  // 终态任务释放租约但保留设备序列号（历史绑定）：显示「已释放」而不是「未绑定」。
-  const released = terminal && serial !== null;
-  return {
-    bound: !terminal && leaseId !== null,
-    released,
-    pinned: serial !== null && spec?.devicePinned === true,
-    hostId,
-    serial,
-    pending: task.status === "pending" && leaseId === null && !spec?.binding,
-    reason: spec?.assignmentError?.message ?? null
-  };
-}
-
-function jobBindingCell(entry: WebJobListEntry): string {
-  const binding = jobBinding(entry.task, entry.spec);
-  if (binding.bound) {
-    return `已绑定 host/device <code>${escapeHtml(binding.hostId ?? "—")}</code> · <code>${escapeHtml(
-      binding.serial ?? "—"
-    )}</code>`;
-  }
-  if (binding.released) {
-    return `${cBadge({
-      label: "已释放 host/device",
-      tone: "neutral"
-    })} <code>${escapeHtml(binding.hostId ?? "—")}</code> · <code>${escapeHtml(
-      binding.serial ?? "—"
-    )}</code>`;
-  }
-  const reason =
-    binding.reason === null ? "" : ` <span class="muted">（${escapeHtml(binding.reason)}）</span>`;
-  if (binding.pinned && binding.pending) {
-    return `${cBadge({
-      label: "钉住 host/设备，等待执行机",
-      tone: "warning"
-    })} <code>${escapeHtml(binding.hostId ?? "—")}</code> · <code>${escapeHtml(
-      binding.serial ?? "—"
-    )}</code>${reason}`;
-  }
-  if (binding.pending) {
-    return `${cBadge({ label: "等待满足要求的执行机", tone: "warning" })}${reason}`;
-  }
-  return `<span class="muted">未绑定设备（${escapeHtml(
-    webJobStatusLabel(entry.task.status)
-  )}）</span>`;
-}
-
-function jobDeviceCell(entry: WebJobListEntry, runners: WebRunnerRecord[]): string {
-  const binding = jobBinding(entry.task, entry.spec);
-  const resultDevice = entry.result?.device;
-  // 终态任务租约已释放但设备仍有效：型号/系统优先取结果上报，其次按 host+serial 查执行机心跳。
-  const serial = binding.serial ?? resultDevice?.serial ?? null;
-  if (serial === null) return "—";
-  const runner = runners.find((record) => record.hostId === binding.hostId);
-  const device = runner?.devices.find((record) => record.serial === serial);
-  const model = resultDevice?.model ?? device?.model ?? null;
-  const os = resultDevice?.osVersion ?? device?.osVersion ?? null;
-  if (model === null && os === null) return `<code>${escapeHtml(serial)}</code>`;
-  return `${escapeHtml(model ?? "未知型号")} · ${escapeHtml(os ?? "—")}`;
-}
-
-function assetOptions(assets: WebAssetRecord[], kind: WebAssetRecord["kind"], emptyLabel: string): string {
-  const entries = assets.filter((asset) => asset.kind === kind);
-  if (entries.length === 0) return `<option value="">${escapeHtml(emptyLabel)}</option>`;
-  const versionNumbers = assetVersionNumbers(entries);
-  return entries
-    .map(
-      (asset) =>
-        `<option value="${escapeHtml(asset.id)}">${escapeHtml(assetVersionLabel(asset, versionNumbers))} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
-    )
-    .join("");
-}
-
-function assetOptionsWithPlaceholder(
-  assets: WebAssetRecord[],
-  kind: WebAssetRecord["kind"],
-  placeholder: string
-): string {
-  const entries = assets.filter((asset) => asset.kind === kind);
-  const versionNumbers = assetVersionNumbers(entries);
-  return (
-    `<option value="">${escapeHtml(placeholder)}</option>` +
-    entries
-      .map(
-        (asset) =>
-          `<option value="${escapeHtml(asset.id)}">${escapeHtml(assetVersionLabel(asset, versionNumbers))} · ${escapeHtml(asset.filename)}（${formatBytes(asset.size)}）</option>`
-      )
-      .join("")
-  );
-}
-
-function runnerDeviceOptions(
-  runners: WebRunnerRecord[],
-  leases: DeviceLeaseRecord[],
-  nowMs: number,
-  runnerTtlMs: number
-): string {
-  const options: string[] = ['<option value="">不指定设备（由执行机或自动选机决定）</option>'];
-  for (const runner of runners) {
-    const online = isRunnerOnline(runner.lastSeenAt, nowMs, runnerTtlMs);
-    for (const device of runner.devices) {
-      const busy = leases.some(
-        (lease) =>
-          lease.hostId === runner.hostId &&
-          lease.serial === device.serial &&
-          Number.isFinite(Date.parse(lease.expiresAt)) &&
-          Date.parse(lease.expiresAt) > nowMs
-      );
-      const state = busy ? "占用" : online ? "在线" : "离线";
-      const label = `${runner.hostId} · ${device.serial} · ${device.model ?? "未知型号"} · ${
-        device.osVersion ?? "未知系统"
-      } · ${state} · ${device.state}`;
-      options.push(
-        `<option value="${escapeHtml(device.serial)}" data-host="${escapeHtml(runner.hostId)}">${escapeHtml(label)}</option>`
-      );
-    }
-  }
-  return options.join("");
-}
-
-/** 下发测试（web job）：项目级列表 + 表单；无项目时只给项目选择器。 */
 function devicesHref(platform: string, state: string): string {
   const params = new URLSearchParams({ section: "devices" });
   if (platform !== "all") params.set("platform", platform);
@@ -1134,7 +857,7 @@ export function renderDevicesPage(data: DevicesPageData): string {
     total === 0
       ? `<section class="c-empty c-device-empty">
           <h2>还没有设备宿主</h2>
-          <p>下载 MCP runner 到设备宿主，在宿主本机执行 <code>mobile_run_task</code> / <code>suite run</code>；或只暴露 adb（adb-host）由中心直连。Maestro runner 已移除。</p>
+          <p>下载 MCP runner 到设备宿主，在宿主本机执行 <code>mobile_run_task</code> / <code>suite run</code>；或只暴露 adb（adb-host）由中心直连。</p>
           <div class="c-empty-action">
             <a class="c-button c-button-primary" href="#runner-download">下载 MCP runner / adb-host</a>
             <details class="c-device-help">
@@ -1181,14 +904,13 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
         <a class="c-button" href="/panel/runner-bundle?role=adb-host&amp;platform=win32&amp;arch=x64" download>Windows adb-host（约 8MB）</a>
         <a class="c-button" href="/panel/runner-bundle?role=adb-host&amp;platform=darwin&amp;arch=arm64" download>macOS adb-host（约 16MB）</a>
       </div>
-      <p class="c-card-subtitle c-card-subtitle-tight">Maestro runner 已移除；历史 Web 任务/设备记录只读保留。</p>
       <a class="c-button" href="/panel/runner-toolchain">单独下载 platform-tools / 依赖工具</a>
     </section>
     <section class="c-card" id="ios-device-guide" aria-label="iOS 设备接入说明">
       <h2 class="c-card-title">iOS 设备</h2>
       <p class="c-card-subtitle"><strong>iOS 模拟器</strong>：在 macOS MCP runner 所在机器上（simctl/idb）；下载 macOS MCP runner，启动模拟器后把 UDID 传给 <code>mobile_run_task</code>。</p>
       <p class="c-card-subtitle"><strong>iOS 真机</strong>：iPhone 必须连接 Mac，不能插 Windows；在 macOS MCP runner 上运行 Appium/WDA，配 <code>AOS_IOS_XCODE_ORG_ID</code>（必填）与 <code>AOS_APPIUM_URL</code>（可选），iOS 18+ 保持 Remote XPC 隧道。用 <code>mobile_run_task</code> 执行。</p>
-      <p class="c-card-subtitle">iOS 不使用 adb-host；<strong>Maestro 已移除</strong>。签名/隧道细节见 README「iOS 真机」。</p>
+      <p class="c-card-subtitle">iOS 不使用 adb-host。签名/隧道细节见 README「iOS 真机」。</p>
     </section>
     <section class="c-card">
       <h2 class="c-card-title">状态口径</h2>
@@ -1204,7 +926,7 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
     <div class="c-page-head">
       <div>
         <h1>设备</h1>
-        <p class="c-page-lede">Android 走 MCP runner（Windows）/ 本机 adb，iOS 走 macOS MCP runner（模拟器 simctl/idb、真机 Appium/WDA）；Maestro 已移除。</p>
+        <p class="c-page-lede">Android 走 MCP runner（Windows）/ 本机 adb，iOS 走 macOS MCP runner（模拟器 simctl/idb、真机 Appium/WDA）。</p>
       </div>
       <div class="c-page-actions">
         <a class="c-button" href="${escapeHtml(devicesHref(data.platform, data.filter))}">刷新</a>
@@ -1229,520 +951,6 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
     body,
     capabilities: data.capabilities,
     storeHealth: data.storeHealth
-  });
-}
-
-export function renderWebJobsPage(data: WebJobsPageData): string {
-  const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
-  const role = data.capabilities?.role;
-  const roleAllowed =
-    role === undefined || role === "dispatcher" || role === "maintainer" || role === "admin";
-  const archived = data.projectStatus === "archived";
-  const actionsOff = archived || data.capabilities?.actions === false || !roleAllowed;
-  const disabledAttr = actionsOff ? " disabled" : "";
-  const actionsReason = archived
-    ? '<p class="muted">项目已归档（archived）：禁止下发；可继续查看历史任务。</p>'
-    : actionsOff
-      ? `<p class="muted">写动作需要 dispatcher 及以上角色（当前角色 ${escapeHtml(
-          role ?? "未知"
-        )}）；viewer 只读。</p>`
-      : "";
-
-  if (data.rootPath === "") {
-    const choices = data.projectChoices;
-    return renderConsoleShell({
-      title: "下发测试",
-      active: "dispatch",
-      body: [
-        "<h1>下发测试</h1>",
-        cEmpty({
-          title: "选择项目",
-          body:
-            choices.length === 0
-              ? "还没有可选项目：先在运维页创建/接入项目后回到这里下发。"
-              : "下发测试按项目隔离（Excel/安装包/执行机配置都属于项目）：先选择一个项目。",
-          action:
-            choices.length === 0
-              ? '<a class="c-button" href="/panel">← 多项目总览</a>'
-              : cTable({
-                  columns: ["项目", "路径", "主机"],
-                  rows: choices.map((choice) => [
-                    `<a href="${escapeHtml(webCreateHref(choice.rootPath, data.hostId ?? choice.hostId))}"><code>${escapeHtml(
-                      choice.name
-                    )}</code></a>`,
-                    `<code>${escapeHtml(choice.rootPath)}</code>`,
-                    choice.hostId === null ? "—" : `<code>${escapeHtml(choice.hostId)}</code>`
-                  ]),
-                  caption: "可选项目",
-                  empty: "暂无可下发项目"
-                })
-        })
-      ].join("\n")
-    });
-  }
-
-  const rows = data.jobs.map((entry) => {
-    const detailHref = webTaskHref(data.rootPath, entry.task.id, data.hostId ?? null);
-    const gate = entry.result?.gate;
-    const resultCell =
-      gate === undefined
-        ? '<span class="muted">尚无结果</span>'
-        : cBadge({
-            label: `${gate.passed}/${gate.total} 通过${
-              (gate.unverified ?? 0) > 0 ? ` / 未验证 ${gate.unverified}` : ""
-            }`,
-            tone: gate.result === "passed" ? "success" : gate.result === "partial" ? "warning" : "error"
-          });
-    const binding = jobBinding(entry.task, entry.spec);
-    const host = binding.hostId ?? "—";
-    return [
-      `<a href="${escapeHtml(detailHref)}"><code>${escapeHtml(entry.task.id)}</code></a>`,
-      cBadge({
-        label: webJobStatusLabel(entry.task.status),
-        tone: webJobStatusTone(entry.task.status),
-        title: entry.task.status
-      }),
-      jobBindingCell(entry),
-      jobDeviceCell(entry, data.runners),
-      entry.spec === null
-        ? '<span class="muted">规格损坏</span>'
-        : escapeHtml(entry.spec.executionMode === "llm" ? "LLM" : "Maestro"),
-      entry.spec === null
-        ? "—"
-        : escapeHtml(
-            entry.spec.assetSnapshot.find((asset) => asset.kind === "package")?.filename ??
-              entry.spec.packageAssetId
-          ),
-      `<span title="${escapeHtml(entry.task.createdAt)}">${relativeTime(entry.task.createdAt)}</span>`,
-      resultCell,
-      `<span class="muted">${escapeHtml(host)}</span>`
-    ];
-  });
-
-  const hostOptions = data.runners
-    .map(
-      (runner) =>
-        `<option value="${escapeHtml(runner.hostId)}">${escapeHtml(runner.hostId)} · ${escapeHtml(
-          runner.hostname
-        )}（${runner.devices.length} 台设备 · ${
-          isRunnerOnline(runner.lastSeenAt, data.nowMs, data.runnerTtlMs) ? "在线" : "离线"
-        }）</option>`
-    )
-    .join("");
-  const excelAssetsHref = `/panel?project=${encodeURIComponent(
-    data.rootPath
-  )}&section=assets&tab=excel&kind=excel${hostQuery}#asset-upload`;
-  const excelHint =
-    data.assets.some((asset) => asset.kind === "excel")
-      ? ""
-      : `<p class="muted">还没有 Excel 资产：<a class="c-button" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=assets&amp;tab=excel&amp;kind=excel${hostQuery.replace(/&/g, "&amp;")}#asset-upload">去测试资产上传 .xlsx/.csv</a> 上传后回到本页刷新。这里是 Web 测试资产，不是用例库导入的套件用例。</p>`;
-  const packageAssetsHref = `/panel?project=${encodeURIComponent(
-    data.rootPath
-  )}&section=assets&tab=packages&kind=package${hostQuery}#asset-upload`;
-  const materialsAssetsHref = `/panel?project=${encodeURIComponent(
-    data.rootPath
-  )}&section=assets&tab=materials&kind=materials${hostQuery}#asset-upload`;
-  const referenceAssetsHref = `/panel?project=${encodeURIComponent(
-    data.rootPath
-  )}&section=assets&tab=reference&kind=reference${hostQuery}#asset-upload`;
-  const packageHint =
-    data.assets.some((asset) => asset.kind === "package")
-      ? ""
-      : `<p class="muted">还没有安装包资产：<a class="c-button" href="${escapeHtml(
-          packageAssetsHref
-        )}">去测试资产上传 .apk/.ipa</a> 上传后回到本页刷新。</p>`;
-  const gatewayReady = data.runners.filter(
-    (runner) => runner.gateway?.ready === true && runner.gateway.adbServer !== null
-  ).length;
-  const maestroWebDisabled = true;
-  const form = maestroWebDisabled
-    ? [
-        `<div class="c-banner c-banner-warn" role="status"><strong>Maestro 网页测试已移除</strong>：本页只保留历史任务，不能再新建。下发任务请用「套件回归」。</div>`
-      ].join("\n")
-    : [
-    `<div class="c-banner c-banner-warn" role="status"><strong>Android 新接入请走 MCP 原生</strong>：用 <code>run_regression</code> / <code>mobile_run_task</code>；本页「网页测试 / Maestro」仅保留 legacy 兼容。只做 MCP 原生时不需要下载 runner 包。</div>`,
-    `<form id="web-job-form" class="c-form" role="group" aria-label="下发参数" data-project="${escapeHtml(data.rootPath)}">`,
-    `<p><label>执行方式 <select id="web-job-mode" name="executionMode" aria-label="执行方式"${disabledAttr}>`,
-    '<option value="maestro">Maestro 脚本</option>',
-    '<option value="llm">LLM 执行（中心 worker）</option>',
-    "</select></label> ",
-    `<label>平台 <select id="web-job-platform" name="platform" aria-label="平台"${disabledAttr}>`,
-    '<option value="android">Android</option>',
-    '<option value="ios">iOS</option>',
-    "</select></label> ",
-    `<label>设备类型 <select id="web-job-kind" name="deviceKind" aria-label="设备类型"${disabledAttr}>`,
-    '<option value="any">不限</option>',
-    '<option value="device">真机</option>',
-    '<option value="simulator">模拟器</option>',
-    "</select></label></p>",
-    `<p class="muted" id="web-job-gateway-hint">LLM 由中心 web llm-worker 执行；设备网关 ready <strong>${gatewayReady}</strong>/${data.runners.length}${
-      gatewayReady === 0
-        ? "（无 ready 网关：LLM 任务会等待或拒绝；请先启动 runner 的 AOS_GATEWAY_SSH_TARGET）"
-        : ""
-    }</p>`,
-    `<p><label>Excel 用例 <select id="web-job-excel" name="excelAssetId" aria-label="Excel 用例资产"${disabledAttr}>${assetOptions(
-      data.assets,
-      "excel",
-      "暂无 Excel 资产（先到测试资产上传 .xlsx）"
-    )}</select></label> <a class="c-button" href="${escapeHtml(
-      excelAssetsHref
-    )}">上传新 Excel</a> ` +
-      `<label>安装包 <select id="web-job-package" name="packageAssetId" aria-label="安装包资产"${disabledAttr}>${assetOptions(
-        data.assets,
-        "package",
-        "暂无安装包资产"
-      )}</select></label> <a class="c-button" href="${escapeHtml(
-        packageAssetsHref
-      )}">上传新安装包</a></p>`,
-    excelHint,
-    packageHint,
-    `<p><label>测试资料 <select id="web-job-materials" name="materialsAssetId" aria-label="测试资料资产"${disabledAttr}>${assetOptionsWithPlaceholder(
-      data.assets,
-      "materials",
-      "不指定"
-    )}</select></label> <a class="c-button" href="${escapeHtml(
-      materialsAssetsHref
-    )}">上传测试资料</a> ` +
-      `<label>脚本集 <select id="web-job-scripts" name="scriptSetId" aria-label="脚本集资产"${disabledAttr}>${assetOptionsWithPlaceholder(
-        data.assets,
-        "scripts",
-        "不指定"
-      )}</select></label> <span class="muted">不指定时下发自动生成（规则解析；未识别步骤标 UNVERIFIED）</span></p>`,
-    `<p><label>参考图（可选，L2） <select id="web-job-reference" name="referenceAssetId" aria-label="参考图资产"${disabledAttr}>${assetOptionsWithPlaceholder(
-      data.assets,
-      "reference",
-      "不指定"
-    )}</select></label> <a class="c-button" href="${escapeHtml(
-      referenceAssetsHref
-    )}">上传参考图</a> <span class="muted">用于 L2 参照物；不上传则仅 L1 文本检查。</span></p>`,
-    `<p><label>用例范围（模块，逗号分隔） <input id="web-job-case-modules" name="caseModules" aria-label="用例范围（模块）" placeholder="登录、支付"${disabledAttr}></label> ` +
-      `<label>用例 ID（逗号分隔） <input id="web-job-case-ids" name="caseIds" aria-label="用例范围（用例 ID）" placeholder="TC-001,TC-002"${disabledAttr}></label></p>`,
-    `<p><button id="web-job-check" class="c-button" type="button"${disabledAttr}>检查匹配</button> ` +
-      `<span id="web-job-check-status" role="status" class="muted">选 Excel/安装包后可检查过滤匹配数与未就绪数。</span></p>`,
-    `<p><label>执行机 <select id="web-job-assignment" name="assignment" aria-label="执行机分配方式"${disabledAttr}>`,
-    '<option value="auto">自动（任意在线执行机）</option>',
-    '<option value="manual">指定执行机</option>',
-    "</select></label> ",
-    `<label>指定主机 <select id="web-job-host" name="targetHostId" aria-label="指定主机"${disabledAttr}><option value="">自动选择</option>${hostOptions}</select></label></p>`,
-    `<p><label>指定设备（可选） <select id="web-job-device" name="deviceSerial" aria-label="指定设备"${disabledAttr}>${runnerDeviceOptions(
-      data.runners,
-      data.leases,
-      data.nowMs,
-      data.runnerTtlMs
-    )}</select></label></p>`,
-    `<p><label>型号偏好 <input id="web-job-model" name="deviceModel" aria-label="型号偏好（逗号分隔）" placeholder="Pixel 7,Galaxy S23"${disabledAttr}></label> ` +
-      `<label>系统版本下限 <input id="web-job-os-min" name="osMin" aria-label="系统版本下限" placeholder="14"${disabledAttr}></label> ` +
-      `<label>系统版本上限 <input id="web-job-os-max" name="osMax" aria-label="系统版本上限" placeholder="15"${disabledAttr}></label></p>`,
-    `<p><label>重试次数 <input id="web-job-retry" name="retry" type="number" min="0" step="1" value="0" aria-label="重试次数"${disabledAttr}></label> ` +
-      `<label>优先级 <input id="web-job-priority" name="priority" type="number" min="0" max="100" step="1" value="0" aria-label="优先级"${disabledAttr}></label></p>`,
-    `<p><label class="c-form-check"><input id="web-job-allow-stale" type="checkbox"${disabledAttr}> 允许旧脚本（allowStaleScript）</label> ` +
-      `<label class="c-form-check"><input id="web-job-allow-partial" type="checkbox" checked${disabledAttr}> 允许部分下发：未就绪用例写 SKIP（不计 PASS）</label> ` +
-      `<label class="c-form-check"><input id="web-job-allow-unverified" type="checkbox"${disabledAttr}> 无预期列也执行（全部 UNVERIFIED）</label> ` +
-      `<label class="c-form-check"><input id="web-job-reference-gate" type="checkbox"${disabledAttr}> 参考图差异时判 UNVERIFIED（L2）</label> ` +
-      `<label class="c-form-check"><input id="web-job-l2-screenshots" type="checkbox"${disabledAttr}> 上传最终截图用于 L2（Maestro）</label></p>`,
-    `<p><button id="web-job-submit" class="c-button c-button-primary" type="submit" data-busy-label="下发中…"${disabledAttr}>下发测试</button> ` +
-      `<button id="web-job-preview-submit" class="c-button" type="button"${disabledAttr}>预览选机</button> ` +
-      `<span id="web-job-status" role="status" class="muted"></span></p>`,
-    `<p class="muted">同一台设备同一时刻只允许一个任务（预占租约）；自动选机失败会进入「等待满足要求的执行机」，不是成功。</p>`,
-    `<div id="web-job-preview-result" class="muted" role="status">尚未预览：可先「预览选机」查看候选主机/设备与打分。</div>`,
-    "</form>",
-    actionsReason
-  ].join("\n");
-
-  const script = actionsOff || maestroWebDisabled
-    ? ""
-    : `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function byId(id){return document.getElementById(id);}function value(id){var node=byId(id);return node&&typeof node.value==="string"?node.value.trim():"";}function list(id){var raw=value(id);return raw===""?[]:raw.split(",").map(function(part){return part.trim();}).filter(function(part){return part!=="";});}var form=byId("web-job-form");var status=byId("web-job-status");var busy=byId("web-job-submit");function setBusy(on){if(!busy)return;if(on){if(!busy.dataset.idleLabel)busy.dataset.idleLabel=busy.textContent;busy.disabled=true;busy.textContent=busy.dataset.busyLabel||"下发中…";}else{busy.disabled=false;busy.textContent=busy.dataset.idleLabel||"下发测试";}}function request(url,options){return fetch(url,options).then(function(r){return r.json().then(function(body){return {ok:r.ok,status:r.status,body:body};});});}function payload(){var assignment=value("web-job-assignment")==="manual"?"manual":"auto";var out={project:root,assignment:assignment,executionMode:value("web-job-mode")||"maestro",excelAssetId:value("web-job-excel"),packageAssetId:value("web-job-package"),requirements:{platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"},caseFilter:{modules:list("web-job-case-modules"),caseIds:list("web-job-case-ids")}};if(host)out.host=host;var materials=value("web-job-materials");if(materials!=="")out.materialsAssetId=materials;var reference=value("web-job-reference");if(reference!=="")out.referenceAssetId=reference;var scripts=value("web-job-scripts");if(scripts!=="")out.scriptSetId=scripts;if(byId("web-job-allow-stale")&&byId("web-job-allow-stale").checked)out.allowStaleScript=true;var partialNode=byId("web-job-allow-partial");if(partialNode)out.allowPartialUnresolved=partialNode.checked;var unverifiedNode=byId("web-job-allow-unverified");if(unverifiedNode)out.allowUnverified=unverifiedNode.checked;var refGateNode=byId("web-job-reference-gate");if(refGateNode&&refGateNode.checked)out.referenceGate="unverified";var l2ShotsNode=byId("web-job-l2-screenshots");if(l2ShotsNode&&l2ShotsNode.checked)out.l2Screenshots=true;var models=list("web-job-model");if(models.length>0)out.requirements.deviceModel=models;var min=value("web-job-os-min");var max=value("web-job-os-max");if(min!==""||max!==""){out.requirements.osVersion={};if(min!=="")out.requirements.osVersion.min=min;if(max!=="")out.requirements.osVersion.max=max;}if(assignment==="manual"){out.targetHostId=value("web-job-host");var serial=value("web-job-device");if(serial!=="")out.deviceSerial=serial;}var retry=value("web-job-retry");if(retry!=="")out.retry=Number(retry);var priority=value("web-job-priority");if(priority!=="")out.priority=Number(priority);return out;}function checkMatches(){var target=byId("web-job-check-status");if(!target)return;var excel=value("web-job-excel");var pkg=value("web-job-package");if(!excel||!pkg){target.textContent="先选择 Excel 和安装包";return;}var params=new URLSearchParams({project:root,excelAssetId:excel,packageAssetId:pkg,platform:value("web-job-platform")||"android"});var modules=value("web-job-case-modules");if(modules!=="")params.set("caseModules",modules);var ids=value("web-job-case-ids");if(ids!=="")params.set("caseIds",ids);if(host)params.set("host",host);target.textContent="检查中…";request("/panel/api/jobs/script-preview?"+params.toString(),{headers:{"X-AOS-Console":"1"}}).then(function(res){if(res.ok&&res.body&&res.body.ok){var b=res.body;target.textContent="匹配 "+b.matched+" 条：可执行 "+b.runnable+"（完整 "+b.ready+" / 部分 "+b.partial+"）/ 未就绪 "+b.unresolved+(b.unresolved>0?"（将 SKIP）":"")+(b.matched===0?"；请检查模块/用例 ID":"");return;}target.textContent="检查失败："+((res.body&&res.body.error)||res.status);}).catch(function(err){target.textContent="检查失败："+err;});}function preview(){var target=byId("web-job-preview-result");if(!target)return;var params=new URLSearchParams({project:root,assignment:value("web-job-assignment")==="manual"?"manual":"auto",platform:value("web-job-platform")||"android",deviceKind:value("web-job-kind")||"any"});if(host)params.set("host",host);var models=value("web-job-model");if(models!=="")params.set("deviceModel",models);var min=value("web-job-os-min");if(min!=="")params.set("osMin",min);var max=value("web-job-os-max");if(max!=="")params.set("osMax",max);if(value("web-job-assignment")==="manual"){var targetHost=value("web-job-host");if(targetHost!=="")params.set("targetHostId",targetHost);var serial=value("web-job-device");if(serial!=="")params.set("deviceSerial",serial);}target.textContent="预览中…";request("/panel/api/jobs/preview?"+params.toString(),{headers:{"X-AOS-Console":"1"}}).then(function(res){if(res.ok&&res.body&&res.body.selection){var pick=res.body.selection;target.textContent="可选："+pick.hostId+" / "+pick.deviceSerial+"（分数 "+pick.score+"）";}else{target.textContent="无可用执行机："+((res.body&&res.body.message)||res.status);}}).catch(function(err){target.textContent="预览失败："+err;});}var previewBtn=byId("web-job-preview-submit");if(previewBtn)previewBtn.addEventListener("click",preview);var checkBtn=byId("web-job-check");if(checkBtn)checkBtn.addEventListener("click",checkMatches);["web-job-assignment","web-job-host","web-job-device","web-job-platform","web-job-kind","web-job-model","web-job-os-min","web-job-os-max"].forEach(function(id){var node=byId(id);if(node)node.addEventListener("change",preview);});if(form){form.addEventListener("submit",function(event){event.preventDefault();var out=payload();setBusy(true);request("/panel/api/jobs",{method:"POST",headers:{"Content-Type":"application/json","X-AOS-Console":"1"},body:JSON.stringify(out)}).then(function(res){if(res.ok&&res.body&&res.body.ok){window.aosFlash&&window.aosFlash("已下发："+((res.body&&res.body.message)||res.body.status));location.href="/panel?project="+encodeURIComponent(root)+"&section=tasks&task="+encodeURIComponent(res.body.job.id)+(host?"&host="+encodeURIComponent(host):"");return;}setBusy(false);if(status)status.textContent="下发失败："+((res.body&&res.body.error)||res.status);}).catch(function(err){setBusy(false);if(status)status.textContent="下发失败："+err;});});}})();</script>`;
-
-  const createHref = `/panel?project=${encodeURIComponent(data.rootPath)}&section=create${hostQuery}`;
-  const suiteHref = `/panel?project=${encodeURIComponent(data.rootPath)}&section=create&type=suite${hostQuery}`;
-  const embedded = data.embeddedCreate === true;
-  const flowSwitch = embedded
-    ? `<nav class="c-flow-switch" aria-label="新建测试类型"><a class="c-flow-option" href="${escapeHtml(
-        createHref
-      )}">新建测试</a><a class="c-flow-option" href="${escapeHtml(
-        suiteHref
-      )}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试历史</span></nav>`
-    : `<nav class="c-flow-switch" aria-label="下发类型"><a class="c-flow-option" href="/panel?project=${encodeURIComponent(data.rootPath)}&amp;section=create&amp;type=suite${hostQuery.replace(/&/g, "&amp;")}">套件回归</a><span class="c-flow-option is-active" aria-current="page">网页测试历史</span></nav>`;
-  return renderConsoleShell({
-    title: embedded ? "新建测试 · 网页测试历史" : "网页测试历史（只读）",
-    active: "create",
-    meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
-    project: data.rootPath,
-    projectHostId: data.hostId ?? null,
-    capabilities: data.capabilities,
-    storeHealth: data.storeHealth,
-    body: [
-      "<h1>网页测试历史</h1>",
-      flowSwitch,
-      archived ? `<p>${cBadge({ label: "已归档", tone: "warning" })} 归档项目只读。</p>` : "",
-      `<p class="muted">这里只保留 Maestro 历史任务和结果。要下发任务请用 <a class="c-button c-button-primary" href="${escapeHtml(
-        suiteHref
-      )}">套件回归</a></p>`,
-      cCard({
-        title: "说明",
-        subtitle: "Maestro 网页测试已移除；历史记录只读",
-        body: form
-      }),
-      cCard({
-        title: "任务列表",
-        subtitle: `共 ${data.jobs.length} 条（新→旧；仅列 Web 任务）`,
-        body: cTable({
-          columns: ["任务", "状态", "执行机与设备", "设备型号/系统", "执行方式", "安装包", "创建", "结果", "主机"],
-          rows,
-          caption: "Web 任务列表",
-          empty: "尚无 Web 任务记录"
-        })
-      }),
-      script
-    ].join("\n")
-  });
-}
-
-/** 单条 Web 任务详情：只展示已持久化的事实（result.json 不存在时明确「尚无结果」）。 */
-/** 单例人工状态选择器；保存动作由页面底部脚本统一绑定。 */
-function manualStatusCell(
-  entry: WebJobResultDocument["execution"]["cases"][number]
-): string {
-  const current = entry.manualStatus?.status ?? "";
-  const options = [
-    ["", "自动"],
-    ["NOT_IMPL", "未实现"],
-    ["BLOCKED", "阻塞"]
-  ]
-    .map(
-      ([value, label]) =>
-        `<option value="${value}"${value === current ? " selected" : ""}>${label}</option>`
-    )
-    .join("");
-  return `<select data-manual-status="${escapeHtml(entry.caseId)}" aria-label="人工状态">${options}</select>`;
-}
-
-export function renderWebJobPage(data: WebJobPageData): string {
-  const hostQuery = data.hostId ? `&host=${encodeURIComponent(data.hostId)}` : "";
-  const result = data.result;
-  const gate = result?.gate;
-  const cases = Array.isArray(result?.execution?.cases) ? result.execution.cases : [];
-  const canManualStatus =
-    data.capabilities?.actions !== false && data.capabilities?.scopes?.verdicts !== false;
-  const caseRows = cases.map((entry) => {
-    const effective = entry.manualStatus?.status ?? entry.status;
-    const effectiveLabel =
-      effective === "NOT_IMPL" ? "未实现" : effective === "BLOCKED" ? "阻塞" : effective;
-    const row = [
-      `<code>${escapeHtml(entry.caseId)}</code>`,
-      escapeHtml(entry.name),
-      cBadge({
-        label: effectiveLabel,
-        tone:
-          effective === "PASS"
-            ? "success"
-            : effective === "SKIP" || effective === "UNVERIFIED"
-              ? "warning"
-              : effective === "NOT_IMPL" || effective === "BLOCKED"
-                ? "warning"
-                : "error",
-        title: entry.manualStatus?.reason === undefined ? undefined : entry.manualStatus.reason
-      }),
-      entry.reference === undefined
-        ? "—"
-        : cBadge({
-            label:
-              entry.reference.status === "passed"
-                ? "L2 通过"
-                : entry.reference.status === "failed"
-                  ? `L2 差异${entry.reference.regions === undefined ? "" : ` ${entry.reference.regions}`}`
-                  : entry.reference.status === "missing"
-                    ? "L2 缺参考"
-                    : "L2 未验证",
-            tone:
-              entry.reference.status === "passed"
-                ? "success"
-                : entry.reference.status === "failed"
-                  ? "error"
-                  : entry.reference.status === "missing"
-                    ? "neutral"
-                    : "warning",
-            title: entry.reference.reason
-          }),
-      entry.durationMs === undefined ? "—" : `${entry.durationMs} ms`,
-      entry.failureReason === undefined
-        ? entry.failureStep === undefined
-          ? "—"
-          : escapeHtml(entry.failureStep)
-        : `${escapeHtml(entry.failureStep ?? "")}${
-            entry.failureStep === undefined ? "" : "："
-          }${escapeHtml(entry.failureReason)}`,
-      entry.traceId === undefined ? "—" : `<code>${escapeHtml(entry.traceId)}</code>`
-    ];
-    if (canManualStatus) row.push(manualStatusCell(entry));
-    return row;
-  });
-  const evidence = Array.isArray(result?.evidence) ? result.evidence : [];
-  const evidenceHtml =
-    evidence.length === 0
-      ? '<span class="muted">—</span>'
-      : `<ul>${evidence
-          .map((entry) => {
-            const label = escapeHtml(entry);
-            if (/^[a-z]+:\/\//i.test(entry)) return `<li><code>${label}</code></li>`;
-            const href = `/panel/artifact?project=${encodeURIComponent(data.rootPath)}&path=${encodeURIComponent(
-              entry
-            )}${hostQuery}`;
-            return `<li><a href="${escapeHtml(href)}"><code>${label}</code></a></li>`;
-          })
-          .join("")}</ul>`;
-  const writebackError =
-    typeof result?.writebackError === "string" ? result.writebackError : null;
-  const writeback =
-    result === null
-      ? '<span class="muted">尚无结果（未写回）</span>'
-      : result.writebackStatus === "written"
-        ? `${cBadge({ label: "已写回", tone: "success" })} ${
-            writebackError === null
-              ? `<span class="muted">${escapeHtml(String(result.writtenCells?.length ?? 0))} 个单元格</span>`
-              : escapeHtml(writebackError)
-          }`
-        : result.writebackStatus === "writeback-failed"
-          ? `${cBadge({ label: "写回失败", tone: "error" })} ${
-              writebackError === null ? "" : escapeHtml(writebackError)
-            }`
-          : cBadge({ label: "待写回", tone: "warning" });
-  const provenance =
-    data.device.source === "result"
-      ? "结果上报"
-      : data.device.source === "inventory"
-        ? "执行机心跳"
-        : "未知";
-  const deviceText =
-    data.device.model === null && data.device.osVersion === null
-      ? `<span class="muted">未知（执行机未上报 · 来源：${provenance}）</span>`
-      : `${escapeHtml(data.device.model ?? "未知型号")} · ${escapeHtml(
-          data.device.osVersion ?? "未知系统"
-        )} <span class="muted">（来源：${provenance}）</span>`;
-  const resultPackage = result?.package;
-  const packageText =
-    resultPackage !== undefined && resultPackage !== null
-      ? `${escapeHtml(String(resultPackage.name ?? "—"))} ${escapeHtml(
-          String(resultPackage.version ?? "")
-        )} · <code>${escapeHtml(String(resultPackage.filename ?? "—"))}</code>`
-      : data.spec === null
-        ? '<span class="muted">—</span>'
-        : (() => {
-            const snapshot = data.spec.assetSnapshot.find((asset) => asset.kind === "package");
-            return `<code>${escapeHtml(snapshot?.filename ?? data.spec.packageAssetId)}</code>`;
-          })();
-  const startedAt = data.task.startedAt ?? result?.startedAt ?? null;
-  const finishedAt = result?.finishedAt ?? null;
-  const warningList = Array.isArray(result?.warnings) ? result.warnings : [];
-  const warnings =
-    warningList.length === 0
-      ? ""
-      : `<ul>${warningList.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`;
-
-  const cloneable =
-    data.capabilities?.actions !== false &&
-    data.capabilities?.scopes?.tasks !== false &&
-    !["pending", "claimed", "running", "stopping"].includes(data.task.status);
-  const cloneScript = cloneable
-    ? `<script>(function(){var button=document.getElementById("web-job-clone");if(!button)return;var project=${JSON.stringify(
-        data.rootPath
-      ).replace(/</g, "\\u003c")};var taskId=${JSON.stringify(data.task.id).replace(
-        /</g,
-        "\\u003c"
-      )};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};function run(){button.disabled=true;fetch("/panel/api/jobs/clone",{method:"POST",headers:{"Content-Type":"application/json","X-AOS-Console":"1"},body:JSON.stringify({project:project,taskId:taskId,host:host})}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(!res.ok||res.j.ok===false){throw new Error((res.j&&res.j.error)||("HTTP "+res.status));}var jobId=res.j.job&&res.j.job.id?res.j.job.id:(res.j.task&&res.j.task.id?res.j.task.id:"");if(window.aosFlash){window.aosFlash("已重新下发网页测试 "+jobId+" · 已写入审计");}location.href="/panel?project="+encodeURIComponent(project)+"&section=tasks&task="+encodeURIComponent(jobId)+(host?"&host="+encodeURIComponent(host):"");}).catch(function(err){button.disabled=false;if(window.aosFlash){window.aosFlash("重新下发失败："+(err&&err.message?err.message:err));}});}button.addEventListener("click",function(){if(window.aosInlineConfirm){window.aosInlineConfirm(button,"确认按原 Excel/安装包/执行方式/设备要求重新下发一个网页测试任务？",run);}else{run();}});})();</script>`
-    : "";
-
-  return renderConsoleShell({
-    title: "网页任务详情",
-    active: "tasks",
-    meta: `项目 <code>${escapeHtml(data.rootLabel)}</code>`,
-    project: data.rootPath,
-    projectHostId: data.hostId ?? null,
-    capabilities: data.capabilities,
-    storeHealth: data.storeHealth,
-    body: [
-      "<h1>网页任务详情</h1>",
-      `<p><a href="/panel?project=${encodeURIComponent(
-        data.rootPath
-      )}&section=tasks${hostQuery}">← 返回任务与结果</a> · 任务 <code>${escapeHtml(
-        data.task.id
-      )}</code>${
-        cloneable
-          ? ' · <button class="c-button c-button-primary" type="button" id="web-job-clone">重新下发网页测试</button>'
-          : ""
-      }</p>`,
-      cloneScript,
-      cCard({
-        title: "概况",
-        body: cTable({
-          columns: ["状态", "执行机与设备", "设备型号/系统", "安装包", "开始", "结束", "结果门禁", "写回"],
-          rows: [
-            [
-              `${cBadge({
-                label: webJobStatusLabel(data.task.status),
-                tone: webJobStatusTone(data.task.status),
-                title: data.task.status
-              })}${
-                gate === undefined
-                  ? ""
-                  : ` ${cBadge({
-                      label: `结果 ${gate.passed}/${gate.total}`,
-                      tone: gate.result === "passed" ? "success" : gate.result === "partial" ? "warning" : "error"
-                    })}`
-              }`,
-              jobBindingCell({ task: data.task, spec: data.spec, result }),
-              `${deviceText}${
-                data.device.serial === null ? "" : ` · <code>${escapeHtml(data.device.serial)}</code>`
-              }`,
-              packageText,
-              startedAt === null
-                ? '<span class="muted">—</span>'
-                : `<span title="${escapeHtml(startedAt)}">${relativeTime(startedAt)}</span>`,
-              finishedAt === null
-                ? '<span class="muted">—</span>'
-                : `<span title="${escapeHtml(finishedAt)}">${relativeTime(finishedAt)}</span>`,
-              gate === undefined
-                ? '<span class="muted">尚无结果</span>'
-                : `${escapeHtml(gate.result)}（通过 ${gate.passed} / 失败 ${gate.failed} / 错误 ${gate.errors} / 跳过 ${gate.skipped}${
-                    (gate.unverified ?? 0) > 0 ? ` / 未验证 ${gate.unverified}` : ""
-                  }${(gate.notImplemented ?? 0) > 0 ? ` / 未实现 ${gate.notImplemented}` : ""}${
-                    (gate.blocked ?? 0) > 0 ? ` / 阻塞 ${gate.blocked}` : ""
-                  }）`,
-              writeback
-            ]
-          ],
-          caption: "任务概况",
-          empty: "—"
-        })
-      }),
-      cCard({
-        title: "逐用例结果",
-        subtitle:
-          result === null
-            ? "尚无结果（等执行机上传 result.json）"
-            : `结果接收于 ${result.receivedAt} · 共 ${cases.length} 条`,
-        body:
-          result === null
-            ? '<p id="job-result-empty" class="muted">尚无结果：执行机上传前不展示逐用例结果，也不虚构设备/包信息。</p>'
-            : cTable({
-                columns: canManualStatus
-                  ? ["用例", "名称", "结果", "参考图", "耗时", "失败信息", "trace", "人工状态"]
-                  : ["用例", "名称", "结果", "参考图", "耗时", "失败信息", "trace"],
-                rows: caseRows,
-                caption: "逐用例结果",
-                empty: "结果中没有用例"
-              })
-      }),
-      cCard({
-        title: "证据与写回",
-        body: [
-          `<p><strong>证据</strong>：${evidenceHtml}</p>`,
-          `<p><strong>写回</strong>：${writeback}</p>`,
-          warnings === "" ? "" : `<p><strong>告警</strong>：</p>${warnings}`
-        ].join("\n")
-      }),
-      `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};var host=${JSON.stringify(data.hostId ?? null).replace(/</g, "\\u003c")};var job=${JSON.stringify(data.task.id).replace(/</g, "\\u003c")};document.querySelectorAll("select[data-manual-status]").forEach(function(node){node.addEventListener("change",function(){var status=node.value;var reason=status===""?"":(window.prompt("原因（可选）","")||"");var body={project:root,status:status,reason:reason};if(host)body.host=host;fetch("/panel/api/jobs/"+encodeURIComponent(job)+"/cases/"+encodeURIComponent(node.getAttribute("data-manual-status"))+"/status",{method:"POST",headers:{"Content-Type":"application/json","X-AOS-Console":"1"},body:JSON.stringify(body)}).then(function(response){return response.json().then(function(payload){if(!response.ok)throw new Error((payload&&payload.error)||response.status);location.reload();});}).catch(function(error){window.alert("人工状态保存失败："+error);node.value=node.getAttribute("data-current")||"";});});node.setAttribute("data-current",node.value);});})();</script>`
-    ].join("\n")
   });
 }
 

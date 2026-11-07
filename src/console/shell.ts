@@ -12,7 +12,6 @@ export type ConsoleNavKey =
   | "review"
   | "stats"
   | "dispatch"
-  | "jobs"
   | "assets"
   | "create"
   | "devices"
@@ -101,7 +100,6 @@ const PROJECT_SCOPED: ReadonlySet<ConsoleNavKey> = new Set([
   "review",
   "stats",
   "dispatch",
-  "jobs",
   "assets",
   "create",
   "library",
