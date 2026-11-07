@@ -627,3 +627,72 @@ test("console actions: 安装包 appAssetId 写入任务；非法/平台不匹�
   assert.equal(wrongPlatform.status, 400);
   assert.match(JSON.parse(wrongPlatform.body).error, /Android/);
 });
+
+test("console actions: 跨机 runner 主机可在中心项目上下发", async () => {
+  const { deps, rootPath, store } = await setup();
+  await store.upsertHost({
+    id: "win-runner-01",
+    hostname: "CN2368578W1",
+    kind: "pc",
+    osPlatform: "win32",
+    capabilities: ["android"],
+    runnerSeenAt: new Date().toISOString(),
+    clientSeenAt: new Date().toISOString()
+  });
+  await store.upsertRunner({
+    rootPath,
+    name: "win-runner-01",
+    hostname: "CN2368578W1",
+    platforms: ["android"],
+    devices: [
+      {
+        serial: "10CF6609P900059",
+        name: "V2453A",
+        model: "V2453A",
+        osVersion: "16",
+        platform: "android",
+        kind: "device",
+        state: "device"
+      }
+    ],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false, maestro: false, devicectl: false },
+    hostId: "win-runner-01",
+    instanceId: "inst-win",
+    lastSeenAt: new Date().toISOString()
+  });
+  const set = await store.recordCaseSet({
+    rootPath,
+    source: "figma:x",
+    basename: "登录回归",
+    features: [
+      { key: "f-1", name: "登录", caseCount: 1, screens: [], jsonPath: "/x/a.json", mdPath: "/x/a.md", xlsxPath: "/x/a.xlsx" }
+    ]
+  });
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: set.id,
+    platforms: "android",
+    host: "win-runner-01"
+  });
+  const preview = await computeDispatchPreview({ store, env: {} }, rootPath, params);
+  assert.equal(preview.hostBlocked, false);
+  assert.match(preview.warnings.join(" "), /跨机 runner/);
+  assert.equal(preview.projects[0]?.rootPath, rootPath);
+  assert.deepEqual(preview.runnerCandidates[0]?.devices.map((d) => d.serial), ["10CF6609P900059"]);
+
+  const response = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: set.id,
+      platforms: ["android"],
+      host: "win-runner-01",
+      previewId: dispatchPreviewId(preview, dispatchFormSignature(params), rootPath)
+    }),
+    deps
+  );
+  assert.equal(response.status, 200);
+  const task = JSON.parse(response.body).task;
+  assert.equal(task.targetHostId, "win-runner-01");
+  assert.equal((await store.getRegressionTask(rootPath, task.id))?.id, task.id);
+});

@@ -80,7 +80,8 @@ import {
   type PanelReviewItem,
   type PanelStandaloneRow,
   type PanelStatsView,
-  type PanelTaskDetail
+  type PanelTaskDetail,
+  type PanelTaskRunView
 } from "./overview.js";
 import { PANEL_IOS_PROBE_TTL_MS, type PanelDeepProbe } from "./deep.js";
 import {
@@ -261,6 +262,9 @@ type PanelView =
       filter: string;
       platform: string;
       nowMs: number;
+      rootPath: string | null;
+      hostId: string | null;
+      rootLabel: string | null;
     }
   | {
       kind: "archive";
@@ -521,6 +525,16 @@ function resolveWorkspaceKey(
 async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
   const nowMs = deps.now?.() ?? Date.now();
   const runnerTtlMs = runnerTtlFrom(deps.env ?? process.env);
+  const projectKey = trimmed(url.searchParams.get("project"));
+  const projectHost = trimmed(url.searchParams.get("host"));
+  let resolvedProject: Awaited<ReturnType<typeof resolveProjectKey>> = null;
+  if (projectKey !== null) {
+    try {
+      resolvedProject = await resolveProjectKey(deps, projectKey, projectHost ?? undefined);
+    } catch {
+      resolvedProject = null;
+    }
+  }
   const [projects, leases] = await Promise.all([
     deps.store.listProjects().catch(() => []),
     deps.store.listDeviceLeases().catch(() => [])
@@ -624,7 +638,10 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
     },
     filter,
     platform,
-    nowMs
+    nowMs,
+    rootPath: resolvedProject?.rootPath ?? null,
+    hostId: resolvedProject?.hostId ?? null,
+    rootLabel: resolvedProject?.name ?? null
   };
 }
 
@@ -777,7 +794,13 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     const uploadKind =
       uploadKindRaw === "package" || uploadKindRaw === "materials" || uploadKindRaw === "reference"
         ? uploadKindRaw
-        : "excel";
+        : tab === "packages"
+          ? "package"
+          : tab === "materials"
+            ? "materials"
+            : tab === "reference"
+              ? "reference"
+              : "excel";
     return {
       kind: "web-assets",
       rootPath: resolved.rootPath,
@@ -1431,7 +1454,7 @@ function uiCaseCell(ui: PanelBatchDetail["cases"][number]["ui"]): string {
 const LAMP_LABELS: Record<PanelProjectRow["lamp"], string> = {
   red: "阻断",
   yellow: "需关注",
-  green: "健康",
+  green: "可运行",
   gray: "未知"
 };
 
@@ -1651,8 +1674,6 @@ try{
       view.excludedProjects > 0
         ? `<p class="muted">已隐藏 ${view.excludedProjects} 个项目（服务仓库默认隐藏，或由 <code>AOS_PANEL_EXCLUDE_PROJECTS</code> / <code>AOS_PANEL_PROJECTS</code> 指定）；直接项目 URL 仍可访问。</p>`
         : "",
-      renderMachinesSection(view),
-      renderCreateProjectCard(),
       view.projects.length === 0
         ? cEmpty({
             title: "还没有接入项目",
@@ -1672,6 +1693,8 @@ try{
               })
             }).toString()
           ].join("\n"),
+      renderMachinesSection(view),
+      renderCreateProjectCard(),
       view.projects.length === 0 ? "" : '<p id="aos-resume" hidden></p>',
       overviewScript
     ].join("\n")
@@ -1715,12 +1738,13 @@ function renderProjectPulse(detail: PanelProjectDetail, rootPath: string, hostId
       ? ""
       : `<p class="muted">${activeLinks === "" ? "" : `执行中：${activeLinks}`}${activeLinks !== "" && pendingLinks !== "" ? "　" : ""}${pendingLinks === "" ? "" : `待领取：${pendingLinks}`}</p>`;
   const refs = detail.regressionRefs.length;
+  const caseSetCount = new Set(detail.regressionRefs.map((ref) => ref.caseSetId)).size;
   const libraryHref = `/panel?project=${encodeURIComponent(rootPath)}&section=assets&tab=case-sets${hostSuffix(hostId)}`;
   const dispatchHintHtml =
     refs === 0
       ? `<p>先生成或导入用例，再走下发向导。 <a href="${escapeHtml(libraryHref)}">去用例库</a></p>`
       : `<p>${escapeHtml(
-          `当前有 ${refs} 份可引用的用例集；新建任务走下发向导：选来源 → 设参数 → 预览 → 确认。`
+          `当前有 ${caseSetCount} 份用例集、${refs} 个可引用功能；新建任务走下发向导：选来源 → 设参数 → 预览 → 确认。`
         )}</p>`;
   return [
     '<div class="c-stats-row">',
@@ -2448,6 +2472,31 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
             : ` · <a href="${escapeHtml(ref.xlsxUrl)}" target="_blank" rel="noreferrer">xlsx</a>`
         }`
   ]);
+  const runActions = (run: PanelTaskRunView): string => {
+    const links: string[] = [];
+    if (run.manifestPath !== null) {
+      links.push(
+        `<a class="c-button" href="${escapeHtml(
+          batchHref(view.rootPath, path.basename(run.manifestPath), view.hostId)
+        )}">批次</a>`
+      );
+    }
+    links.push(
+      `<a class="c-button" href="/panel?project=${encodeURIComponent(
+        view.rootPath
+      )}&amp;section=archive&amp;kind=trace&amp;q=${encodeURIComponent(run.runId)}${hostSuffix(
+        view.hostId
+      ).replace(/&/g, "&amp;")}">轨迹</a>`
+    );
+    if (run.failed > 0) {
+      links.push(
+        `<a class="c-button" href="/panel?project=${encodeURIComponent(
+          view.rootPath
+        )}&amp;section=tasks&amp;view=review${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">去失败分析</a>`
+      );
+    }
+    return links.join(" ");
+  };
   const runRows = detail.runs.map((run) => [
     escapeHtml(run.platform),
     escapeHtml(run.device ?? "—"),
@@ -2471,6 +2520,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       : run.artifacts.manifestUrl === null
         ? `<code>${escapeHtml(run.manifestPath)}</code>`
         : `<a href="${escapeHtml(run.artifacts.manifestUrl)}" target="_blank" rel="noreferrer"><code>${escapeHtml(run.manifestPath)}</code></a>`,
+    runActions(run),
     relativeTime(run.createdAt)
   ]);
   const crossRows = detail.crossPlatform.map((delta) => [
@@ -2510,10 +2560,10 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       ...(view.flash === undefined
         ? []
         : [
-            `<div class="c-banner c-banner-accent" role="status">已派发任务 <code>${escapeHtml(view.flash)}</code>；已写入审计（<a href="/panel?project=${encodeURIComponent(view.rootPath)}&section=audit${hostSuffix(view.hostId)}">查看审计</a>）。</div>`
+            `<div class="c-banner c-banner-accent" role="status">已派发任务 <code>${escapeHtml(view.flash)}</code>；已写入审计（<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=audit${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">查看审计</a>）。</div>`
           ]),
       "<header>",
-      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a> · <a href="/panel?project=${encodeURIComponent(view.rootPath)}&section=tasks${hostSuffix(view.hostId)}">任务与结果</a></p>`,
+      `<p><a href="/panel">← 多项目总览</a> · <a href="${escapeHtml(projectHref(view.rootPath, view.hostId))}">项目</a> · <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=tasks${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">任务与结果</a></p>`,
       `<h1>任务 <code>${escapeHtml(task.id)}</code></h1>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个设备运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
@@ -2579,7 +2629,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       '<section id="runs">',
       "<h2>设备运行</h2>",
       renderTable(
-        ["端", "设备", "状态", "通过", "失败", "UI", "失败域", "对比", "清单", "时间"],
+        ["端", "设备", "状态", "通过", "失败", "UI", "失败域", "对比", "清单", "操作", "时间"],
         runRows,
         "暂无运行（触发执行见下方指引）"
       ),
@@ -2664,7 +2714,9 @@ function renderReviewPage(view: {
       ? [
           '<section id="queue">',
           "<h2>失败用例</h2>",
-          '<p class="empty">暂无失败用例（最近 10 次运行无失败，或尚无运行记录——完成下发后此处会列出失败用例）</p>',
+          `<p class="empty">暂无失败用例（最近 10 次运行无失败，或尚无运行记录）。 <a class="c-button c-button-primary" href="/panel?project=${encodeURIComponent(
+            view.rootPath
+          )}&amp;section=create&amp;type=suite${hostSuffix(view.hostId).replace(/&/g, "&amp;")}">新建测试</a></p>`,
           "</section>"
         ]
       : [
@@ -2691,7 +2743,7 @@ function renderReviewPage(view: {
           ),
           `<p class="bulk-tools"><button type="button" class="c-button" data-bulk="all"${verdictDisabled}>全选</button> <button type="button" class="c-button" data-bulk="none"${verdictDisabled}>清空</button> <span class="muted">已选 <span id="verdict-count">0</span> 条</span></p>`,
           '<fieldset class="c-fieldset"><legend>裁决（对所选条目批量写入）</legend>',
-          `<label><input type="radio" name="verdict" value="case-defect" checked${verdictDisabled}> 案例问题</label> `,
+          `<label><input type="radio" name="verdict" value="case-defect"${verdictDisabled}> 案例问题</label> `,
           `<label><input type="radio" name="verdict" value="execution-deviation"${verdictDisabled}> 执行偏差</label> `,
           `<label><input type="radio" name="verdict" value="app-defect"${verdictDisabled}> 应用缺陷</label> `,
           `<label><input type="radio" name="verdict" value="uncertain"${verdictDisabled}> 不确定</label>`,
@@ -2705,10 +2757,12 @@ function renderReviewPage(view: {
           "  event.preventDefault();",
           "  var form=event.target;",
           "  var items=Array.prototype.slice.call(form.querySelectorAll('input[name=item]:checked')).map(function(el){var idx=el.value.indexOf('|');return {runId:el.value.slice(0,idx),caseId:el.value.slice(idx+1)};});",
-          "  var verdict=form.querySelector('input[name=verdict]:checked').value;",
+          "  var verdictInput=form.querySelector('input[name=verdict]:checked');",
+          "  var verdict=verdictInput?verdictInput.value:'';",
           "  var note=form.querySelector('input[name=note]').value;",
           "  var status=document.getElementById('verdict-status');",
           "  if(items.length===0){status.textContent='请先勾选至少一条失败用例';return false;}",
+          "  if(verdict===''){status.textContent='请选择裁决结果';return false;}",
           "  status.textContent='提交中…';",
           "  fetch('/panel/api/verdicts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:" +
             rootJson +
@@ -3364,7 +3418,7 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
       "<main>",
       cCard({
         title: "项目对比",
-        body: cTable({
+        body: `<div class="c-table-scroll">${cTable({
           columns: [
             "项目",
             "主机",
@@ -3374,10 +3428,11 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
             "待办（未裁决·未建单·积压·failed）",
             "执行（执行机·定时任务）"
           ],
+          columnWidths: ["16%", "10%", "20%", "12%", "18%", "14%", "10%"],
           rows,
           caption: "项目对比矩阵",
           empty: "暂无项目"
-        })
+        })}</div>`
       }),
       renderFeatureAlignmentSection(view),
       "</main>"
@@ -3760,11 +3815,11 @@ async function loadProjectSwitcher(
   view: PanelView
 ): Promise<NonNullable<ConsoleShellInput["projectSwitcher"]>> {
   const current =
-    view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
       ? null
       : view.rootPath;
   const currentHostId =
-    view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
+    view.kind === "overview" || view.kind === "compare" || view.kind === "search"
       ? null
       : view.hostId;
   const excludeRaw = (deps.env ?? process.env).AOS_PANEL_EXCLUDE_PROJECTS;
@@ -3824,11 +3879,11 @@ function renderPanelHtml(
   currentShell = {
     active: activeForView(view),
     project:
-      view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
+      view.kind === "overview" || view.kind === "compare" || view.kind === "search"
         ? null
         : view.rootPath,
     projectHostId:
-      view.kind === "overview" || view.kind === "compare" || view.kind === "search" || view.kind === "devices"
+      view.kind === "overview" || view.kind === "compare" || view.kind === "search"
         ? null
         : view.hostId,
     capabilities: deps.capabilities,
@@ -3860,6 +3915,9 @@ function renderPanelHtml(
       filter: view.filter,
       platform: view.platform,
       nowMs: view.nowMs,
+      rootPath: view.rootPath,
+      rootLabel: view.rootLabel,
+      hostId: view.hostId,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });

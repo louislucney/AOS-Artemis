@@ -49,7 +49,19 @@ export interface DispatchPreview {
   platforms: ("ios" | "android")[];
   devices: string[];
   baseline: "latest" | "none";
-  runnerCandidates: { id: string; host: string; online: boolean }[];
+  runnerCandidates: {
+    id: string;
+    host: string;
+    hostId: string | null;
+    online: boolean;
+    devices: Array<{
+      serial: string;
+      platform: string;
+      model: string | null;
+      osVersion: string | null;
+      state: string;
+    }>;
+  }[];
   hosts: DispatchHost[];
   selectedHostId: string | null;
   /** 选中主机上已登记的项目（无主机台账时仅当前项目）。 */
@@ -277,7 +289,20 @@ export async function computeDispatchPreview(
     warnings.push(`未知主机「${hostParam}」：请重新选择（可能已下线或未登记）`);
   }
   const targetStore = hostScopedStore(deps, targetHost?.id ?? null);
+  const ownerProject =
+    rootPath === "" ? null : await deps.store.getProjectByPath(rootPath).catch(() => null);
+  let executionRunnerForHost = false;
+  if (targetHost !== null && rootPath !== "") {
+    try {
+      executionRunnerForHost = (await deps.store.listRunners(rootPath)).some(
+        (runner) => (runner.hostId ?? runner.name) === targetHost.id
+      );
+    } catch {
+      executionRunnerForHost = false;
+    }
+  }
   let targetProjectFound = false;
+  let crossRootRunner = false;
   let hostBlocked = hostParam !== "" && targetHost === null;
   if (targetHost !== null) {
     if (rootPath !== "") {
@@ -295,10 +320,17 @@ export async function computeDispatchPreview(
         );
         hostBlocked = true;
       } else if (targetProject === null) {
-        warnings.push(
-          `主机「${targetHost.id}」未登记项目「${rootPath}」：套件回归需要项目目录；请先在目标机接入项目`
-        );
-        hostBlocked = true;
+        if (ownerProject !== null && executionRunnerForHost) {
+          crossRootRunner = true;
+          warnings.push(
+            `执行机「${targetHost.id}」使用中心项目目录执行（跨机 runner），无需在该主机重复登记项目`
+          );
+        } else {
+          warnings.push(
+            `主机「${targetHost.id}」未登记项目「${rootPath}」：套件回归需要项目目录；请先在目标机接入项目`
+          );
+          hostBlocked = true;
+        }
       }
     }
     const precheck = precheckTask(
@@ -333,6 +365,15 @@ export async function computeDispatchPreview(
     } catch {
       projects = [];
     }
+    if (crossRootRunner && ownerProject !== null) {
+      projects = [
+        {
+          hostId: ownerProject.hostId ?? "",
+          rootPath: ownerProject.rootPath,
+          name: ownerProject.name
+        }
+      ];
+    }
     if (projects.length === 0) hostBlocked = true;
     if (rootPath === "" && projects.length > 0) {
       warnings.push("请先选择项目：只给主机时列出该主机上的项目，不自动猜项目");
@@ -360,6 +401,25 @@ export async function computeDispatchPreview(
       capabilities: [...host.capabilities],
       queueDepth: await hostQueueDepth(deps.store, host.id)
     });
+  }
+  if (rootPath !== "") {
+    try {
+      const suiteRunnerHosts = new Set(
+        (await deps.store.listRunners(rootPath)).map((runner) => runner.hostId ?? runner.name)
+      );
+      if (suiteRunnerHosts.size > 0) {
+        const filtered = hosts.filter(
+          (host) =>
+            suiteRunnerHosts.has(host.id) ||
+            host.id === targetHost?.id ||
+            host.id === ownerProject?.hostId
+        );
+        hosts.length = 0;
+        hosts.push(...filtered);
+      }
+    } catch {
+      /* keep all hosts when runner inventory is unreadable */
+    }
   }
   if (targetHost !== null) {
     const index = hosts.findIndex((host) => host.id === targetHost.id);
@@ -500,11 +560,20 @@ export async function computeDispatchPreview(
   const baseline: "latest" | "none" =
     (params.get("baseline") ?? "latest").trim() === "none" ? "none" : "latest";
 
-  const runners = await targetStore.listRunners(rootPath);
+  const runnerStore = crossRootRunner ? deps.store : targetStore;
+  const runners = await runnerStore.listRunners(rootPath).catch(() => []);
   const runnerCandidates = runners.map((runner) => ({
     id: runner.id,
     host: runner.hostname,
-    online: isRunnerOnline(runner.lastSeenAt, now, runnerTtlMs)
+    hostId: runner.hostId ?? null,
+    online: isRunnerOnline(runner.lastSeenAt, now, runnerTtlMs),
+    devices: runner.devices.map((device) => ({
+      serial: device.serial,
+      platform: device.platform,
+      model: device.model ?? null,
+      osVersion: device.osVersion ?? null,
+      state: device.state
+    }))
   }));
 
   return {
@@ -684,6 +753,21 @@ export function renderDispatchPage(view: DispatchView): string {
 
   const runnerOnline = preview.runnerCandidates.some((runner) => runner.online);
   const runnerOnlineCount = preview.runnerCandidates.filter((runner) => runner.online).length;
+  const hostRunner =
+    preview.runnerCandidates.find((runner) => runner.hostId === preview.selectedHostId) ??
+    (preview.runnerCandidates.length === 1 ? preview.runnerCandidates[0] : null);
+  const eligibleDevices = (hostRunner?.devices ?? []).filter((device) =>
+    preview.platforms.includes(device.platform as "android" | "ios")
+  );
+  const deviceSummary =
+    eligibleDevices.length === 0
+      ? "执行机将自动选择设备"
+      : eligibleDevices
+          .map(
+            (device) =>
+              `${device.serial}（${device.platform}${device.model === null ? "" : ` · ${device.model}`}）`
+          )
+          .join("、");
   const previewBody = [
     `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
     `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：尚未引用任何用例集。请选择用例集或输入关键词后点「刷新预览」。</p>`,
@@ -702,12 +786,7 @@ export function renderDispatchPage(view: DispatchView): string {
     }),
     cStat({
       label: "设备",
-      value:
-        preview.devices.length === 0
-          ? runnerOnline
-            ? "执行机自动"
-            : "待执行机领取（当前无在线）"
-          : preview.devices.join("、")
+      value: preview.devices.length > 0 ? preview.devices.join("、") : deviceSummary
     }),
     `</div>`,
     cTable({
@@ -720,9 +799,13 @@ export function renderDispatchPage(view: DispatchView): string {
     runnerOnline
       ? ""
       : `<p class="muted">执行机：无在线（派发后任务将排队，等待执行机上线后领取；可手动执行）。</p>`,
-    preview.devices.length === 0
-      ? `<p class="muted">设备：由在线执行机在领取时确定；最终设备见任务页。</p>`
-      : "",
+    `<p class="muted">设备：${
+      eligibleDevices.length === 0
+        ? "执行机未上报匹配设备；领取时将自动选择，最终设备见任务页。"
+        : `执行机当前可用 ${eligibleDevices
+            .map((device) => `<code>${escapeHtml(device.serial)}</code>`)
+            .join("、")}；任务按端自动选择。`
+    }</p>`,
     warnings,
     `<p><button class="c-button" type="submit">刷新预览</button></p>`
   ].join("\n");
@@ -837,7 +920,10 @@ go.addEventListener('click',function(){
   const confirmBody = actionsOff
     ? `<p><button class="c-button c-button-primary" type="button" disabled title="写动作未启用">确认派发</button> <span class="muted">写动作未启用：独立进程需 <code>AOS_PANEL_ACTIONS=1</code> 且仅 loopback；或使用 HTTP 模式（<code>serve --http</code>）。</span></p>`
     : [
-        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${blockedReason}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（用例集明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
+        `<p><button class="c-button c-button-primary" type="button" id="dispatch-submit"${submitBlocked ? ` disabled title="${escapeHtml(blockedReason)}"` : ""}>确认派发</button> <span class="muted">点击后显示完整摘要（用例集明细 / 端 / 基线 / 优先级 / 执行机），再创建任务。</span></p>`,
+        submitBlocked
+          ? `<p class="note" role="status">当前无法派发：${escapeHtml(blockedReason)}。请按下方提示处理后刷新预览。</p>`
+          : "",
         noProjects
           ? `<p class="note">该主机尚未登记项目：套件回归需要项目目录；请先在该主机接入项目并刷新本页。设备连接状态见 <a href="/panel?section=devices">设备页</a>。</p>`
           : projectMissing
@@ -869,9 +955,8 @@ go.addEventListener('click',function(){
       )}">MCP 原生接入</a></nav>`
     : `<nav class="c-flow-switch" aria-label="下发类型"><span class="c-flow-option is-active" aria-current="page">套件回归</span><a class="c-flow-option" href="${escapeHtml(webJobsHref)}">MCP 原生接入</a></nav>`;
   const installCallout = `<div class="c-flow-callout"><div><strong>要下发安装包（APK/IPA）？</strong><p>在「② 参数」选择安装包即可：执行机领取任务后先安装再跑用例，不要求设备预装；不选时仍按设备已安装处理。</p></div></div>`;
-  const sectionForNav = view.embeddedCreate ? "create&type=suite" : "dispatch";
-  const hostNavScript = `<script id="dispatch-host-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="host"]');if(!select)return;select.addEventListener('change',function(){var project=form.querySelector('select[name="project"]');var params=new URLSearchParams();params.set('section','${sectionForNav}');if(select.value)params.set('host',select.value);if(project&&project.value)params.set('project',project.value);location.href='/panel?'+params.toString();});})();</script>`;
-  const projectNavScript = `<script id="dispatch-project-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams();params.set('project',select.value);params.set('section','${sectionForNav}');if(host&&host.value)params.set('host',host.value);location.href='/panel?'+params.toString();});})();</script>`;
+  const hostNavScript = `<script id="dispatch-host-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="host"]');if(!select)return;select.addEventListener('change',function(){var project=form.querySelector('select[name="project"]');var params=new URLSearchParams(new FormData(form));params.set('section','create');params.set('type','suite');if(select.value)params.set('host',select.value);else params.delete('host');if(project&&project.value)params.set('project',project.value);location.href='/panel?'+params.toString();});})();</script>`;
+  const projectNavScript = `<script id="dispatch-project-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams(new FormData(form));params.set('section','create');params.set('type','suite');if(select.value)params.set('project',select.value);if(host&&host.value)params.set('host',host.value);else params.delete('host');location.href='/panel?'+params.toString();});})();</script>`;
 
   return renderConsoleShell({
     title: view.embeddedCreate ? "新建测试 · 套件回归" : "套件回归",

@@ -186,6 +186,7 @@ async function buildCompareRow(
     const tasks = await store.listRegressionTasks(row.rootPath, PANEL_COMPARE_TASK_LIMIT);
     const taskBacklog = { pending: 0, claimed: 0, running: 0, failed: 0 };
     for (const task of tasks) {
+      if (task.jobSpec !== null) continue;
       if (task.status === "pending") taskBacklog.pending += 1;
       else if (task.status === "claimed") taskBacklog.claimed += 1;
       else if (task.status === "running") taskBacklog.running += 1;

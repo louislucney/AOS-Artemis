@@ -244,6 +244,16 @@ test("panel compare: 任务计数按状态 / runner 在线 TTL 与设备数 / sc
     });
     await store.updateRegressionTask(dir, task.id, { status });
   }
+  const legacyWeb = await store.createRegressionTask({
+    rootPath: dir,
+    refs: [],
+    platforms: ["android"],
+    baseline: "latest",
+    createdBy: "cli",
+    executionMode: "maestro",
+    jobSpec: { kind: "web-test" }
+  });
+  await store.updateRegressionTask(dir, legacyWeb.id, { status: "failed" });
 
   const runner1 = await store.upsertRunner({
     rootPath: dir,

@@ -3953,3 +3953,15 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **执行**（`src/suite-command.ts` `materializeTaskApp`）：任务有 `appAssetId` 时优先经控制面下载到 `<project>/.artemis/cache/apps/<sha>.<apk|ipa>`（sha256 不匹配即失败）；本机中心模式回退 `getWebAsset.storagePath`；设置 `SuiteRunOptions.appPath`，CLI 显式 `--app-path` 优先。下载/校验失败在执行前退出 2，不进入用例。
 - **CLI**：`suite task create [--host …] [--project …] --app-asset <id>`；未知/非 package 资产 exit 2。
 - **测试**：`test/console-dispatch.test.js`（预览/表单/签名/未知资产）、`test/panel-console-actions.test.js`（落任务/平台校验）、`test/runner-control-suite.test.js`（bundle appAsset + 二进制下载 + 客户端方法）；全量 `3097/3097`、lint 0 error。
+
+### 13.323 调整（面板闭环修复：跨机下发 / 设备入口 / 结果链接 / 口径一致）
+
+> 2026-11-07。UX critique 发现主路径断点：下发页改 host/project 丢失向导状态；唯一在线 runner host 未在中心项目下登记导致“确认派发”永久禁用；资产页 `&section` 未转义生成伪项目；任务页 0 条与对比页 15 失败矛盾；任务详情没有批次/证据链接；设备页无操作入口。以下为 P0/P1 修复。
+
+- **下发向导**（`console/dispatch.ts`）：host/project 切换改用 `URLSearchParams(new FormData(form))`，保留来源/端/基线/安装包/优先级；显式 `section=create&type=suite`，不再生成 `section=create%26type%3Dsuite`。预览将 host 视为**执行机**：若中心侧项目存在且该 host 已注册 suite runner，则允许跨 root 下发并提示“使用中心项目目录执行”，不再要求 runner 主机重复登记项目。host 下拉只保留有 suite runner 的主机 + 项目 host + 当前选中 host，隐藏历史 Maestro host 重复项；预览列出执行机当前匹配设备。
+- **任务创建**（`panel/actions.ts`）：跨 root runner 场景任务写中心 store、`targetHostId=<runner host>`，不再使用目标 host 的空项目 store；仍校验安装包资产与平台。
+- **结果闭环**（`panel/web.ts`）：任务详情设备运行行新增「批次」（manifest basename）、「轨迹」（archive kind=trace&q=runId）、失败时「去失败分析」；批次链接使用 basename 以匹配 `batch` 路由。
+- **面板口径/入口**：对比页任务计数过滤 `jobSpec !== null`（历史 Web 任务不再显示 `失败 15`）；项目概览先列项目表再列主机/新增项目；`任务与结果` 空态给「新建测试」按钮；失败分析空态给 CTA；批量裁决默认不选并强制选择；`安装包` tab 预选 package 上传类型；`[hidden]` 强制隐藏；secret 复选框不再误显示；`&section` 链接转义并清理伪项目 `ESSO-GU§ion=create`。
+- **设备页**（`console/pages.ts`、`panel/web.ts`、`console/shell.ts`）：`?section=devices&project=…` 保留项目上下文/项目切换器；每行「去下发」携带 host+platform 进入向导；表格列宽与移动端导航换行改善。
+- **响应式/可达性**：移动导航改为换行展示（不再隐藏设备/档案/运维/使用统计）；dropzone 加 `:focus-visible`；减少动态时保留手动「刷新」；表格 `overflow-wrap` 从 `anywhere` 改 `break-word`，避免 `android`/项目名被拆成一字一行；对比表固定最小宽度 + 横向滚动。
+- **测试**：`test/console-dispatch.test.js`（安装包/表单）、`test/panel-console-actions.test.js`（跨机 runner 下发、appAssetId）、`test/panel-compare.test.js`（Web 任务不计入积压）、`test/panel-web.test.js`（批次/轨迹/失败分析链接）、`test/web-devices-ui.test.js`（项目上下文/去下发）；全量 `3099/3099`，lint 0 error。

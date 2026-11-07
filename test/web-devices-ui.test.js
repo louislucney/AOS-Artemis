@@ -261,3 +261,14 @@ test("devices page: duplicate serial prefers the newer online suite runner", asy
   assert.doesNotMatch(segment, /host-a/);
   assert.match(html, /emulator-5556/);
 });
+
+test("devices page: preserves project context and offers dispatch action", async (t) => {
+  const { store, rootPath, workspace } = await setup(t);
+  const query = `&project=${encodeURIComponent(rootPath)}`;
+  const html = await page(store, workspace, query);
+  assert.match(html, /当前项目：/);
+  assert.match(html, /去下发/);
+  assert.match(html, /section=create&amp;type=suite/);
+  assert.match(html, /project=/);
+  assert.match(html, /host-a/);
+});

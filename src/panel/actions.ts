@@ -1566,17 +1566,30 @@ async function createTask(
   const stalePreview = await checkDispatchPreviewFreshness(deps, rootPath, payload);
   if (stalePreview !== null) return stalePreview;
   let targetStore = deps.store;
+  let taskStore = deps.store;
   let targetProject: { hostId: string | null } | null = null;
   if (targetHost !== null) {
     targetStore = hostScopedStore(deps, targetHost.id);
     targetProject = await targetStore.getProjectByPath(rootPath).catch(() => null);
-    if (!targetProject) {
-      return json(404, {
-        error: `主机 "${targetHost.id}" 未登记项目 "${rootPath}"：请先在目标机接入项目`
-      });
+    taskStore = targetStore;
+    if (targetProject === null) {
+      const ownerProject = await deps.store.getProjectByPath(rootPath).catch(() => null);
+      let crossRootRunner = false;
+      if (ownerProject !== null) {
+        crossRootRunner = (await deps.store.listRunners(rootPath).catch(() => [])).some(
+          (runner) => (runner.hostId ?? runner.name) === targetHost.id
+        );
+      }
+      if (ownerProject === null || !crossRootRunner) {
+        return json(404, {
+          error: `主机 "${targetHost.id}" 未登记项目 "${rootPath}"：请先在目标机接入项目`
+        });
+      }
+      targetProject = ownerProject;
+      taskStore = deps.store;
     }
   }
-  const sets = await targetStore.listCaseSets(rootPath);
+  const sets = await taskStore.listCaseSets(rootPath);
   let refs: Array<{ caseSetId: string; featureKey: string }> = [];
   const sourceMode = payload.source;
   if (sourceMode === "case-set" || sourceMode === "keyword") {
@@ -1650,7 +1663,7 @@ async function createTask(
     typeof payload.appAssetId === "string" ? payload.appAssetId.trim() : "";
   let appAssetId: string | null = null;
   if (rawAppAssetId !== "") {
-    const asset = await targetStore.getWebAsset(rootPath, rawAppAssetId).catch(() => null);
+    const asset = await taskStore.getWebAsset(rootPath, rawAppAssetId).catch(() => null);
     if (asset === null || asset.kind !== "package") {
       return json(400, { error: `未知安装包资产 "${rawAppAssetId}"（请刷新预览后重选）` });
     }
@@ -1690,7 +1703,7 @@ async function createTask(
     targetHost?.id ??
     targetProject?.hostId ??
     (explicitHost ? null : (deps.store.localHostId ?? null));
-  const task = await targetStore.createRegressionTask({
+  const task = await taskStore.createRegressionTask({
     rootPath,
     refs,
     platforms: uniquePlatforms,

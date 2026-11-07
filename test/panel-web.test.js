@@ -303,7 +303,7 @@ test("panel web: 新建任务统一走顶部「下一步」卡（无重复空栏
     /href="\/panel\?project=[^"]+&amp;section=create&amp;type=suite"/,
     "CTA 携带项目上下文直达向导"
   );
-  assert.match(html.body, /当前有 1 份可引用的用例集/);
+  assert.match(html.body, /当前有 1 份用例集、1 个可引用功能/);
   assert.doesNotMatch(html.body, /<section id="regression"/, "不再渲染重复的空栏");
   assert.doesNotMatch(html.body, /<h2>新建任务<\/h2>/, "不再出现无内容的黄色标题条");
   assert.doesNotMatch(html.body, /id="regression-form"/, "内嵌表单已移除（派发唯一真相＝向导）");
@@ -917,7 +917,11 @@ test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404"
   );
   assert.deepEqual(taskJson.runs[0].ui, { passed: 0, failed: 1, unverified: 0, notApplicable: 0 });
   assert.match(html.body, /<th scope="col">UI<\/th>/, "设备运行表含 UI 列");
+  assert.match(html.body, /<th scope="col">操作<\/th>/, "设备运行表含操作列");
   assert.match(html.body, /UI 失败 1/, "设备运行回显 UI 失败计数");
+  assert.match(html.body, />批次<\/a>/, "运行行可打开批次");
+  assert.match(html.body, />轨迹<\/a>/, "运行行可打开轨迹");
+  assert.match(html.body, />去失败分析<\/a>/, "失败运行可去失败分析");
   assert.match(html.body, /<h1>任务 <code>/);
   assert.match(html.body, /partial/);
   assert.match(html.body, /登录流程/);

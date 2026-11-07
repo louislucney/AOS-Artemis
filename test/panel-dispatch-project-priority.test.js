@@ -287,7 +287,9 @@ test("主机切换导航保留 project；缺 project 时列出项目不猜", asy
 
   const hostNav = html.slice(html.indexOf('id="dispatch-host-nav"'));
   const hostChunk = hostNav.slice(0, hostNav.indexOf("</script>"));
-  assert.match(hostChunk, /params\.set\('section','dispatch'\)/);
+  assert.match(hostChunk, /new URLSearchParams\(new FormData\(form\)\)/, "切换主机保留已填表单");
+  assert.match(hostChunk, /params\.set\('section','create'\)/);
+  assert.match(hostChunk, /params\.set\('type','suite'\)/);
   assert.match(hostChunk, /params\.set\('host',select\.value\)/);
   assert.match(hostChunk, /params\.set\('project',project\.value\)/, "切换主机时保留显式 project");
 

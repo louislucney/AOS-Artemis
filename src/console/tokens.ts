@@ -35,6 +35,7 @@ h1,h2,h3{letter-spacing:var(--tracking-title);line-height:var(--line-height-titl
 h1{font-size:var(--font-size-title-2);font-weight:var(--font-weight-semibold);margin:0 0 12px}
 h2{font-size:var(--font-size-title-3);font-weight:var(--font-weight-semibold);margin:0 0 10px}
 h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margin:0 0 8px}
+[hidden]{display:none!important}
 
 /* ── CSDC 毛玻璃顶栏 ─────────────────────────────────────────────── */
 .c-topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;padding:12px 36px;
@@ -110,6 +111,7 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-table caption{text-align:left;padding:14px 22px;color:var(--color-text-secondary);font-size:var(--font-size-caption);
   letter-spacing:.02em;text-transform:uppercase;background:var(--color-surface-white)}
 .c-table--fixed{table-layout:fixed}
+.c-table-scroll .c-table{min-width:1200px}
 .c-empty-cell{color:var(--color-text-secondary);text-align:center;padding:32px 16px}
 .c-nowrap{white-space:nowrap}
 .c-run-id{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--color-text-secondary)}
@@ -166,7 +168,7 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-device-help-body ol{margin:0 0 12px;padding-left:20px;color:var(--color-text-secondary);font-size:var(--font-size-callout);line-height:1.6}
 .c-device-help-body li+li{margin-top:5px}
 .c-device-help-body .c-command{margin:0}
-.c-device-main .c-table{min-width:1100px}
+.c-device-main .c-table{min-width:900px}
 .c-device-main .c-table td{padding-top:18px;padding-bottom:18px}
 .c-device-main time{white-space:nowrap}
 .c-device-host{display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap}
@@ -210,6 +212,7 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
 .c-dropzone-hint{font-size:var(--font-size-caption);color:var(--color-text-secondary)}
 .c-dropzone-file{margin-top:3px;font-size:var(--font-size-callout);color:var(--color-text-secondary);max-width:100%;overflow-wrap:anywhere}
 .c-dropzone-file:not(:empty){color:var(--color-text-primary)}
+.c-dropzone:focus-visible{outline:2px solid var(--color-link);outline-offset:2px}
 .c-dropzone-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 
 /* ── 徽章 / 横幅 / 统计贴片 ─────────────────────────────────────── */
@@ -312,7 +315,7 @@ body.c-shortcuts-open #console-shortcuts{display:block}
   .c-form-field>input[type=number]{width:100%}
 }
 .c-main h1,.c-main h2,.c-main h3{overflow-wrap:anywhere}
-.c-main :where(td,th,summary){overflow-wrap:anywhere}
+.c-main :where(td,th,summary){overflow-wrap:break-word;word-break:normal}
 .c-readiness-lead{color:var(--color-text-secondary);margin:0 0 10px;max-width:75ch}
 .c-readiness{list-style:none;margin:0;padding:0}
 .c-readiness>li+li{border-top:1px solid var(--color-border-subtle);padding-top:6px}
@@ -341,7 +344,7 @@ body.c-shortcuts-open #console-shortcuts{display:block}
   .c-layout{flex-direction:column;align-items:stretch}
   .c-aside{width:100%;flex-basis:auto;position:static;padding:8px 16px;border-right:0;border-bottom:1px solid var(--color-border);background:var(--color-surface-white)}
   .c-aside{min-width:0;max-width:100%}
-  .c-aside nav{flex-direction:row;overflow-x:auto;gap:6px;min-width:0}
+  .c-aside nav{flex-direction:row;flex-wrap:wrap;overflow-x:visible;gap:6px;min-width:0}
   .c-nav-hint{white-space:normal;overflow-wrap:anywhere;flex:0 0 100%}
   .c-nav-group-title{display:none}
   .c-nav-item{white-space:nowrap}

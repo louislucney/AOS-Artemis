@@ -446,7 +446,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       "</div>",
       '<p class="muted">下一步：去 <a href="/panel?project=' +
         encodeURIComponent(data.rootPath) +
-        '&section=create">新建测试</a> 开始套件回归。</p>'
+        '&amp;section=create">新建测试</a> 开始套件回归。</p>'
     ].join("")
   });
   const excelCard = `<div id="excel-assets">${cCard({
@@ -706,9 +706,9 @@ export function renderTasksPage(data: TasksPageData): string {
         data.rootPath
       )}"><input type="hidden" name="section" value="tasks">${
         data.hostId ? `<input type="hidden" name="host" value="${escapeHtml(data.hostId)}">` : ""
-      }<label>搜索任务 <input name="q" value="${escapeHtml(
+      }<p><label>搜索任务 <input name="q" value="${escapeHtml(
         data.query ?? ""
-      )}" placeholder="任务 ID / 状态 / 设备 / 用例集" aria-label="搜索任务"></label> <button class="c-button" type="submit">搜索</button></form>`,
+      )}" placeholder="任务 ID / 状态 / 设备" aria-label="搜索任务"></label> <button class="c-button" type="submit">搜索</button></p></form>`,
       cCard({
         title: "任务列表",
         subtitle: `共 ${visible.length} 条${data.filter === "active" ? "（进行中）" : ""}${
@@ -718,7 +718,9 @@ export function renderTasksPage(data: TasksPageData): string {
           columns: ["任务", "优先级", "状态", "项目", "执行机/设备", "输入", "创建", "结果", "操作"],
           rows,
           caption: "任务与结果",
-          empty: "还没有任务；点右上角「新建测试」开始。"
+          emptyHtml: `还没有任务。 <a class="c-button c-button-primary" href="${escapeHtml(
+            createHref
+          )}">新建测试</a>`
         })
       }),
       pager
@@ -754,6 +756,9 @@ export interface DevicesPageData {
   filter: string;
   platform: string;
   nowMs: number;
+  rootPath?: string | null;
+  rootLabel?: string | null;
+  hostId?: string | null;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
@@ -782,8 +787,15 @@ function taskStatusTone(status: string): "neutral" | "accent" | "success" | "war
   return "neutral";
 }
 
-function devicesHref(platform: string, state: string): string {
+function devicesHref(
+  platform: string,
+  state: string,
+  rootPath?: string | null,
+  hostId?: string | null
+): string {
   const params = new URLSearchParams({ section: "devices" });
+  if (rootPath) params.set("project", rootPath);
+  if (hostId) params.set("host", hostId);
   if (platform !== "all") params.set("platform", platform);
   if (state !== "all") params.set("state", state);
   return `/panel?${params.toString()}`;
@@ -793,13 +805,13 @@ export function renderDevicesPage(data: DevicesPageData): string {
   const filterLink = (label: string, state: string, platform = data.platform): string => {
     const active = data.filter === state && data.platform === platform;
     return `<a class="c-button${active ? " c-button-primary" : ""}" href="${escapeHtml(
-      devicesHref(platform, state)
+      devicesHref(platform, state, data.rootPath, data.hostId)
     )}"${active ? ' aria-current="page"' : ""}>${escapeHtml(label)}</a>`;
   };
   const platformLink = (label: string, platform: string): string => {
     const active = data.platform === platform;
     return `<a class="c-button${active ? " c-button-primary" : ""}" href="${escapeHtml(
-      devicesHref(platform, data.filter)
+      devicesHref(platform, data.filter, data.rootPath, data.hostId)
     )}"${active ? ' aria-current="page"' : ""}>${escapeHtml(label)}</a>`;
   };
   const rows = data.devices.map((device) => {
@@ -827,11 +839,24 @@ export function renderDevicesPage(data: DevicesPageData): string {
       device.leaseTaskId === null
         ? '<span class="muted">—</span>'
         : `${relativeTime(device.leaseExpiresAt ?? "")} <span class="muted">到期</span>`;
+    const dispatchHref =
+      data.rootPath === null || data.rootPath === undefined
+        ? null
+        : `/panel?project=${encodeURIComponent(
+            data.rootPath
+          )}&amp;section=create&amp;type=suite&amp;source=case-set&amp;host=${encodeURIComponent(
+            device.hostId
+          )}&amp;platforms=${encodeURIComponent(device.platform)}`;
+    const action =
+      dispatchHref === null
+        ? '<span class="muted">—</span>'
+        : `<a class="c-button" href="${escapeHtml(dispatchHref)}">去下发</a>`;
     return [
       host,
       deviceLabel,
       escapeHtml(model),
       stateBadge,
+      action,
       job,
       lease,
       relativeTime(device.lastSeenAt),
@@ -878,7 +903,7 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
           </div>
         </section>`
       : cTable({
-          columns: ["执行机", "设备", "型号/系统", "状态", "当前任务", "租约", "最后心跳", "工具"],
+          columns: ["执行机", "设备", "型号/系统", "状态", "操作", "当前任务", "租约", "最后心跳", "工具"],
           rows,
           caption: `设备列表（${data.devices.length}）`,
           emptyHtml:
@@ -927,9 +952,20 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
       <div>
         <h1>设备</h1>
         <p class="c-page-lede">Android 走 MCP runner（Windows）/ 本机 adb，iOS 走 macOS MCP runner（模拟器 simctl/idb、真机 Appium/WDA）。</p>
+        ${
+          data.rootPath
+            ? `<p class="muted">当前项目：<a href="/panel?project=${encodeURIComponent(
+                data.rootPath
+              )}">${escapeHtml(data.rootLabel ?? data.rootPath)}</a> · <a href="/panel?project=${encodeURIComponent(
+                data.rootPath
+              )}&amp;section=create&amp;type=suite">新建测试</a></p>`
+            : ""
+        }
       </div>
       <div class="c-page-actions">
-        <a class="c-button" href="${escapeHtml(devicesHref(data.platform, data.filter))}">刷新</a>
+        <a class="c-button" href="${escapeHtml(
+          devicesHref(data.platform, data.filter, data.rootPath, data.hostId)
+        )}">刷新</a>
       </div>
     </div>
     <div class="c-stat-grid">${[
@@ -1477,11 +1513,11 @@ export function renderSearchPage(data: SearchPageData): string {
     `<code>${escapeHtml(entry.basename)}</code>`,
     escapeHtml(entry.source),
     escapeHtml(entry.features),
-    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&section=create&type=suite&source=case-set&ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId)}">下发该用例集</a>`
+    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&amp;section=create&amp;type=suite&amp;source=case-set&amp;ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId).replace(/&/g, "&amp;")}">下发该用例集</a>`
   ]);
   const taskRows = data.tasks.map((entry) => [
     projectLink(entry.project, entry.project, entry.hostId),
-    `<a href="/panel?project=${encodeURIComponent(entry.project)}&section=tasks&task=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId)}"><code>${escapeHtml(entry.id)}</code></a>`,
+    `<a href="/panel?project=${encodeURIComponent(entry.project)}&amp;section=tasks&amp;task=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId).replace(/&/g, "&amp;")}"><code>${escapeHtml(entry.id)}</code></a>`,
     escapeHtml(runStatusLabel(entry.status))
   ]);
   const empty = `<h1>搜索</h1>`;
