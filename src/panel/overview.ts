@@ -316,6 +316,7 @@ export interface PanelRunnerView {
   devices: RunnerDevice[];
   tools: RunnerTools;
   artifactBaseUrl: string | null;
+  version: string | null;
 }
 
 export interface PanelFleetLeaseView {
@@ -359,7 +360,8 @@ function runnerView(record: RunnerRecord, nowMs: number, ttlMs: number): PanelRu
     platforms: record.platforms,
     devices: record.devices,
     tools: record.tools,
-    artifactBaseUrl: record.artifactBaseUrl
+    artifactBaseUrl: record.artifactBaseUrl,
+    version: record.version
   };
 }
 

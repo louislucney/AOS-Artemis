@@ -2379,9 +2379,17 @@ function renderRunners(detail: PanelProjectDetail, rootPath: string, hostId: str
       "</section>"
     ].join("\n");
   }
+  const missingArtifact = detail.runners.filter((runner) => runner.artifactBaseUrl === null).length;
+  const artifactNote =
+    missingArtifact === 0
+      ? ""
+      : `<p class="note">${missingArtifact} 台执行机未广播产物基址：远端任务的批次/trace 无法在中心打开。更新 runner，或设置 <code>AOS_RUNNER_ADVERTISE_URL</code> 后重启。</p>`;
   const rows = detail.runners.map((runner) => [
     `${cBadge({ label: runner.online ? "在线" : "失联", tone: runner.online ? "success" : "warning" })} <code>${escapeHtml(runner.name)}</code>`,
     escapeHtml(runner.hostname),
+    runner.version === null
+      ? '<span class="muted" title="runner 未上报版本；旧包需更新">未知</span>'
+      : `<code>${escapeHtml(runner.version)}</code>`,
     runner.devices.length === 0
       ? '<span class="muted">—</span>'
       : runner.devices
@@ -2401,7 +2409,12 @@ function renderRunners(detail: PanelProjectDetail, rootPath: string, hostId: str
     '<section id="runners">',
     "<h2>执行机</h2>",
     fleetStats,
-    renderTable(["名称", "主机", "设备", "工具", "最后心跳", "产物基址"], rows, "暂无执行机"),
+    artifactNote,
+    renderTable(
+      ["名称", "主机", "版本", "设备", "工具", "最后心跳", "产物基址"],
+      rows,
+      "暂无执行机"
+    ),
     leases,
     "</section>"
   ].join("\n");
