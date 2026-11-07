@@ -4001,3 +4001,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 ### 13.327 诊断与修复（0.2.2）
 
 > 2026-11-07。真机 smoke 中应用已启动但 agent 无动作，trace `stderr.log` 为 `openai.APIConnectionError: Connection error` / `LLMExhaustedError`。0.2.2 增加可观测性：`Runtime.refreshCenterLlm` 在 `AOS_LLM_FROM_CENTER` 未启用时明确 WARN，成功时打印中心 LLM 的 `name/model/baseUrl`；`Runtime.prepareChildSpec` 打印 Artemis 子进程实际 `OPENAI_BASE_URL`（不含 key）。同时中心 LLM 指纹变化时对运行中的子进程 `markForRestart`，避免长驻 runner 复用旧地址。runner 包版本升至 0.2.2。
+
+### 13.328 执行进度与异常可见性（0.2.3）
+
+> 2026-11-08。真机 smoke 暴露控制面只有任务领取/最终结果，Artemis 子进程异常后 `status.json` 仍为 `running`，面板只能等待 15 分钟并显示假 running。
+>
+> - **进度协议**：`RegressionTaskRecord.progress` 保存最新快照（seq/phase/percent/caseId/traceId/message/errorCode/at），runner 经既有 `updateRegressionTask` 控制面主动上报；面板任务列表显示百分比与当前消息，详情显示阶段/更新时间/失败证据链接。
+> - **预检**：中心 LLM 模式下，suite run 在启动应用前用 1-token `chat/completions` 探针检查中心代理；失败直接任务 failed（`llm-unreachable`），不再启动应用空等。
+> - **快速失败**：case poll 同时检查 `status.error` 与 trace `stderr.log` 的 `CRITICAL ERROR`/`LLMExhaustedError`/`APIConnectionError`；命中立即失败；默认单用例超时 180s（`AOS_SUITE_CASE_TIMEOUT_MS` 可覆盖）。
+> - **取消终止**：轮询中检查 `shouldAbort`，命中即停止等待并对 Artemis 子进程 `markForRestart`。
+> - **证据上传**：runner 失败时 best-effort 上传 `status.json`/`stderr.log`/`stdout.log` 到中心 `.artemis/remote-evidence/<taskId>/<traceId>/`；白名单、单文件 256KB、总包 1MB；面板只给「查看失败证据」链接。
+> - **版本**：runner 包与 `AOS_MCP_VERSION` 升至 0.2.3。
