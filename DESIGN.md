@@ -3986,3 +3986,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **smoke 结论**：任务 `aad7c37e-…` 已由 win-runner-01 领取并回写 3 条失败（`imp-4ee495af-19/20/21`，`unclassified`）；中心侧无 manifest/trace（runner 未广告 artifactBaseUrl），需要 runner 重启/配置 `AOS_RUNNER_ADVERTISE_URL` 或更新 runner 包后才能打开证据。
 - **远端证据标注**：任务详情检测 Windows/UNC manifestPath，显示「执行机本地清单 / 执行机本地 trace」并提示配置 `AOS_RUNNER_ADVERTISE_URL`；不再生成中心 404 的批次/trace 链接。
 - **测试**：`npm test` 3101/3101、lint 0 error、类型测试通过。
+
+### 13.325 版本（0.2.0）
+
+> 2026-11-07。集中修复跨机 runner、记录闭环与面板交互后，版本从 0.1.0 升至 0.2.0；runner 包、adb-host 包文件名与 `AOS_MCP_VERSION` 同步更新。0.2.0 的 Windows runner 包含：任务级 `caseIds`（只重跑失败用例）、安装包自动安装、每任务刷新中心 LLM、默认 LAN 产物基址、运行结果/证据标注。升级时离线环境只需替换 `dist`（保留 `deps/`、`project/`、`.env`）。
