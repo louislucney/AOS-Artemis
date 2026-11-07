@@ -75,6 +75,10 @@ export function checkBundleFiles(files, platform) {
   if (readme !== "" && !/中心\s*LLM|中心代理/.test(readme)) {
     errors.push("README.md 未说明 LLM 由中心代理提供");
   }
+  const runnerDocs = [readme, env, configure, setup].join("\n");
+  if (/MOBILE_TESTING_DATABASE_URL|直连中心\s*PG/i.test(runnerDocs)) {
+    errors.push("runner bundle 不应提示直连 PostgreSQL（runner 只走 HTTP 控制面）");
+  }
   const allText = [...files.values()].join("\n");
   if (/sk-[A-Za-z0-9]{20,}/.test(allText)) {
     errors.push("bundle 文本中疑似包含真实 API key（sk-…）");

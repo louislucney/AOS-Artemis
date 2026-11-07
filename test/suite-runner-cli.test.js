@@ -97,13 +97,13 @@ test("suite runner: usage 列出 runner 与 task release", async () => {
   assert.match(usage, /task create\|list\|show\|release/);
 });
 
-test("suite runner: 内存 store → exit 2 提示中心 PG", async () => {
+test("suite runner: 内存 store → exit 2 提示中心控制面", async () => {
   const memStore = new MemoryStore();
   const dir = makeTempProject({ config: baseConfig() });
   const { runtime } = await loadTestRuntime(dir, { store: memStore });
   const { code, errors } = await runCli(runtime, ["runner", "--once", "--artifact-port", "0"]);
   assert.equal(code, 2);
-  assert.ok(errors.some((line) => line.includes("中心 PG")));
+  assert.ok(errors.some((line) => line.includes("中心控制面")));
 });
 
 test("suite runner: 非法 --poll-ms → exit 2", async () => {

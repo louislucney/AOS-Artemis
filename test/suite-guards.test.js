@@ -25,7 +25,7 @@ test("suite guards: runner stays PG-only; backfill rejects memory but allows fil
   const memoryRuntime = await loadTestRuntime(dir, { store: new MemoryStore() });
   let result = await runCli(memoryRuntime.runtime, ["runner"]);
   assert.equal(result.code, 2);
-  assert.ok(result.errors.join("\n").includes("需要中心 PG"));
+  assert.ok(result.errors.join("\n").includes("需要中心控制面"));
 
   result = await runCli(memoryRuntime.runtime, ["backfill", "--dry-run"]);
   assert.equal(result.code, 2);

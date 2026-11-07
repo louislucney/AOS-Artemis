@@ -113,6 +113,9 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
   const lines: DoctorLine[] = [];
   let blocked = false;
   let degraded = false;
+  let runnerMode =
+    (process.env.AOS_LLM_FROM_CENTER ?? "").trim() === "1" ||
+    (process.env.AOS_RUNNER_MODE ?? "").trim() === "1";
 
   const installDeps = argv.includes("--install-deps");
 
@@ -194,6 +197,10 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
   if (rootDir) {
     const { loadProject } = await import("./config/loader.js");
     const project = loadProject();
+    runnerMode =
+      runnerMode ||
+      (project.dotenvValues.AOS_LLM_FROM_CENTER ?? "").trim() === "1" ||
+      (project.dotenvValues.AOS_RUNNER_MODE ?? "").trim() === "1";
     const scan = scanProjectEnv(project.resolver);
     const centerEnv = { ...project.dotenvValues, ...process.env };
     const centerEnabled = (centerEnv.AOS_LLM_FROM_CENTER ?? "").trim() === "1";
@@ -385,11 +392,21 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
   // 3. PostgreSQL
   const dbUrl = env.MOBILE_TESTING_DATABASE_URL?.trim();
   if (!dbUrl) {
-    lines.push({
-      icon: "OK",
-      title: "未配置 MOBILE_TESTING_DATABASE_URL：使用项目文件台账（.artemis/ledger，随项目持久）",
-      details: ["可选：配置连接串以集中跨进程/跨项目查询。"]
-    });
+    if (runnerMode) {
+      lines.push({
+        icon: "OK",
+        title: "Runner 模式：使用中心 HTTP 控制面",
+        details: [
+          "不需要 MOBILE_TESTING_DATABASE_URL；中心地址由 MOBILE_TESTING_RUNNER_CONTROL_URL 提供。"
+        ]
+      });
+    } else {
+      lines.push({
+        icon: "OK",
+        title: "未配置 MOBILE_TESTING_DATABASE_URL：使用项目文件台账（.artemis/ledger，随项目持久）",
+        details: ["可选：配置连接串以集中跨进程/跨项目查询。"]
+      });
+    }
   } else {
     const { store, kind: dbKind, reason } = await createProjectStore();
     if (dbKind === "postgres") {

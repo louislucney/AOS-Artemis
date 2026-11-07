@@ -124,3 +124,14 @@ test("runner bundle contract: valid macOS package passes", () => {
   const result = checkBundleFiles(files, "darwin");
   assert.equal(result.ok, true, result.errors.join("\n"));
 });
+
+test("runner bundle contract: no direct PostgreSQL prompt", () => {
+  const files = validWinFiles();
+  files.set(
+    "README.md",
+    `${files.get("README.md")}\n直连中心 PG：MOBILE_TESTING_DATABASE_URL=postgres://center/db\n`
+  );
+  const result = checkBundleFiles(files, "win32");
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.includes("PostgreSQL")));
+});

@@ -3377,7 +3377,7 @@ async function suiteRunnerCommand(
   ).trim();
   if (runtime.store.kind !== "postgres" && controlUrl === "") {
     io.errorLog(
-      "runner 需要中心 PG（文件台账不支持多进程）；请配置 MOBILE_TESTING_DATABASE_URL 或 MOBILE_TESTING_RUNNER_CONTROL_URL（旧名 AOS_RUNNER_CONTROL_URL 兼容）"
+      "文件台账不支持多进程；runner 需要中心控制面：配置 MOBILE_TESTING_RUNNER_CONTROL_URL + MOBILE_TESTING_RUNNER_JOB_TOKEN（旧名 AOS_RUNNER_CONTROL_URL/AOS_RUNNER_JOB_TOKEN 兼容）"
     );
     return 2;
   }
