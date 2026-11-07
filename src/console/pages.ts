@@ -596,6 +596,11 @@ export function renderCreateTestPage(data: CreateTestPageData): string {
       `<p class="muted">目前新建测试只有套件回归：用例集 + 设备。测试资产统一在 <a href="${escapeHtml(
         assetsHref
       )}">测试资产</a> 管理。</p>`,
+      '<div class="c-stats-row">',
+      cStat({ label: "用例集", value: String(data.caseSetCount), hint: "可引用" }),
+      cStat({ label: "Excel 资产", value: String(data.excelCount), hint: "用例导入源" }),
+      cStat({ label: "安装包", value: String(data.packageCount), hint: "可选自动安装" }),
+      "</div>",
       '<div class="cards">',
       cCard({
         title: "套件回归",
@@ -1318,7 +1323,7 @@ export function renderAuditPage(data: AuditPageData): string {
   const link = (patch: Record<string, string | null>): string => {
     const params = new URLSearchParams({ project: data.rootPath, section: "audit" });
     if (data.hostId) params.set("host", data.hostId);
-    for (const key of ["domain", "result", "since"]) {
+    for (const key of ["domain", "result", "since", "q"]) {
       const value = data.query[key];
       if (value !== undefined && value !== "") params.set(key, value);
     }
@@ -1363,8 +1368,18 @@ export function renderAuditPage(data: AuditPageData): string {
               ([value, label]) =>
                 `<option value="${value}"${data.query.result === value ? " selected" : ""}>${label}</option>`
             )
-            .join("")}</select> 起自 <input type="datetime-local" name="since" aria-label="起自（本地时间）" value="${sinceLocalValue(data.query.since)}"> <button class="c-button" type="submit">筛选</button></p>`,
-          `<p>时间预设：${preset("近 24 小时", 24)} ${preset("近 7 天", 168)} ${preset("近 30 天", 720)} ${data.query.since !== undefined && data.query.since !== "" ? `<a class="c-button" href="${link({ since: null, offset: "0" })}">清除</a>` : ""}</p>`,
+            .join("")}</select> 关键词 <input type="text" name="q" aria-label="审计关键词" value="${escapeHtml(
+            data.query.q ?? ""
+          )}" placeholder="动作/摘要/操作人/关联对象"> 起自 <input type="datetime-local" name="since" aria-label="起自（本地时间）" value="${sinceLocalValue(data.query.since)}"> <button class="c-button" type="submit">筛选</button></p>`,
+          `<p>时间预设：${preset("近 24 小时", 24)} ${preset("近 7 天", 168)} ${preset("近 30 天", 720)} ${
+            data.query.since !== undefined && data.query.since !== ""
+              ? `<a class="c-button" href="${link({ since: null, offset: "0" })}">清除时间</a>`
+              : ""
+          } ${
+            data.query.q !== undefined && data.query.q !== ""
+              ? `<a class="c-button" href="${link({ q: null, offset: "0" })}">清除关键词</a>`
+              : ""
+          }</p>`,
           "</form>"
         ].join("\n")
       }),

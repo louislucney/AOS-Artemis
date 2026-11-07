@@ -3050,6 +3050,12 @@ export class PostgresStore implements ProjectStore {
       params.push(query.since);
       conditions.push(`at >= $${params.length}`);
     }
+    if (query.q) {
+      params.push(`%${query.q}%`);
+      conditions.push(
+        `(action ILIKE $${params.length} OR summary ILIKE $${params.length} OR COALESCE(actor,'') ILIKE $${params.length} OR refs ILIKE $${params.length})`
+      );
+    }
     params.push(normalizeAuditLimit(query.limit));
     const limitParam = params.length;
     const offset =

@@ -1758,6 +1758,14 @@ export class MemoryStore implements ProjectStore {
       .filter((event) => !query.domain || event.domain === query.domain)
       .filter((event) => !query.result || event.result === query.result)
       .filter((event) => !query.since || event.at >= query.since)
+      .filter((event) => {
+        if (!query.q) return true;
+        const needle = query.q.toLowerCase();
+        return [event.action, event.summary, event.actor ?? "", JSON.stringify(event.refs ?? {})]
+          .join("\n")
+          .toLowerCase()
+          .includes(needle);
+      })
       .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))
       .slice(offset, offset + normalizeAuditLimit(query.limit))
       .map(cloneAuditEvent);

@@ -317,6 +317,8 @@ export interface AuditQuery {
   domain?: string;
   result?: AuditEventInput["result"];
   since?: string;
+  /** 关键词：action/actor/error/refs 任一包含。 */
+  q?: string;
   limit?: number;
   /** 分页偏移（配合 limit；审计页翻页用）。 */
   offset?: number;

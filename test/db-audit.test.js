@@ -44,6 +44,14 @@ test("MemoryStore: audit events round-trip, filters, newest-first, summary cap",
     (await store.listAudit("/w/a", { result: "failed" })).map((event) => event.id),
     [second.id]
   );
+  assert.deepEqual(
+    (await store.listAudit("/w/a", { q: "x.xlsx" })).map((event) => event.id),
+    [second.id]
+  );
+  assert.deepEqual(
+    (await store.listAudit("/w/a", { q: "run.recorded" })).map((event) => event.id),
+    [first.id]
+  );
   const limited = await store.listAudit("/w/a", { limit: 1 });
   assert.equal(limited.length, 1);
   assert.equal(limited[0].id, second.id);

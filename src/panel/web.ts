@@ -965,6 +965,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     const result =
       resultRaw === "ok" || resultRaw === "skipped" || resultRaw === "failed" ? resultRaw : undefined;
     const since = normalizeSince(trimmed(url.searchParams.get("since")));
+    const q = trimmed(url.searchParams.get("q"));
     const offsetRaw = trimmed(url.searchParams.get("offset"));
     const offset =
       offsetRaw !== null && Number.isFinite(Number(offsetRaw)) && Number(offsetRaw) > 0
@@ -975,6 +976,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       ...(domain === null ? {} : { domain }),
       ...(result === undefined ? {} : { result }),
       ...(since === null ? {} : { since }),
+      ...(q === null ? {} : { q }),
       limit: pageSize + 1,
       offset
     });
@@ -1547,7 +1549,7 @@ function renderProjectCell(row: PanelProjectRow): string {
           : ""
       }</div>`
     : "";
-  const designWarnings = `<div class="muted">${escapeHtml(designWarningsText(row.designWarnings))}</div>`;
+  const designWarnings = `<div class="muted">${designWarningsHtml(row.designWarnings)}</div>`;
   return `<span>${lampSpan(row.lamp)}</span>${reasons}${integration}${designWarnings}`;
 }
 
@@ -1556,6 +1558,20 @@ function designWarningsText(summary: WarningSummary | null): string {
     return "设计源警告：不可用（缺 tests.json / flows.json 快照）";
   }
   const codes = summary.codes.length > 0 ? `（${summary.codes.join("、")}）` : "";
+  return `设计源警告 ${summary.total} 条${codes}`;
+}
+
+function designWarningsHtml(summary: WarningSummary | null): string {
+  if (summary === null || !summary.available) {
+    return "设计源警告：不可用（缺 tests.json / flows.json 快照）";
+  }
+  if (summary.total === 0) return "设计源警告 0 条";
+  const codes =
+    summary.codes.length === 0
+      ? ""
+      : ` <details><summary>代码</summary><span class="muted">${summary.codes
+          .map((code) => escapeHtml(code))
+          .join("、")}</span></details>`;
   return `设计源警告 ${summary.total} 条${codes}`;
 }
 
