@@ -15,6 +15,7 @@ import {
   defaultBuildRuntime,
   type CliRuntimeBundle
 } from "./cli-runtime.js";
+import { loadProject } from "./config/loader.js";
 import { isMigrationIncompleteError } from "./db/index.js";
 import { hostStrictFrom } from "./host/strict.js";
 import { isHostOnline, precheckTask } from "./console/dispatch.js";
@@ -4264,9 +4265,22 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
             (baseEnv.AOS_RUNNER_INSTANCE_ID ?? "").trim() || randomUUID()
         }
       : baseEnv;
+  const projectDirArg = flags.get("project");
+  let projectDotenv: Record<string, string> = {};
+  if (projectDirArg !== null) {
+    try {
+      projectDotenv = loadProject({
+        env: { ...runtimeEnv, AOS_PROJECT_DIR: projectDirArg, AOS_CONFIG: "" }
+      }).dotenvValues;
+    } catch {
+      /* buildRuntime later surfaces config errors with context */
+    }
+  }
   const controlUrl = (
     runtimeEnv.MOBILE_TESTING_RUNNER_CONTROL_URL ??
+    projectDotenv.MOBILE_TESTING_RUNNER_CONTROL_URL ??
     runtimeEnv.AOS_RUNNER_CONTROL_URL ??
+    projectDotenv.AOS_RUNNER_CONTROL_URL ??
     ""
   ).trim();
   const buildRuntime =

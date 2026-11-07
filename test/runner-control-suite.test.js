@@ -767,3 +767,77 @@ test("suite control: suite runner claims center task with a different local root
     })
   );
 });
+
+test("suite runner: control URL from project .env is used (bundle scenario)", async () => {
+  const centerDir = await makeWorkspace();
+  const central = await makeCentral(centerDir);
+  const localDir = makeTempProject({ config: baseConfig() });
+  const workspaceRoot = await makeWorkspace();
+  await withEnv("AOS_RUNNER_JOB_TOKEN", TOKEN, () =>
+    withEnv("AOS_RUNNER_DEFAULT_PROJECT", central.rootPath, async () => {
+      const handle = await createAosHttpServer({
+        port: 0,
+        host: "127.0.0.1",
+        workspaceRoot,
+        store: central.store
+      });
+      const baseUrl = `http://127.0.0.1:${handle.port}`;
+      try {
+        fs.writeFileSync(
+          path.join(localDir, ".env"),
+          [
+            `MOBILE_TESTING_RUNNER_CONTROL_URL=${baseUrl}`,
+            `MOBILE_TESTING_RUNNER_JOB_TOKEN=${TOKEN}`,
+            `MOBILE_TESTING_HOST_ID=${HOST}`,
+            ""
+          ].join("\n")
+        );
+        const executed = [];
+        const code = await runSuiteCommand(
+          [
+            "runner",
+            "--project",
+            localDir,
+            "--name",
+            "suite-project-env",
+            "--once",
+            "--artifact-port",
+            "0"
+          ],
+          {
+            env: { AOS_HOST_ID: HOST },
+            runner: {
+              executeSuite: async (argv) => {
+                executed.push(argv);
+                return 0;
+              },
+              collectInventory: async () => ({
+                platforms: ["android"],
+                devices: [
+                  {
+                    serial: "pixel-1",
+                    name: "",
+                    model: "Pixel 7",
+                    osVersion: "14",
+                    platform: "android",
+                    kind: "device",
+                    state: "device"
+                  }
+                ],
+                tools: tools()
+              }),
+              collectHostSnapshot: async () => hostSnapshot(),
+              sleep: async () => {}
+            }
+          }
+        );
+        assert.equal(code, 0);
+        assert.equal(executed.length, 1);
+        const stored = await central.store.getRegressionTask(central.rootPath, central.task.id);
+        assert.equal(stored.status, "running");
+      } finally {
+        await handle.close();
+      }
+    })
+  );
+});
