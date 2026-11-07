@@ -10,6 +10,14 @@ export interface SuiteStoreClientOptions {
   timeoutMs?: number;
   /** 任务写入实例 fencing；缺省不发送（兼容手工 CLI）。 */
   instanceId?: string;
+  /** 中心项目根路径：runner 本地路径与中心不同时，控制面调用的 rootPath 统一改写成它。 */
+  controlRootPath?: string;
+}
+
+export interface RunnerDefaultProject {
+  found: boolean;
+  rootPath?: string;
+  name?: string;
 }
 
 export interface RunnerLlmEntry {
@@ -45,6 +53,7 @@ export class SuiteStoreClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly instanceId: string;
+  private readonly controlRootPath: string | null;
 
   constructor(options: SuiteStoreClientOptions) {
     this.hostId = options.hostId;
@@ -53,6 +62,16 @@ export class SuiteStoreClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 15_000;
     this.instanceId = (options.instanceId ?? "").trim();
+    this.controlRootPath = (options.controlRootPath ?? "").trim() || null;
+  }
+
+  private root(rootPath: string): string {
+    return this.controlRootPath ?? rootPath;
+  }
+
+  private rewriteRoot<T extends { rootPath?: string }>(input: T): T {
+    if (this.controlRootPath === null || input.rootPath === undefined) return input;
+    return { ...input, rootPath: this.controlRootPath };
   }
 
   private async request<T>(
@@ -107,7 +126,7 @@ export class SuiteStoreClient {
   ): Promise<Awaited<ReturnType<ProjectStore["getRegressionTask"]>>> {
     return await this.request(
       "GET",
-      `/tasks/${encodeURIComponent(args[1])}?rootPath=${encodeURIComponent(args[0])}`
+      `/tasks/${encodeURIComponent(args[1])}?rootPath=${encodeURIComponent(this.root(args[0]))}`
     );
   }
 
@@ -116,14 +135,18 @@ export class SuiteStoreClient {
   ): Promise<Awaited<ReturnType<NonNullable<ProjectStore["getTaskBundle"]>>>> {
     return await this.request(
       "GET",
-      `/tasks/${encodeURIComponent(args[1])}/bundle?rootPath=${encodeURIComponent(args[0])}`
+      `/tasks/${encodeURIComponent(args[1])}/bundle?rootPath=${encodeURIComponent(this.root(args[0]))}`
     );
+  }
+
+  async getDefaultProject(): Promise<RunnerDefaultProject> {
+    return await this.request("GET", "/default-project");
   }
 
   async getLlm(rootPath: string): Promise<RunnerLlmConfig> {
     return await this.request(
       "GET",
-      `/llm?rootPath=${encodeURIComponent(rootPath)}`
+      `/llm?rootPath=${encodeURIComponent(this.root(rootPath))}`
     );
   }
 
@@ -131,7 +154,7 @@ export class SuiteStoreClient {
     ...args: Parameters<ProjectStore["updateRegressionTask"]>
   ): Promise<Awaited<ReturnType<ProjectStore["updateRegressionTask"]>>> {
     return await this.request("PATCH", `/tasks/${encodeURIComponent(args[1])}`, {
-      rootPath: args[0],
+      rootPath: this.root(args[0]),
       patch: args[2]
     });
   }
@@ -139,7 +162,7 @@ export class SuiteStoreClient {
   async listCaseSets(
     ...args: Parameters<ProjectStore["listCaseSets"]>
   ): Promise<Awaited<ReturnType<ProjectStore["listCaseSets"]>>> {
-    const query = new URLSearchParams({ rootPath: args[0] });
+    const query = new URLSearchParams({ rootPath: this.root(args[0]) });
     if (args[1] !== undefined) query.set("limit", String(args[1]));
     return await this.request("GET", `/case-sets?${query.toString()}`);
   }
@@ -147,13 +170,13 @@ export class SuiteStoreClient {
   async recordSuiteRun(
     ...args: Parameters<ProjectStore["recordSuiteRun"]>
   ): Promise<Awaited<ReturnType<ProjectStore["recordSuiteRun"]>>> {
-    return await this.request("POST", "/runs", args[0]);
+    return await this.request("POST", "/runs", this.rewriteRoot(args[0]));
   }
 
   async listSuiteRuns(
     ...args: Parameters<ProjectStore["listSuiteRuns"]>
   ): Promise<Awaited<ReturnType<ProjectStore["listSuiteRuns"]>>> {
-    const query = new URLSearchParams({ rootPath: args[0] });
+    const query = new URLSearchParams({ rootPath: this.root(args[0]) });
     for (const [key, value] of Object.entries(args[1] ?? {})) {
       if (value !== undefined && value !== null) query.set(key, String(value));
     }
@@ -165,14 +188,14 @@ export class SuiteStoreClient {
   ): Promise<Awaited<ReturnType<ProjectStore["getSuiteRun"]>>> {
     return await this.request(
       "GET",
-      `/runs/${encodeURIComponent(args[1])}?rootPath=${encodeURIComponent(args[0])}`
+      `/runs/${encodeURIComponent(args[1])}?rootPath=${encodeURIComponent(this.root(args[0]))}`
     );
   }
 
   async upsertProject(
     ...args: Parameters<ProjectStore["upsertProject"]>
   ): Promise<Awaited<ReturnType<ProjectStore["upsertProject"]>>> {
-    return await this.request("POST", "/projects", args[0]);
+    return await this.request("POST", "/projects", this.rewriteRoot(args[0]));
   }
 
   async getProjectByPath(
@@ -180,7 +203,7 @@ export class SuiteStoreClient {
   ): Promise<Awaited<ReturnType<ProjectStore["getProjectByPath"]>>> {
     return await this.request(
       "GET",
-      `/projects?rootPath=${encodeURIComponent(args[0])}`
+      `/projects?rootPath=${encodeURIComponent(this.root(args[0]))}`
     );
   }
 
@@ -203,7 +226,7 @@ export class SuiteStoreClient {
   async upsertRunner(
     ...args: Parameters<ProjectStore["upsertRunner"]>
   ): Promise<Awaited<ReturnType<ProjectStore["upsertRunner"]>>> {
-    return await this.request("POST", "/runners", args[0]);
+    return await this.request("POST", "/runners", this.rewriteRoot(args[0]));
   }
 
   async markRunnerStopped(
@@ -212,14 +235,14 @@ export class SuiteStoreClient {
     return await this.request(
       "POST",
       `/runners/${encodeURIComponent(args[0].runnerId)}/stop`,
-      args[0]
+      this.rewriteRoot(args[0])
     );
   }
 
   async claimRegressionTask(
     ...args: Parameters<ProjectStore["claimRegressionTask"]>
   ): Promise<Awaited<ReturnType<ProjectStore["claimRegressionTask"]>>> {
-    return await this.request("POST", "/tasks/claim", args[0]);
+    return await this.request("POST", "/tasks/claim", this.rewriteRoot(args[0]));
   }
 
   async beginExecution(
@@ -228,14 +251,14 @@ export class SuiteStoreClient {
     return await this.request(
       "POST",
       `/tasks/${encodeURIComponent(args[0].taskId)}/begin`,
-      args[0]
+      this.rewriteRoot(args[0])
     );
   }
 
   async releaseRegressionTasks(
     ...args: Parameters<ProjectStore["releaseRegressionTasks"]>
   ): Promise<Awaited<ReturnType<ProjectStore["releaseRegressionTasks"]>>> {
-    return await this.request("POST", "/tasks/release", args[0]);
+    return await this.request("POST", "/tasks/release", this.rewriteRoot(args[0]));
   }
 
   async releaseRegressionTask(
@@ -244,14 +267,14 @@ export class SuiteStoreClient {
     return await this.request(
       "POST",
       `/tasks/${encodeURIComponent(args[0].taskId)}/release`,
-      args[0]
+      this.rewriteRoot(args[0])
     );
   }
 
   async listStoppingTasks(
     ...args: Parameters<ProjectStore["listStoppingTasks"]>
   ): Promise<Awaited<ReturnType<ProjectStore["listStoppingTasks"]>>> {
-    const query = new URLSearchParams({ rootPath: args[0].rootPath });
+    const query = new URLSearchParams({ rootPath: this.root(args[0].rootPath) });
     if (args[0].deadline !== undefined) query.set("deadline", args[0].deadline);
     if (args[0].limit !== undefined) query.set("limit", String(args[0].limit));
     return await this.request("GET", `/tasks/stopping?${query.toString()}`);
@@ -263,7 +286,7 @@ export class SuiteStoreClient {
     return await this.request(
       "POST",
       `/tasks/${encodeURIComponent(args[0].taskId)}/finalize-cancellation`,
-      args[0]
+      this.rewriteRoot(args[0])
     );
   }
 
@@ -273,7 +296,7 @@ export class SuiteStoreClient {
     return await this.request(
       "POST",
       `/tasks/${encodeURIComponent(args[0].taskId)}/ack-cancellation`,
-      args[0]
+      this.rewriteRoot(args[0])
     );
   }
 
@@ -283,14 +306,14 @@ export class SuiteStoreClient {
     return await this.request(
       "POST",
       `/tasks/${encodeURIComponent(args[0].taskId)}/cancel`,
-      args[0]
+      this.rewriteRoot(args[0])
     );
   }
 
   async releaseStaleClaims(
     ...args: Parameters<ProjectStore["releaseStaleClaims"]>
   ): Promise<Awaited<ReturnType<ProjectStore["releaseStaleClaims"]>>> {
-    return await this.request("POST", "/tasks/release-stale", args[0]);
+    return await this.request("POST", "/tasks/release-stale", this.rewriteRoot(args[0]));
   }
 
   async acquireDeviceLeases(
@@ -315,7 +338,7 @@ export class SuiteStoreClient {
   async listSchedules(
     ...args: Parameters<ProjectStore["listSchedules"]>
   ): Promise<Awaited<ReturnType<ProjectStore["listSchedules"]>>> {
-    const query = new URLSearchParams({ rootPath: args[0] });
+    const query = new URLSearchParams({ rootPath: this.root(args[0]) });
     if (args[1] !== undefined) query.set("limit", String(args[1]));
     return await this.request("GET", `/schedules?${query.toString()}`);
   }
@@ -323,14 +346,14 @@ export class SuiteStoreClient {
   async claimScheduleWindow(
     ...args: Parameters<ProjectStore["claimScheduleWindow"]>
   ): Promise<Awaited<ReturnType<ProjectStore["claimScheduleWindow"]>>> {
-    return await this.request("POST", "/schedules/claim", args[0]);
+    return await this.request("POST", "/schedules/claim", this.rewriteRoot(args[0]));
   }
 
   async updateSchedule(
     ...args: Parameters<ProjectStore["updateSchedule"]>
   ): Promise<Awaited<ReturnType<ProjectStore["updateSchedule"]>>> {
     return await this.request("PATCH", `/schedules/${encodeURIComponent(args[1])}`, {
-      rootPath: args[0],
+      rootPath: this.root(args[0]),
       patch: args[2]
     });
   }
@@ -338,14 +361,14 @@ export class SuiteStoreClient {
   async createRegressionTask(
     ...args: Parameters<ProjectStore["createRegressionTask"]>
   ): Promise<Awaited<ReturnType<ProjectStore["createRegressionTask"]>>> {
-    return await this.request("POST", "/tasks", args[0]);
+    return await this.request("POST", "/tasks", this.rewriteRoot(args[0]));
   }
 
   async recordAudit(
     ...args: Parameters<ProjectStore["recordAudit"]>
   ): Promise<Awaited<ReturnType<ProjectStore["recordAudit"]>>> {
     return await this.request("POST", "/audit", {
-      rootPath: args[0],
+      rootPath: this.root(args[0]),
       input: args[1]
     });
   }

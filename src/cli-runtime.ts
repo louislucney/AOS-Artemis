@@ -83,13 +83,20 @@ export async function buildRemoteSuiteRuntime(
     local = new MemoryStore();
   }
   const runnerFetch = createRunnerFetch(resolvedEnv);
-  const client = new SuiteStoreClient({
+  const clientOptions = {
     baseUrl: panelBaseUrl,
     token,
     hostId,
     timeoutMs: runnerHttpTimeoutMs(resolvedEnv),
     instanceId: (resolvedEnv.AOS_RUNNER_INSTANCE_ID ?? "").trim(),
     ...(runnerFetch === undefined ? {} : { fetchImpl: runnerFetch })
+  };
+  const bootstrapClient = new SuiteStoreClient(clientOptions);
+  const defaultProject = await bootstrapClient.getDefaultProject();
+  const controlRootPath = (defaultProject.rootPath ?? "").trim();
+  const client = new SuiteStoreClient({
+    ...clientOptions,
+    ...(defaultProject.found === true && controlRootPath !== "" ? { controlRootPath } : {})
   });
   await client.upsertHost({
     id: hostId,

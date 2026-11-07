@@ -477,6 +477,31 @@ function logIntegrationReadiness(
   }
 }
 
+/** 中心下发的 case set JSON/flows 落到 runner 本地设计目录，并把 refs 指向本地文件。 */
+export function materializeTaskDocuments(
+  runtime: Pick<Runtime, "configDirAbs">,
+  bundle: Awaited<ReturnType<NonNullable<ProjectStore["getTaskBundle"]>>> | null
+): Map<string, string> {
+  const paths = new Map<string, string>();
+  if (bundle === null) return paths;
+  if (bundle.documents !== undefined && bundle.documents.length > 0) {
+    const dir = path.join(runtime.configDirAbs, "design", "case-sets");
+    fs.mkdirSync(dir, { recursive: true });
+    for (const document of bundle.documents) {
+      const name = `${document.caseSetId}-${Buffer.from(document.featureKey, "utf8").toString("base64url")}.json`;
+      const target = path.join(dir, name);
+      writeFileAtomic(target, document.content);
+      paths.set(`${document.caseSetId}\0${document.featureKey}`, target);
+    }
+  }
+  if (bundle.flows !== undefined && bundle.flows !== null && bundle.flows.content !== "") {
+    const dir = path.join(runtime.configDirAbs, "design");
+    fs.mkdirSync(dir, { recursive: true });
+    writeFileAtomic(path.join(dir, "flows.json"), bundle.flows.content);
+  }
+  return paths;
+}
+
 async function suiteRunTask(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -542,7 +567,17 @@ async function suiteRunTask(
     say("注意: --fail-on-uncovered 在 task 模式忽略（子集天然不完整）");
   }
 
-  const sets = bundle?.caseSets ?? (await runtime.store.listCaseSets(runtime.project.rootDir));
+  const materialized = materializeTaskDocuments(runtime, bundle);
+  const sets = (
+    bundle?.caseSets ?? (await runtime.store.listCaseSets(runtime.project.rootDir))
+  ).map((set) => ({
+    ...set,
+    features: set.features.map((feature) => ({
+      ...feature,
+      jsonPath:
+        materialized.get(`${set.id}\0${feature.key}`) ?? feature.jsonPath
+    }))
+  }));
   const setById = new Map(sets.map((set) => [set.id, set]));
   const resolvedRefs: ResolvedTaskRef[] = [];
   for (const ref of task.refs) {

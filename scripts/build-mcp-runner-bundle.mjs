@@ -404,6 +404,7 @@ function writeBundleReadme(staging, target) {
       "",
       "- 中心打开 `AOS_RUNNER_SHARED_LLM=1`（允许 runner 取中心 LLM 代理；单机队/受控内网，多租户不要开）",
       "- 中心设置 `AOS_RUNNER_DEFAULT_PROJECT=<中心项目根路径>`（项目路径只存在中心，runner 不需要知道）",
+      "- 回归任务：中心随任务下发 tests.json/flows，runner 自动落本地 case-sets；不需要手动复制项目",
       "",
       "未配置时 runner 只使用本机文件台账，不会领取中心任务。主机名用 `MOBILE_TESTING_HOST_ID` 指定（默认 win-runner-01 / mac-runner-01）。",
       ""

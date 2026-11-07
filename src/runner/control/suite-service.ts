@@ -1,7 +1,16 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import type { ProjectStore } from "../../db/types.js";
+import { configDirAbs } from "../../artemis/assembly.js";
+import { loadProject } from "../../config/loader.js";
+import { designFlowsPath } from "../../figma/design-source.js";
 import { leaseTokenMatches } from "./lease-token.js";
 import { RunnerControlError } from "./errors.js";
 import { assertLlmProject, resolveCenterLlm } from "./llm-resolver.js";
+
+const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+const MAX_TOTAL_DOCUMENT_BYTES = 20 * 1024 * 1024;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -62,6 +71,22 @@ export class SuiteControlService {
     private readonly publicBaseUrl: string = ""
   ) {}
 
+  /** 跨主机 runner 只被授权访问中心指定的默认项目；其余仍按项目 host 校验。 */
+  private async assertRunnerProject(rootPath: string, _hostId?: string): Promise<void> {
+    const defaultProject = (this.env.AOS_RUNNER_DEFAULT_PROJECT ?? "").trim();
+    if (
+      defaultProject !== "" &&
+      path.resolve(defaultProject) === path.resolve(rootPath)
+    ) {
+      const project = await this.store.getProjectByPath(rootPath);
+      if (project === null) {
+        throw new RunnerControlError("not-found", `项目未登记：${rootPath}`);
+      }
+      return;
+    }
+    await assertProject(this.store, rootPath, this.hostId);
+  }
+
   private async assertTaskInstance(rootPath: string, taskId: string): Promise<void> {
     const task = await this.store.getRegressionTask(rootPath, taskId);
     if (task === null) throw new RunnerControlError("not-found", `未知任务 ${taskId}`);
@@ -77,7 +102,7 @@ export class SuiteControlService {
   async getTaskBundle(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
     const taskId = requireString(args, "taskId");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     const task = await this.store.getRegressionTask(rootPath, taskId);
     if (task === null) return null;
     await assertTaskVisible(this.store, rootPath, taskId, this.hostId);
@@ -86,17 +111,62 @@ export class SuiteControlService {
       this.store.listCaseSets(rootPath)
     ]);
     const wanted = new Set(task.refs.map((ref) => ref.caseSetId));
+    const selected = caseSets.filter((set) => wanted.has(set.id));
+    const documents: Array<{
+      caseSetId: string;
+      featureKey: string;
+      jsonPath: string;
+      content: string;
+    }> = [];
+    let totalBytes = 0;
+    for (const set of selected) {
+      for (const feature of set.features) {
+        try {
+          const stat = fs.statSync(feature.jsonPath);
+          if (stat.size > MAX_DOCUMENT_BYTES || totalBytes + stat.size > MAX_TOTAL_DOCUMENT_BYTES) {
+            continue;
+          }
+          documents.push({
+            caseSetId: set.id,
+            featureKey: feature.key,
+            jsonPath: feature.jsonPath,
+            content: fs.readFileSync(feature.jsonPath, "utf8")
+          });
+          totalBytes += stat.size;
+        } catch {
+          /* 缺失份由 runner 在执行时如实报“份不可读”，不阻断 bundle。 */
+        }
+      }
+    }
+    let flows: { path: string; content: string } | null = null;
+    try {
+      const loaded = loadProject({
+        env: { ...this.env, AOS_PROJECT_DIR: rootPath, AOS_CONFIG: "" }
+      });
+      const flowsPath = designFlowsPath(
+        { configDirAbs: configDirAbs(loaded.config, loaded.rootDir), project: loaded },
+        this.env
+      );
+      const stat = fs.statSync(flowsPath);
+      if (stat.size <= MAX_DOCUMENT_BYTES) {
+        flows = { path: flowsPath, content: fs.readFileSync(flowsPath, "utf8") };
+      }
+    } catch {
+      flows = null;
+    }
     return {
       task,
       project,
-      caseSets: caseSets.filter((set) => wanted.has(set.id))
+      caseSets: selected,
+      documents,
+      flows
     };
   }
 
   async getTask(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
     const taskId = requireString(args, "taskId");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     await assertTaskVisible(this.store, rootPath, taskId, this.hostId);
     return await this.store.getRegressionTask(rootPath, taskId);
   }
@@ -104,7 +174,7 @@ export class SuiteControlService {
   async updateTask(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
     const taskId = requireString(args, "taskId");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     await assertTaskVisible(this.store, rootPath, taskId, this.hostId);
     await this.assertTaskInstance(rootPath, taskId);
     const patch = requireObject<Parameters<ProjectStore["updateRegressionTask"]>[2]>(args, "patch");
@@ -113,14 +183,14 @@ export class SuiteControlService {
 
   async listCaseSets(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     const limit = typeof args.limit === "number" ? args.limit : undefined;
     return await this.store.listCaseSets(rootPath, limit);
   }
 
   async recordRun(args: Record<string, unknown>): Promise<unknown> {
     const input = requireObject<Parameters<ProjectStore["recordSuiteRun"]>[0]>(args, "input");
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     if (input.run.regressionTaskId !== null && input.run.regressionTaskId !== "") {
       await this.assertTaskInstance(input.rootPath, input.run.regressionTaskId);
     }
@@ -129,7 +199,7 @@ export class SuiteControlService {
 
   async listRuns(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     const rawQuery = args.query;
     const query =
       rawQuery === undefined || rawQuery === null
@@ -141,19 +211,32 @@ export class SuiteControlService {
   async getRun(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
     const runId = requireString(args, "runId");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     return await this.store.getSuiteRun(rootPath, runId);
   }
 
   async upsertProject(args: Record<string, unknown>): Promise<unknown> {
     const input = requireObject<Parameters<ProjectStore["upsertProject"]>[0]>(args, "input");
-    return await this.store.upsertProject({ ...input, hostId: this.hostId });
+    const existing = await this.store.getProjectByPath(input.rootPath);
+    return await this.store.upsertProject({
+      ...input,
+      hostId: existing !== null ? existing.hostId : this.hostId
+    });
   }
 
   async getProject(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     return await this.store.getProjectByPath(rootPath);
+  }
+
+  /** 中心分配给 runner 的默认项目；runner 用它作为控制面 rootPath，不需要用户填路径。 */
+  async getDefaultProject(): Promise<unknown> {
+    const rootPath = (this.env.AOS_RUNNER_DEFAULT_PROJECT ?? "").trim();
+    if (rootPath === "") return { found: false };
+    const project = await this.store.getProjectByPath(rootPath);
+    if (project === null) return { found: false };
+    return { found: true, rootPath, name: project.name };
   }
 
   /** Runner 从中心取 LLM 访问方式：返回中心代理 URL（runner token 作为 key），
@@ -208,25 +291,25 @@ export class SuiteControlService {
 
   async upsertRunner(args: Record<string, unknown>): Promise<unknown> {
     const input = requireObject<Parameters<ProjectStore["upsertRunner"]>[0]>(args, "input");
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.upsertRunner({ ...input, hostId: this.hostId });
   }
 
   async markStopped(args: Record<string, unknown>): Promise<unknown> {
     const input = requireObject<Parameters<ProjectStore["markRunnerStopped"]>[0]>(args, "input");
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.markRunnerStopped(input);
   }
 
   async claimTask(args: Record<string, unknown>): Promise<unknown> {
     const input = requireObject<Parameters<ProjectStore["claimRegressionTask"]>[0]>(args, "input");
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.claimRegressionTask({ ...input, hostId: this.hostId });
   }
 
   async beginTask(args: Record<string, unknown>): Promise<unknown> {
     const input = requireObject<Parameters<ProjectStore["beginExecution"]>[0]>(args, "input");
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     await assertTaskVisible(this.store, input.rootPath, input.taskId, this.hostId);
     await this.assertTaskInstance(input.rootPath, input.taskId);
     return await this.store.beginExecution(input);
@@ -237,20 +320,20 @@ export class SuiteControlService {
       args,
       "input"
     );
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.releaseRegressionTasks(input);
   }
 
   async releaseTask(args: Record<string, unknown>): Promise<unknown> {
     const input = requireObject<Parameters<ProjectStore["releaseRegressionTask"]>[0]>(args, "input");
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     await assertTaskVisible(this.store, input.rootPath, input.taskId, this.hostId);
     return await this.store.releaseRegressionTask(input);
   }
 
   async listStopping(args: Record<string, unknown>): Promise<unknown> {
     const input = requireObject<Parameters<ProjectStore["listStoppingTasks"]>[0]>(args, "input");
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.listStoppingTasks(input);
   }
 
@@ -259,13 +342,13 @@ export class SuiteControlService {
       args,
       "input"
     );
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.finalizeCancellation(input);
   }
 
   async ackCancellation(args: Record<string, unknown>): Promise<unknown> {
     const input = requireObject<Parameters<ProjectStore["ackCancellation"]>[0]>(args, "input");
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.ackCancellation(input);
   }
 
@@ -274,7 +357,7 @@ export class SuiteControlService {
       args,
       "input"
     );
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.cancelRegressionTask({ ...input, actorHostId: this.hostId });
   }
 
@@ -283,7 +366,7 @@ export class SuiteControlService {
       args,
       "input"
     );
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.releaseStaleClaims(input);
   }
 
@@ -312,7 +395,7 @@ export class SuiteControlService {
 
   async listSchedules(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     const limit = typeof args.limit === "number" ? args.limit : undefined;
     return await this.store.listSchedules(rootPath, limit);
   }
@@ -322,14 +405,14 @@ export class SuiteControlService {
       args,
       "input"
     );
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.claimScheduleWindow(input);
   }
 
   async updateSchedule(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
     const scheduleId = requireString(args, "scheduleId");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     const patch = requireObject<Parameters<ProjectStore["updateSchedule"]>[2]>(args, "patch");
     return await this.store.updateSchedule(rootPath, scheduleId, patch);
   }
@@ -339,13 +422,13 @@ export class SuiteControlService {
       args,
       "input"
     );
-    await assertProject(this.store, input.rootPath, this.hostId);
+    await this.assertRunnerProject(input.rootPath, this.hostId);
     return await this.store.createRegressionTask({ ...input, createdHostId: this.hostId });
   }
 
   async recordAudit(args: Record<string, unknown>): Promise<unknown> {
     const rootPath = requireString(args, "rootPath");
-    await assertProject(this.store, rootPath, this.hostId);
+    await this.assertRunnerProject(rootPath, this.hostId);
     const input = requireObject<Parameters<ProjectStore["recordAudit"]>[1]>(args, "input");
     return await this.store.recordAudit(rootPath, input);
   }
@@ -389,6 +472,8 @@ export class SuiteControlService {
         return await this.upsertProject(args);
       case "getProject":
         return await this.getProject(args);
+      case "getDefaultProject":
+        return await this.getDefaultProject();
       case "getLlm":
         return await this.getLlm(args);
       case "upsertHost":

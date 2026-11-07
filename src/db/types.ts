@@ -916,6 +916,15 @@ export interface ProjectStore {
     task: RegressionTaskRecord;
     project: ProjectRecord | null;
     caseSets: CaseSetRecord[];
+    /** 控制面下发给 runner 的 tests.json 内容（路径仍是中心路径，runner 负责落盘到本地）。 */
+    documents?: Array<{
+      caseSetId: string;
+      featureKey: string;
+      jsonPath: string;
+      content: string;
+    }>;
+    /** flows.json 内容（可选；runner 用于设计上下文/UI diff）。 */
+    flows?: { path: string; content: string } | null;
   } | null>;
   listRegressionTasks(rootPath: string, limit?: number): Promise<RegressionTaskRecord[]>;
   /** 只取 `stopping`（可选 deadline：`cancel_requested_at <= deadline OR IS NULL`）；

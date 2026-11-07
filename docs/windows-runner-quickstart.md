@@ -16,7 +16,7 @@
 .\runner.cmd
 ```
 
-runner 在 Windows 本机用 USB adb 执行；中心只下发任务并接收结果，不需要中心访问 5037。iOS 不支持 Windows，iPhone 必须连接 Mac（用 macOS MCP runner）。
+runner 在 Windows 本机用 USB adb 执行；中心只下发任务并接收结果，不需要中心访问 5037。跨机回归时中心下发 tests.json/flows，runner 自动落本地 `case-sets`，不需要复制项目。iOS 不支持 Windows，iPhone 必须连接 Mac（用 macOS MCP runner）。
 
 完整排障见 [android-mcp-native-testing.md](./android-mcp-native-testing.md)。
 

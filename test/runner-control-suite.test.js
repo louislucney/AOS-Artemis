@@ -604,3 +604,166 @@ test("suite control: LLM 代理转发到中心 provider，runner 不接触真实
     }
   });
 });
+
+test("suite control: default project + bundle documents allow a different runner root", async () => {
+  const centerDir = await makeWorkspace();
+  const central = await makeCentral(centerDir);
+  const designDir = path.join(centerDir, ".artemis", "design");
+  const caseSetDir = path.join(designDir, "case-sets");
+  fs.mkdirSync(caseSetDir, { recursive: true });
+  const caseSetJson = path.join(caseSetDir, "login.json");
+  fs.writeFileSync(
+    caseSetJson,
+    JSON.stringify({ flows: [{ id: "TC_01", name: "登录" }] })
+  );
+  fs.writeFileSync(path.join(designDir, "flows.json"), JSON.stringify({ screens: [] }));
+  await central.store.recordCaseSet({
+    rootPath: central.rootPath,
+    source: "test",
+    basename: "login",
+    features: [
+      {
+        key: "login",
+        name: "登录",
+        caseCount: 1,
+        screens: [],
+        jsonPath: caseSetJson,
+        mdPath: "",
+        xlsxPath: ""
+      }
+    ]
+  });
+  const [caseSet] = await central.store.listCaseSets(central.rootPath);
+  const task = await central.store.createRegressionTask({
+    rootPath: central.rootPath,
+    refs: [{ caseSetId: caseSet.id, featureKey: "login" }],
+    platforms: ["android"],
+    baseline: "latest",
+    targetHostId: HOST
+  });
+  const localDir = makeTempProject({ config: baseConfig() });
+  const workspaceRoot = await makeWorkspace();
+  await withEnv("AOS_RUNNER_JOB_TOKEN", TOKEN, () =>
+    withEnv("AOS_RUNNER_DEFAULT_PROJECT", central.rootPath, async () => {
+      const handle = await createAosHttpServer({
+        port: 0,
+        host: "127.0.0.1",
+        workspaceRoot,
+        store: central.store
+      });
+      const baseUrl = `http://127.0.0.1:${handle.port}`;
+      const headers = { authorization: `Bearer ${TOKEN}`, "x-aos-host-id": HOST };
+      try {
+        const defaultProject = await fetch(
+          `${baseUrl}/panel/api/runners/suite/default-project`,
+          { headers }
+        );
+        assert.equal(defaultProject.status, 200);
+        const defaultPayload = await defaultProject.json();
+        assert.equal(defaultPayload.value.found, true);
+        assert.equal(defaultPayload.value.rootPath, central.rootPath);
+
+        const bundleResponse = await fetch(
+          `${baseUrl}/panel/api/runners/suite/tasks/${encodeURIComponent(task.id)}/bundle?rootPath=${encodeURIComponent(central.rootPath)}`,
+          { headers }
+        );
+        assert.equal(bundleResponse.status, 200);
+        const bundlePayload = await bundleResponse.json();
+        assert.equal(bundlePayload.value.documents.length, 1);
+        assert.match(bundlePayload.value.documents[0].content, /TC_01/);
+        assert.match(bundlePayload.value.flows.content, /screens/);
+
+        const env = {
+          AOS_HOST_ID: HOST,
+          AOS_RUNNER_JOB_TOKEN: TOKEN,
+          AOS_RUNNER_CONTROL_URL: baseUrl,
+          MOBILE_TESTING_PANEL_BASE_URL: baseUrl,
+          AOS_PROJECT_DIR: localDir,
+          AOS_CONFIG: ""
+        };
+        const built = await buildRemoteSuiteRuntime(localDir, env);
+        try {
+          const remoteTask = await built.runtime.store.getRegressionTask(localDir, task.id);
+          assert.equal(remoteTask?.id, task.id);
+          const remoteBundle = await built.runtime.store.getTaskBundle?.(localDir, task.id);
+          assert.equal(remoteBundle?.documents?.length, 1);
+        } finally {
+          await built.dispose();
+        }
+      } finally {
+        await handle.close();
+      }
+    })
+  );
+});
+
+test("suite control: suite runner claims center task with a different local root via default project", async () => {
+  const centerDir = await makeWorkspace();
+  const central = await makeCentral(centerDir);
+  const localDir = makeTempProject({ config: baseConfig() });
+  const workspaceRoot = await makeWorkspace();
+  await withEnv("AOS_RUNNER_JOB_TOKEN", TOKEN, () =>
+    withEnv("AOS_RUNNER_DEFAULT_PROJECT", central.rootPath, async () => {
+      const handle = await createAosHttpServer({
+        port: 0,
+        host: "127.0.0.1",
+        workspaceRoot,
+        store: central.store
+      });
+      const baseUrl = `http://127.0.0.1:${handle.port}`;
+      try {
+        const executed = [];
+        const code = await runSuiteCommand(
+          [
+            "runner",
+            "--project",
+            localDir,
+            "--name",
+            "suite-cross-root",
+            "--once",
+            "--artifact-port",
+            "0"
+          ],
+          {
+            env: {
+              AOS_HOST_ID: HOST,
+              AOS_RUNNER_JOB_TOKEN: TOKEN,
+              AOS_RUNNER_CONTROL_URL: baseUrl,
+              MOBILE_TESTING_PANEL_BASE_URL: baseUrl
+            },
+            runner: {
+              executeSuite: async (argv) => {
+                executed.push(argv);
+                return 0;
+              },
+              collectInventory: async () => ({
+                platforms: ["android"],
+                devices: [
+                  {
+                    serial: "pixel-1",
+                    name: "",
+                    model: "Pixel 7",
+                    osVersion: "14",
+                    platform: "android",
+                    kind: "device",
+                    state: "device"
+                  }
+                ],
+                tools: tools()
+              }),
+              collectHostSnapshot: async () => hostSnapshot(),
+              sleep: async () => {}
+            }
+          }
+        );
+        assert.equal(code, 0);
+        assert.equal(executed.length, 1);
+        assert.ok(executed[0].includes("--task"));
+        const stored = await central.store.getRegressionTask(central.rootPath, central.task.id);
+        assert.equal(stored.status, "running");
+      } finally {
+        await handle.close();
+      }
+    })
+  );
+});

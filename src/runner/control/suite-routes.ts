@@ -77,6 +77,9 @@ export function resolveSuiteResource(
     if (parts[0] === "projects" && parts.length === 1 && root) {
       return { op: "getProject", args: { rootPath: root } };
     }
+    if (parts[0] === "default-project" && parts.length === 1) {
+      return { op: "getDefaultProject", args: {} };
+    }
     if (parts[0] === "llm" && parts.length === 1) {
       return { op: "getLlm", args: root ? { rootPath: root } : {} };
     }

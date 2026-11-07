@@ -3921,3 +3921,14 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **包**（`scripts/build-mcp-runner-bundle.mjs`）：所有 setup/doctor/smoke/runner 脚本设置 `AOS_LLM_FROM_CENTER=1`；`.env.example` 不再要求填 key，改为中心控制面 + `AOS_CENTER_PROJECT_ROOT`；README 说明中心 URL/token、`AOS_RUNNER_SHARED_LLM=1` 与“无需本机 key”。
 - **边界**：代理仅支持 OpenAI 兼容 provider；Google provider 显式 501，不伪装成功。跨主机共享 LLM 是受控内网/单机队模式（中心 `AOS_RUNNER_SHARED_LLM=1`）；多租户部署应改用按项目/主机的代理令牌，而不是共享模式。
 - **测试**：`test/runner-control-suite.test.js` 覆盖 `/llm` 不泄露真实 key、runner 注入代理 URL + runner token、代理替换 `Authorization` 并转发到 provider；`test/http-server.test.js`/`test/web-devices-ui.test.js` 覆盖 runner 包下载与面板文案；全量测试/lint 保持绿。
+
+### 13.320 新增（跨机 runner 任务包：中心默认项目 + tests/flows 下发）
+
+> 2026-11-07。§13.319 解决了 runner 不碰 key，但 `suite runner` 仍假设 runner 有与中心同路径的项目：claim/bundle/run 都按本地 rootPath 查中心，跨 Windows/Mac 会找不到任务，case set 的 `jsonPath` 也指向中心绝对路径。新增“中心默认项目 + 任务包内容下发”，runner 不需要复制项目或填写项目路径。
+
+- **中心默认项目**（`SuiteControlService.getDefaultProject`、`suite-routes.ts`）：`GET /panel/api/runners/suite/default-project` 返回 `AOS_RUNNER_DEFAULT_PROJECT` 对应项目 `{ found, rootPath, name }`；`assertRunnerProject` 允许 runner 访问该默认项目（其余仍按项目 host 校验）。`upsertProject` 保留中心已有 hostId，runner 不会把中心项目改成自己的 host。
+- **控制面 root 重写**（`SuiteStoreClient.controlRootPath`）：runner 本地项目路径与中心不同时，客户端把 claim/bundle/update/run/lease/schedule 等控制面调用的 `rootPath`/`input.rootPath` 统一改写为中心默认项目；本地 FileStore、trace、`.artemis` 仍用 runner 本地路径。`buildRemoteSuiteRuntime` 先取默认项目，再创建带 `controlRootPath` 的客户端；中心未配置默认项目时保持旧行为（同路径 runner）。
+- **任务包内容**（`ProjectStore.getTaskBundle` 类型、`SuiteControlService.getTaskBundle`）：除 task/project/caseSets 外，新增 `documents[]`（`caseSetId/featureKey/jsonPath/content`，读 case set tests.json）与 `flows`（flows.json 内容）。单文件上限 10MB、合计 20MB；缺失/超限不阻断 bundle，runner 执行时如实报“份不可读”。
+- **runner 落盘**（`suite-command.ts` `materializeTaskDocuments`）：把 documents 写到本地 `<configDir>/design/case-sets/<caseSetId>-<base64url(featureKey)>.json`，flows 写到 `<configDir>/design/flows.json`；`suiteRunTask` 把 `refs[].jsonPath` 指向本地文件后再执行。xlsx/md 不随任务下发（结果/报告仍在中心项目侧）。
+- **边界**：只下发 tests.json/flows；设计截图/UI contract/参考图等大资产不下发（UI diff 默认关闭；需要时另做资产包）。Excel 源文件/APK 资产上传链路仍沿用现有 Web 资产模型，不在本次范围。
+- **测试**：`test/runner-control-suite.test.js` 覆盖 `/default-project`、bundle documents/flows、不同本地 root 的 claim、`buildRemoteSuiteRuntime` 控制面 root 重写；`test/runner-task-materialize.test.js` 覆盖 JSON/flows 落盘与 null bundle；全量测试/lint 保持绿。
