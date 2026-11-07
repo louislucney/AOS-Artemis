@@ -494,7 +494,10 @@ export class Runtime {
   /** 每次任务执行前重新拉取中心 LLM 代理配置（跨机 runner 无需重启即可拿到新中心地址）。 */
   async refreshCenterLlm(): Promise<void> {
     const centerEnv = { ...this.project.dotenvValues, ...this._baseEnv };
-    if ((centerEnv.AOS_LLM_FROM_CENTER ?? "").trim() !== "1") return;
+    if ((centerEnv.AOS_LLM_FROM_CENTER ?? "").trim() !== "1") {
+      logWarn("AOS_LLM_FROM_CENTER 未启用：runner 使用本机 LLM 条目");
+      return;
+    }
     const center = await fetchCenterLlm({
       env: centerEnv,
       hostId: this.hostIdentity?.id ?? null
@@ -505,6 +508,9 @@ export class Runtime {
     }
     this.transientEntry = center.entry;
     this.activeCache = null;
+    logWarn(
+      `中心 LLM：${center.entry.name} · model=${center.entry.model} · baseUrl=${center.entry.baseUrl ?? "（未配置）"}`
+    );
     this.writeActiveConfig(center.entry);
     if (this.proxy.isRunning()) {
       const runningFingerprint = this.proxy.status().fingerprint;
@@ -1405,7 +1411,9 @@ export class Runtime {
   }
 
   prepareChildSpec(): ChildSpec {
-    return this.childSupervisor.spec();
+    const spec = this.childSupervisor.spec();
+    logWarn(`Artemis 子进程 OPENAI_BASE_URL=${spec.env.OPENAI_BASE_URL ?? "（未设置）"}`);
+    return spec;
   }
 
   activeEntryCached(): LlmEntry | null {

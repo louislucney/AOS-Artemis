@@ -32,7 +32,7 @@ runner 在 Windows 本机用 USB adb 执行；中心只下发任务并接收结�
 启动脚本已固定 `UV_PYTHON=3.12`、`UV_SYSTEM_CERTS=1`。如果 `uv` 仍选 3.13，先 `uv python find 3.12`。如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler）：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.2.1-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.2.2-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"

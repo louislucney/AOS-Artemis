@@ -3997,3 +3997,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 ### 13.326 新增（回归任务应用包名 / 0.2.1）
 
 > 2026-11-07。真机 smoke 发现：任务只下发用例与安装包时，Artemis 不会主动 launch 被测应用，容易在设备当前前台停留到 15min poll 超时。回归任务新增可选 `appPackage`（Android package / iOS bundle id），面板「新建测试 → 参数」与 `suite task create --app <package>` 均可填；runner 读取任务字段后转成 `locked_app_package`，执行前锁定并启动应用。版本升至 0.2.1；未填包名保持旧行为（不主动 launch），不改变既有任务兼容性。
+
+### 13.327 诊断与修复（0.2.2）
+
+> 2026-11-07。真机 smoke 中应用已启动但 agent 无动作，trace `stderr.log` 为 `openai.APIConnectionError: Connection error` / `LLMExhaustedError`。0.2.2 增加可观测性：`Runtime.refreshCenterLlm` 在 `AOS_LLM_FROM_CENTER` 未启用时明确 WARN，成功时打印中心 LLM 的 `name/model/baseUrl`；`Runtime.prepareChildSpec` 打印 Artemis 子进程实际 `OPENAI_BASE_URL`（不含 key）。同时中心 LLM 指纹变化时对运行中的子进程 `markForRestart`，避免长驻 runner 复用旧地址。runner 包版本升至 0.2.2。
