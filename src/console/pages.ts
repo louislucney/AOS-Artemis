@@ -1118,7 +1118,7 @@ export function renderArchivePage(data: ArchivePageData): string {
   const archiveLink = (patch: Record<string, string | null>): string => {
     const params = new URLSearchParams({ project: data.rootPath, section: "archive" });
     if (data.hostId) params.set("host", data.hostId);
-    for (const key of ["kind", "q", "since", "task"]) {
+    for (const key of ["kind", "q", "since", "task", "run", "case"]) {
       const value = data.query[key];
       if (value !== undefined && value !== "") params.set(key, value);
     }
@@ -1151,7 +1151,7 @@ export function renderArchivePage(data: ArchivePageData): string {
     `<a class="c-button" href="${archiveLink({ since: new Date(Date.now() - hours * 3600_000).toISOString() })}">${label}</a>`;
   const csvParams = new URLSearchParams({ project: data.rootPath, format: "csv" });
   if (data.hostId) csvParams.set("host", data.hostId);
-  for (const key of ["kind", "q", "since", "task"]) {
+  for (const key of ["kind", "q", "since", "task", "run", "case"]) {
     const value = data.query[key];
     if (value !== undefined && value !== "") csvParams.set(key, value);
   }
@@ -1172,13 +1172,24 @@ export function renderArchivePage(data: ArchivePageData): string {
           `<input type="hidden" name="project" value="${escapeHtml(data.rootPath)}">`,
           `<input type="hidden" name="section" value="archive">`,
           ...(data.hostId ? [`<input type="hidden" name="host" value="${escapeHtml(data.hostId)}">`] : []),
-          ...(data.query.task
-            ? [`<input type="hidden" name="task" value="${escapeHtml(data.query.task)}">`]
-            : []),
-          data.query.task
-            ? `<p class="muted">任务过滤：<code>${escapeHtml(
-                data.query.task
-              )}</code> · <a href="${archiveLink({ task: null, offset: "0" })}">清除任务过滤</a></p>`
+          ...["task", "run", "case"].flatMap((key) =>
+            data.query[key]
+              ? [`<input type="hidden" name="${key}" value="${escapeHtml(data.query[key])}">`]
+              : []
+          ),
+          data.query.task || data.query.run || data.query.case
+            ? `<p class="muted">关联过滤：${[
+                data.query.task ? `任务 <code>${escapeHtml(data.query.task)}</code>` : "",
+                data.query.run ? `运行 <code>${escapeHtml(data.query.run)}</code>` : "",
+                data.query.case ? `用例 <code>${escapeHtml(data.query.case)}</code>` : ""
+              ]
+                .filter((part) => part !== "")
+                .join(" · ")} · <a href="${archiveLink({
+                task: null,
+                run: null,
+                case: null,
+                offset: "0"
+              })}">清除关联过滤</a></p>`
             : "",
           `<p>类型 <select name="kind" aria-label="产物类型"><option value="">全部</option>${["run", "case-set", "report", "diff", "crash", "trace"]
             .map(

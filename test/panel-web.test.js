@@ -921,6 +921,7 @@ test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404"
   assert.match(html.body, /UI 失败 1/, "设备运行回显 UI 失败计数");
   assert.match(html.body, />批次<\/a>/, "运行行可打开批次");
   assert.match(html.body, />轨迹<\/a>/, "运行行可打开轨迹");
+  assert.match(html.body, />运行档案<\/a>/, "运行行可打开运行档案");
   assert.match(html.body, />去失败分析<\/a>/, "失败运行可去失败分析");
   assert.match(html.body, new RegExp(`view=review&amp;task=${task.id}`), "失败分析链接带任务过滤");
   assert.match(html.body, /任务档案/, "任务页可打开任务档案");
@@ -932,8 +933,8 @@ test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404"
     deps
   );
   assert.equal(archive.status, 200);
-  assert.match(archive.body, /任务过滤/);
-  assert.match(archive.body, /清除任务过滤/);
+  assert.match(archive.body, /关联过滤/);
+  assert.match(archive.body, /清除关联过滤/);
   assert.match(archive.body, /run-.*\.json/, "任务档案包含运行清单");
   const review = await handlePanelRequest(
     new URL(

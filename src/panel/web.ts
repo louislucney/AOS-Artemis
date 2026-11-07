@@ -897,7 +897,10 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
         : 0;
     const pageSize = 50;
     const taskFilterId = trimmed(url.searchParams.get("task"));
+    const runFilterId = trimmed(url.searchParams.get("run"));
+    const caseFilterId = trimmed(url.searchParams.get("case"));
     const needles: string[] = [];
+    if (caseFilterId !== null) needles.push(caseFilterId);
     if (taskFilterId !== null) {
       const task = await projectStore
         .getRegressionTask(resolved.rootPath, taskFilterId)
@@ -913,6 +916,18 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
           for (const entry of run.cases) {
             if (entry.traceId !== null) needles.push(entry.traceId);
           }
+        }
+      }
+    }
+    if (runFilterId !== null) {
+      const run = await projectStore
+        .getSuiteRun(resolved.rootPath, runFilterId)
+        .catch(() => null);
+      if (run !== null) {
+        needles.push(run.id);
+        if (run.manifestPath !== null) needles.push(path.basename(run.manifestPath));
+        for (const entry of run.cases) {
+          if (entry.traceId !== null) needles.push(entry.traceId);
         }
       }
     }
@@ -2535,6 +2550,13 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       )}&amp;section=archive&amp;kind=trace&amp;q=${encodeURIComponent(run.runId)}${hostSuffix(
         view.hostId
       ).replace(/&/g, "&amp;")}">轨迹</a>`
+    );
+    links.push(
+      `<a class="c-button" href="/panel?project=${encodeURIComponent(
+        view.rootPath
+      )}&amp;section=archive&amp;run=${encodeURIComponent(run.runId)}${hostSuffix(
+        view.hostId
+      ).replace(/&/g, "&amp;")}">运行档案</a>`
     );
     if (run.failed > 0) {
       links.push(
