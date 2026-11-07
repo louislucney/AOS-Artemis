@@ -32,7 +32,7 @@ runner 在 Windows 本机用 USB adb 执行；中心只下发任务并接收结�
 启动脚本已固定 `UV_PYTHON=3.12`、`UV_SYSTEM_CERTS=1`。如果 `uv` 仍选 3.13，先 `uv python find 3.12`。如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler）：
 
 ```powershell
-cd C:\RUNNER\mobile-testing-mcp-runner-0.2.0-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.2.0-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -45,7 +45,7 @@ $env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 ### 完全离线（内置依赖包）
 
-如果公司网络完全访问不了 PyPI，使用 `mobile-testing-mcp-runner-<version>-win32-x64-offline.zip`（约 300MB）。包内 `deps\win32-site-packages.zip` 已包含 Windows x64 / CPython 3.12 的 Artemis 依赖；`configure.cmd` 后直接 `runner.cmd`，首次自动创建 venv 并解压，不需要网络。解压后约 850MB。
+如果公司网络完全访问不了 PyPI，使用 `aos-artemis-runner-<version>-win32-x64-offline.zip`（约 300MB）。包内 `deps\win32-site-packages.zip` 已包含 Windows x64 / CPython 3.12 的 Artemis 依赖；`configure.cmd` 后直接 `runner.cmd`，首次自动创建 venv 并解压，不需要网络。解压后约 850MB。
 
 完整排障见 [android-mcp-native-testing.md](./android-mcp-native-testing.md)。
 

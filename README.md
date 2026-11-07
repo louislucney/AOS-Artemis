@@ -392,7 +392,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\mobile-testing-mcp-runner-0.2.0-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.2.0-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -403,7 +403,7 @@ $env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 也可用阿里云 `https://mirrors.aliyun.com/pypi/simple/` 或公司内部镜像。成功标志是 `artemis\.venv\.aos-deps.json` 存在；`runner.cmd` 用它判断依赖就绪，安装失败不会启动。
 
-**Windows 离线依赖包**：公司网络完全无法访问 PyPI 时，使用 `mobile-testing-mcp-runner-<version>-win32-x64-offline.zip`（约 300MB，内置 Windows x64 / CPython 3.12 的 Artemis site-packages）。解压后跑 `configure.cmd`，再跑 `runner.cmd`；首次会自动创建 venv 并解压 `deps\win32-site-packages.zip`，不需要访问 PyPI。解压后约 850MB，需要本机有 Python 3.12。
+**Windows 离线依赖包**：公司网络完全无法访问 PyPI 时，使用 `aos-artemis-runner-<version>-win32-x64-offline.zip`（约 300MB，内置 Windows x64 / CPython 3.12 的 Artemis site-packages）。解压后跑 `configure.cmd`，再跑 `runner.cmd`；首次会自动创建 venv 并解压 `deps\win32-site-packages.zip`，不需要访问 PyPI。解压后约 850MB，需要本机有 Python 3.12。
 
 ### Jira 接入（读取 / 回写 / CLI）
 

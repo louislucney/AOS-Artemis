@@ -464,7 +464,7 @@ function writeBundleReadme(staging, target) {
   fs.writeFileSync(
     path.join(staging, "README.md"),
     [
-      `# mobile-testing MCP runner（${platform}）`,
+      `# AOS-ARTEMIS runner（${platform}）`,
       "",
       "这个包在**执行机本机**运行 MCP 执行代码：中心只下发任务，runner 领取后用本机设备执行并回传结果。",
       "不需要 Maestro、JDK，也不需要中心反向连本机 adb。",
@@ -516,7 +516,7 @@ function writeBundleReadme(staging, target) {
 fs.mkdirSync(outDir, { recursive: true });
 const manifest = [];
 for (const target of selectedTargets) {
-  const stem = `mobile-testing-mcp-runner-${pkg.version}-${target.platformKey}`;
+  const stem = `aos-artemis-runner-${pkg.version}-${target.platformKey}`;
   const staging = path.join(outDir, stem);
   fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(staging, { recursive: true });
@@ -601,7 +601,7 @@ if (partial) {
     /* partial build without prior manifest */
   }
 }
-const offlineFilename = `mobile-testing-mcp-runner-${pkg.version}-win32-x64-offline.zip`;
+const offlineFilename = `aos-artemis-runner-${pkg.version}-win32-x64-offline.zip`;
 const offlinePath = path.join(outDir, offlineFilename);
 if (fs.existsSync(offlinePath)) {
   finalManifest = finalManifest.filter(

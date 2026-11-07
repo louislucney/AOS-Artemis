@@ -3902,7 +3902,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-11-07。Maestro runner 移除后，面板只剩 adb-host（只暴露 adb，中心反向连接）。现场拓扑需要“runner 在宿主本机执行、中心只下发任务”的 B 架构；新增双端 MCP runner 包，并保留 adb-host 作为远程 adb 兼容入口。
 
-- **构建**（`scripts/build-mcp-runner-bundle.mjs`、`npm run bundle:mcp-runner`）：产出 `dist-runner/mobile-testing-mcp-runner-<version>-win32-x64.zip`（约 63MB）与 `...-darwin-arm64.tar.gz`（约 65MB），写入 `mcp-runner-manifest.json`。包内包含：`dist/`、生产 `node_modules/`（排除 fsevents/.bin/@esbuild）、`artemis/` Python 源码（排除 `.venv/.git/traces/playground/缓存`）、对应平台 `platform-tools/`、`scripts/e2e-device.mjs` 与 `mobile-testing-call.mjs`、`docs/`、示例 `project/aos.config.jsonc` 与 `.env.example`。
+- **构建**（`scripts/build-mcp-runner-bundle.mjs`、`npm run bundle:mcp-runner`）：产出 `dist-runner/aos-artemis-runner-<version>-win32-x64.zip`（约 63MB）与 `...-darwin-arm64.tar.gz`（约 65MB），写入 `mcp-runner-manifest.json`。包内包含：`dist/`、生产 `node_modules/`（排除 fsevents/.bin/@esbuild）、`artemis/` Python 源码（排除 `.venv/.git/traces/playground/缓存`）、对应平台 `platform-tools/`、`scripts/e2e-device.mjs` 与 `mobile-testing-call.mjs`、`docs/`、示例 `project/aos.config.jsonc` 与 `.env.example`。
 - **启动脚本**：Windows `setup.cmd`/`doctor.cmd`/`smoke.cmd`/`runner.cmd`；macOS `setup.command`/`doctor.command`/`smoke.command`/`runner.command`。`setup` 执行 `doctor --install-deps`（uv 安装 Artemis 依赖）；`doctor` 体检；`smoke` 调 `e2e-device.mjs` 跑单条 `mobile_run_task`；`runner` 以 `suite runner` 常驻领取中心任务。
 - **下载**（`src/http-server.ts`）：`GET /panel/runner-bundle?role=mcp-runner&platform=win32&arch=x64` 或 `...&platform=darwin&arch=arm64` 读取 `mcp-runner-manifest.json` 并流式返回；`.zip` → `application/zip`，`.tar.gz` → `application/gzip`。`role=adb-host` 继续原行为；未知 role 410。
 - **面板**（`src/console/pages.ts`）：「设备 → 接入执行机」主按钮改为 Windows/macOS MCP runner，adb-host 降为兼容入口；文案明确前置（Node 20+、uv、Python 3.12；iOS 需 Xcode/Appium/签名/隧道）与边界（Windows 不能执行 iOS）。
@@ -3989,4 +3989,4 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 ### 13.325 版本（0.2.0）
 
-> 2026-11-07。集中修复跨机 runner、记录闭环与面板交互后，版本从 0.1.0 升至 0.2.0；runner 包、adb-host 包文件名与 `AOS_MCP_VERSION` 同步更新。0.2.0 的 Windows runner 包含：任务级 `caseIds`（只重跑失败用例）、安装包自动安装、每任务刷新中心 LLM、默认 LAN 产物基址、运行结果/证据标注。升级时离线环境只需替换 `dist`（保留 `deps/`、`project/`、`.env`）。
+> 2026-11-07。集中修复跨机 runner、记录闭环与面板交互后，版本从 0.1.0 升至 0.2.0；runner 包、adb-host 包文件名与 `AOS_MCP_VERSION` 同步更新；runner 包前缀改为 `aos-artemis-runner-`，避免与产品名/旧 Maestro runner 混淆。0.2.0 的 Windows runner 包含：任务级 `caseIds`（只重跑失败用例）、安装包自动安装、每任务刷新中心 LLM、默认 LAN 产物基址、运行结果/证据标注。升级时离线环境只需替换 `dist`（保留 `deps/`、`project/`、`.env`）。
