@@ -276,12 +276,12 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 |---|---|
 | `assets` **测试资产** | `overview\|case-sets\|excel\|packages\|materials\|reference`；用例集、Excel/CSV、安装包、测试资料、参考图统一管理；Excel 列映射/导入/上传需 maintainer+。Maestro 脚本集入口已移除。 |
 | `create` **新建测试** | 只保留套件回归四步下发向导；「② 参数」可选安装包（APK/IPA），执行机领取后先安装再跑用例，不要求设备预装；跨机 runner（如 Windows `win-runner-01`）可直接选用中心项目目录，不需要在 runner 主机重复登记项目；切换 host/project 保留已填表单；旧网页测试入口自动跳回套件回归。 |
-| `tasks` **任务与结果** | 套件回归任务列表（状态/设备/门禁/失败域），25 条/页分页并保留搜索/筛选；详情 `section=tasks&task=<id>` 展示运行/引用/跨端+重新派发，运行行可直接打开批次/轨迹/失败分析；`view=review\|stats` 为待处理失败与统计子视图。历史 Web 任务数据保留但不在面板/对比计数中展示 |
+| `tasks` **任务与结果** | 套件回归任务列表（状态/设备/门禁/失败域），25 条/页分页并保留搜索/筛选；详情 `section=tasks&task=<id>` 展示运行/引用/跨端+重新派发/只重跑失败用例（`caseIds`），运行行可直接打开批次/轨迹/运行档案/失败分析；`view=review\|stats` 为待处理失败与统计子视图。历史 Web 任务数据保留但不在面板/对比计数中展示 |
 | `devices` **设备台账** | 设备列表（suite runner）：执行机在线/离线、平台、模拟器/真机、型号/系统版本、`空闲`/`占用`/`离线`、当前任务（设备租约）与到期、最后心跳、工具；带项目上下文时保留项目并给每行「去下发」入口；按 `state=idle|busy|offline`、`platform=android|ios` 过滤；空闲＝在线且无有效租约；页面只读、不展示 token/secret |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果筛选＋**时间预设（24h/7d/30d）＋分页** |
 | `events` **项目事件** | 执行事件流（run/case/artifact/log/feedback.request），类型/状态/消费筛选＋快捷「未消费/反馈请求」；消费态与 `aos_event_poll` 同源；`payload=1`/勾选「显示 payload」查看内容（最多 50 条），默认不回显 |
-| `ops` **运维与数据** | 存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
+| `ops` **运维与数据** | 项目配置（LLM name/model/baseUrl/apiKey、Figma token、Jira 站点/邮箱/token；仅 admin，密钥只写 `.env`/存储且不回显）、存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
 
 **旧路由兼容**：`section=library`→`assets&tab=case-sets`、`section=assets&kind=<excel|package|materials|reference>`→`assets&tab=<tab>`、`section=dispatch`→`create&type=suite`、`section=jobs`（无 job）→`create&type=web`、`section=jobs&job=<id>`→`tasks&task=<id>`、无 section 的 `?task=<id>`→`tasks&task=<id>`、`view=review|stats`→`tasks&view=<view>`，均对 HTML `/panel` 302 且保留 `project`/`host` 等参数（`/panel.json` 保留旧 `view` 契约）。见 DESIGN §13.307。
 
