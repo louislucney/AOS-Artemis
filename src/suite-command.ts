@@ -115,10 +115,12 @@ import {
   type SuiteRunReport
 } from "./figma/suite-runner.js";
 import { Runtime } from "./runtime.js";
+import { probeCenterLlm } from "./llm/center.js";
 import { runRunnerAgent } from "./runner/agent.js";
 import { startRunnerArtifactServer, type RunnerArtifactServer } from "./runner/artifact-server.js";
 import type { HostSnapshot } from "./runner/host-snapshot.js";
 import type { RunnerInventory } from "./runner/inventory.js";
+import { TaskProgressReporter } from "./runner/progress.js";
 import { isRunnerOnline, runnerTtlFrom } from "./runner/status.js";
 import { logWarn } from "./log.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
@@ -527,6 +529,10 @@ function writeFileAtomicBuffer(target: string, buffer: Buffer): void {
   }
 }
 
+function taskCaseIdsForProgress(task: { caseIds: string[] }): boolean {
+  return task.caseIds.length > 0;
+}
+
 async function materializeTaskApp(
   runtime: Runtime,
   task: { appAssetId: string | null },
@@ -685,11 +691,36 @@ async function suiteRunTask(
     }
   }
 
+  const progress = new TaskProgressReporter(runtime, task);
+  await progress.report("preflight", 5, { message: "环境预检" });
   try {
     await runtime.refreshCenterLlm();
   } catch (error) {
     io.errorLog(`中心 LLM 刷新失败（继续使用当前条目）：${errorMessage(error)}`);
   }
+  const centerEnabled =
+    ((io.env ?? process.env).AOS_LLM_FROM_CENTER ??
+      runtime.project.dotenvValues.AOS_LLM_FROM_CENTER ??
+      "").trim() === "1";
+  if (centerEnabled) {
+    const active = await runtime.activeEntry();
+    const llmError = active === null ? "中心未配置 active LLM" : await probeCenterLlm(active);
+    if (llmError !== null) {
+      await progress.report("failed", 5, {
+        message: `LLM 预检失败：${llmError}`,
+        errorCode: "llm-unreachable"
+      });
+      await runtime.store
+        .updateRegressionTask(runtime.project.rootDir, task.id, {
+          status: "failed",
+          expectStatuses: ["pending", "claimed", "running"]
+        })
+        .catch(() => false);
+      io.errorLog(`环境错误：LLM 预检失败：${llmError}`);
+      return 2;
+    }
+  }
+  await progress.report("app_started", 10, { message: "启动被测应用" });
   const taskApp =
     flags.get("app-path") !== null
       ? ({ ok: true, path: null } as const)
@@ -699,6 +730,45 @@ async function suiteRunTask(
     return 2;
   }
   const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
+  baseOptions.regressionTaskId = task.id;
+  let completedCases = 0;
+  let lastCaseId: string | null = null;
+  let lastTraceId: string | null = null;
+  const expectedCases = Math.max(
+    1,
+    (taskCaseIdsForProgress(task)
+      ? task.caseIds.length
+      : resolvedRefs.reduce((sum, ref) => sum + (ref.caseCount ?? 1), 0)) * Math.max(1, devices.length)
+  );
+  baseOptions.onCaseEvent = async (event) => {
+    if (event.phase === "start") {
+      await progress.report(
+        "acting",
+        15 + Math.floor((75 * completedCases) / expectedCases),
+        {
+          caseId: event.caseId,
+          message: `正在执行 ${event.caseId}（第 ${event.index}/${event.total} 个）`
+        }
+      );
+      return;
+    }
+    completedCases += 1;
+    lastCaseId = event.caseId;
+    lastTraceId = event.traceId;
+    const passed = event.status === "passed";
+    await progress.report(
+      "case_finished",
+      15 + Math.floor((75 * completedCases) / expectedCases),
+      {
+        caseId: event.caseId,
+        traceId: event.traceId,
+        message: passed
+          ? `用例完成：${event.caseId}`
+          : `用例失败：${event.caseId}${event.error === null || event.error === undefined ? "" : ` · ${event.error}`}`,
+        errorCode: passed ? null : "case-failed"
+      }
+    );
+  };
   if (taskApp.path !== null) {
     baseOptions.appPath = taskApp.path;
     say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);
@@ -1042,6 +1112,12 @@ async function suiteRunTask(
     );
     const totalPassed = subRuns.reduce((sum, entry) => sum + entry.passed, 0);
     const totalCases = subRuns.reduce((sum, entry) => sum + entry.total, 0);
+    await progress.report(finalStatus === "completed" ? "done" : "failed", 100, {
+      message: `执行结束：通过 ${totalPassed}/${totalCases}`,
+      errorCode: finalStatus === "completed" ? null : `suite-${finalStatus}`,
+      ...(lastCaseId === null ? {} : { caseId: lastCaseId }),
+      ...(lastTraceId === null ? {} : { traceId: lastTraceId })
+    });
     const exitCode = !anyExecuted ? 2 : anyExecError ? 2 : anyUiFailure ? 2 : anyUiWeightFailure ? 2 : anyFailure ? 1 : 0;
     const readiness = integrationReadinessFromFailures(readinessFailures);
     if (jsonMode) {

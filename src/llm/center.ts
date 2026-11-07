@@ -122,3 +122,34 @@ export async function fetchCenterLlm(
     error: null
   };
 }
+
+/** 最小中心 LLM 代理探针：真发一次 1-token chat，避免预检只看配置。 */
+export async function probeCenterLlm(
+  entry: Pick<LlmEntry, "provider" | "model" | "baseUrl" | "apiKey">,
+  options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+): Promise<string | null> {
+  if (entry.provider === "google") return "中心 LLM 代理不支持 Google provider";
+  if (!entry.baseUrl) return "LLM baseUrl 未配置";
+  if (!entry.apiKey) return "LLM apiKey 未配置";
+  const fetchImpl = options.fetchImpl ?? fetch;
+  try {
+    const response = await fetchImpl(`${entry.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${entry.apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model: entry.model,
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1,
+        stream: false
+      }),
+      signal: AbortSignal.timeout(options.timeoutMs ?? 15_000)
+    });
+    if (!response.ok) return `LLM 代理返回 HTTP ${response.status}`;
+    return null;
+  } catch (error) {
+    return `LLM 代理不可达：${error instanceof Error ? error.message : String(error)}`;
+  }
+}

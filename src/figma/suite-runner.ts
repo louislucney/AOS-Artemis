@@ -113,12 +113,23 @@ export interface SuiteRunOptions {
   /** 隔离用例集合（quarantine.json 生效项）：结果如实标注，门禁由调用方排除。 */
   quarantinedCaseIds?: Set<string>;
   stopOnFailure?: boolean;
+  /** runner 进度回调：用例开始/结束（不作为断言，不阻断执行）。 */
+  onCaseEvent?: (event: {
+    phase: "start" | "finish";
+    caseId: string;
+    traceId: string | null;
+    status: string;
+    error?: string | null;
+    index: number;
+    total: number;
+  }) => void | Promise<void>;
   /** 停止请求：每个用例边界检查（true → 停止后续用例，已执行结果保留；不再提交新用例）。 */
   shouldAbort?: () => boolean;
   deviceSerial?: string;
   lockedAppPackage?: string;
   /** 可选：Android APK/iOS IPA 的本地路径或 URL；透传 `mobile_run_task.app_path`，由 Artemis 安装。 */
   appPath?: string;
+  regressionTaskId?: string | null;
   model?: string;
   /** Opt-in: compare screens visited by each case against per-screen design. */
   uiDiff?: boolean;
@@ -533,15 +544,24 @@ export async function runGeneratedTests(
   let submitted = 0;
   let firstSubmitError: string | null = null;
 
-  for (const testCase of cases) {
+  for (const [index, testCase] of cases.entries()) {
     if (options.shouldAbort?.() === true) break;
     const quarantined = options.quarantinedCaseIds?.has(testCase.id) === true;
+    await options.onCaseEvent?.({
+      phase: "start",
+      caseId: testCase.id,
+      traceId: null,
+      status: "running",
+      index: index + 1,
+      total: cases.length
+    });
     const outcome = await executeCase(testCase, {
       runtime,
       model: options.model ?? null,
       deviceSerial: options.deviceSerial ?? null,
       lockedAppPackage: options.lockedAppPackage ?? null,
       appPath: options.appPath ?? null,
+      regressionTaskId: options.regressionTaskId ?? null,
       quarantined,
       failOnApiErrors: options.failOnApiErrors === true,
       apiCatalog,
@@ -551,11 +571,21 @@ export async function runGeneratedTests(
       now,
       pollIntervalMs,
       pollTimeoutMs,
+      shouldAbort: options.shouldAbort,
       collectLogcat,
       collectIosLogs
     });
     if (outcome.submitted) submitted += 1;
     if (outcome.submitError && !firstSubmitError) firstSubmitError = outcome.submitError;
+    await options.onCaseEvent?.({
+      phase: "finish",
+      caseId: testCase.id,
+      traceId: outcome.result.traceId ?? null,
+      status: outcome.result.status,
+      error: outcome.result.error ?? outcome.submitError ?? null,
+      index: index + 1,
+      total: cases.length
+    });
     if (!outcome.result.ui && options.uiDiff === true && outcome.result.traceId) {
       try {
         outcome.result.ui = await autoCheckUi(runtime, {
