@@ -220,7 +220,9 @@ export class SuiteControlService {
     const existing = await this.store.getProjectByPath(input.rootPath);
     return await this.store.upsertProject({
       ...input,
-      hostId: existing !== null ? existing.hostId : this.hostId
+      name: existing !== null ? existing.name : input.name,
+      hostId: existing !== null ? existing.hostId : this.hostId,
+      updateName: false
     });
   }
 

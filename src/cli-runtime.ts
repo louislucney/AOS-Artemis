@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { loadProject } from "./config/loader.js";
 import { createProjectStore, FileStore, MemoryStore } from "./db/index.js";
 import { resolveHostIdentity } from "./host/identity.js";
@@ -63,7 +65,10 @@ export async function buildRemoteSuiteRuntime(
     ...project.dotenvValues,
     ...baseEnv,
     AOS_PROJECT_DIR: project.rootDir,
-    AOS_CONFIG: ""
+    AOS_CONFIG: "",
+    AOS_LEDGER_DIR:
+      (baseEnv.AOS_LEDGER_DIR ?? project.dotenvValues.AOS_LEDGER_DIR ?? "").trim() ||
+      path.join(project.rootDir, ".artemis", "ledger")
   };
   const identity = await resolveHostIdentity({ env: resolvedEnv });
   const parsed = parseRunnerConfig(resolvedEnv, { fallbackHostId: identity.id });

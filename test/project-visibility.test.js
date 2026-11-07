@@ -9,4 +9,12 @@ test("project visibility: 服务仓库默认隐藏，AOS_PANEL_EXCLUDE_PROJECTS 
   assert.equal(projectExcluded({ name: "mobile-testing", rootPath: "/tmp/other" }, undefined), false);
   assert.equal(projectExcluded({ name: "other", rootPath: "/tmp/other" }, "other"), true);
   assert.equal(projectExcluded({ name: "other", rootPath: "/tmp/other" }, undefined), false);
+  assert.equal(
+    projectExcluded({ name: "mobile-testing-mcp-test-abc123", rootPath: "/tmp/other" }, undefined),
+    true
+  );
+  assert.equal(
+    projectExcluded({ name: "suite-control-host", rootPath: "/tmp/other" }, undefined),
+    true
+  );
 });

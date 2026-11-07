@@ -687,6 +687,8 @@ test("suite control: default project + bundle documents allow a different runner
           assert.equal(remoteTask?.id, task.id);
           const remoteBundle = await built.runtime.store.getTaskBundle?.(localDir, task.id);
           assert.equal(remoteBundle?.documents?.length, 1);
+          const projectAfter = await central.store.getProjectByPath(central.rootPath);
+          assert.equal(projectAfter?.name, path.basename(central.rootPath));
         } finally {
           await built.dispose();
         }

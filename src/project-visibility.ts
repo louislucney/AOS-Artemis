@@ -15,6 +15,9 @@ export function projectExcluded(
 ): boolean {
   const root = path.resolve(entry.rootPath);
   if (root === serviceRepoRoot()) return true;
+  // 测试套件/临时执行目录产生的项目不进入面板/统计；历史 Web runner 测试 host 也不展示。
+  if (entry.name.startsWith("mobile-testing-mcp-test-")) return true;
+  if (entry.name === "suite-control-host") return true;
   const tokens = (raw ?? "")
     .split(",")
     .map((token) => token.trim())
