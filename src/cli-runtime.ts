@@ -1,7 +1,7 @@
 import { loadProject } from "./config/loader.js";
-import { runnerJobTokenFrom } from "./env-tokens.js";
 import { createProjectStore, FileStore, MemoryStore } from "./db/index.js";
 import { resolveHostIdentity } from "./host/identity.js";
+import { parseRunnerConfig } from "./runner/config.js";
 import { Runtime } from "./runtime.js";
 import { SuiteStoreClient } from "./runner/control/suite-client.js";
 import { createRunnerFetch } from "./runner/control/tls-fetch.js";
@@ -65,19 +65,14 @@ export async function buildRemoteSuiteRuntime(
     AOS_PROJECT_DIR: project.rootDir,
     AOS_CONFIG: ""
   };
-  const controlUrl = (
-    resolvedEnv.MOBILE_TESTING_RUNNER_CONTROL_URL ??
-    resolvedEnv.AOS_RUNNER_CONTROL_URL ??
-    ""
-  ).trim();
-  if (controlUrl === "") {
-    throw new Error("MOBILE_TESTING_RUNNER_CONTROL_URL 未配置（旧名 AOS_RUNNER_CONTROL_URL 兼容）");
-  }
-  const token = runnerJobTokenFrom(resolvedEnv);
-  if (token.length < 16) {
-    throw new Error("MOBILE_TESTING_RUNNER_JOB_TOKEN 至少需要 16 个字符");
-  }
   const identity = await resolveHostIdentity({ env: resolvedEnv });
+  const parsed = parseRunnerConfig(resolvedEnv, { fallbackHostId: identity.id });
+  if (!parsed.ok) {
+    throw new Error(parsed.errors.join("；"));
+  }
+  const controlUrl = parsed.config.centerUrl.href.replace(/\/+$/, "");
+  const token = parsed.config.token;
+  const hostId = parsed.config.hostId;
   const panelBaseUrl =
     (resolvedEnv.MOBILE_TESTING_PANEL_BASE_URL ?? resolvedEnv.AOS_PANEL_BASE_URL ?? "").trim() ||
     controlUrl;
@@ -91,13 +86,13 @@ export async function buildRemoteSuiteRuntime(
   const client = new SuiteStoreClient({
     baseUrl: panelBaseUrl,
     token,
-    hostId: identity.id,
+    hostId,
     timeoutMs: runnerHttpTimeoutMs(resolvedEnv),
     instanceId: (resolvedEnv.AOS_RUNNER_INSTANCE_ID ?? "").trim(),
     ...(runnerFetch === undefined ? {} : { fetchImpl: runnerFetch })
   });
   await client.upsertHost({
-    id: identity.id,
+    id: hostId,
     hostname: identity.hostname,
     username: identity.username,
     osPlatform: identity.osPlatform,

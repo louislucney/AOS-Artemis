@@ -27,6 +27,9 @@
     "test:coverage": "npm run build && node --test --experimental-test-coverage test/*.test.js",
     "bundle:adb-host": "node scripts/build-adb-host-bundle.mjs",
     "bundle:mcp-runner": "node scripts/build-mcp-runner-bundle.mjs",
+    "check:runner-bundle": "node scripts/check-runner-bundle.mjs",
+    "test:types": "tsc -p tsconfig.type-tests.json",
+    "verify": "npm test && npm run lint && npm run test:types && npm run bundle:mcp-runner && npm run check:runner-bundle",
     "toolchain:fetch": "node scripts/fetch-runner-toolchain.mjs",
     "artemis:patch": "node scripts/apply-artemis-patches.mjs"
   },

@@ -198,7 +198,7 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
     const centerEnv = { ...project.dotenvValues, ...process.env };
     const centerEnabled = (centerEnv.AOS_LLM_FROM_CENTER ?? "").trim() === "1";
     const centerLlm = centerEnabled
-      ? await fetchCenterLlm({ env: centerEnv, rootPath: rootDir })
+      ? await fetchCenterLlm({ env: centerEnv })
       : null;
     if (centerLlm?.entry) {
       lines.push({

@@ -1,6 +1,5 @@
-import { runnerJobTokenFrom } from "../env-tokens.js";
-import { resolveHostIdentity } from "../host/identity.js";
 import type { ProviderId } from "../config/types.js";
+import { parseRunnerConfig } from "../runner/config.js";
 import type { LlmEntry } from "./registry.js";
 
 export interface CenterLlmEntry {
@@ -18,7 +17,7 @@ export interface CenterLlmResult {
 
 export interface FetchCenterLlmOptions {
   env: NodeJS.ProcessEnv;
-  rootPath: string;
+  /** 已解析的主机身份；env 未提供 host id 时作为回退。 */
   hostId?: string | null;
   fetchImpl?: typeof fetch;
 }
@@ -36,8 +35,8 @@ function providerOf(value: string): ProviderId {
   return PROVIDERS.has(value as ProviderId) ? (value as ProviderId) : "custom";
 }
 
-/** Runner 从中心控制面取 active LLM（仅 AOS_LLM_FROM_CENTER=1 时启用）。
- * key 只在 runner 内存与 Artemis 子进程 env 中使用，不写入本机 .env/台账。 */
+/** Runner 从中心控制面取 LLM 代理访问方式（仅 AOS_LLM_FROM_CENTER=1 时启用）。
+ * 返回中心代理 URL；runner 用 runner token 调用，真实 provider key 不出中心。 */
 export async function fetchCenterLlm(
   options: FetchCenterLlmOptions
 ): Promise<CenterLlmResult> {
@@ -45,29 +44,17 @@ export async function fetchCenterLlm(
   if ((env.AOS_LLM_FROM_CENTER ?? "").trim() !== "1") {
     return { entry: null, error: null };
   }
-  const baseUrl = (
-    env.MOBILE_TESTING_RUNNER_CONTROL_URL ??
-    env.AOS_RUNNER_CONTROL_URL ??
-    ""
-  ).trim();
-  if (baseUrl === "") {
-    return { entry: null, error: "未配置 MOBILE_TESTING_RUNNER_CONTROL_URL" };
+  const parsed = parseRunnerConfig(
+    env,
+    options.hostId?.trim() ? { fallbackHostId: options.hostId.trim() } : {}
+  );
+  if (!parsed.ok) {
+    return { entry: null, error: parsed.errors.join("；") };
   }
-  const token = runnerJobTokenFrom(env);
-  if (token.length < 16) {
-    return {
-      entry: null,
-      error: "MOBILE_TESTING_RUNNER_JOB_TOKEN 至少需要 16 个字符"
-    };
-  }
-  const hostId =
-    options.hostId?.trim() ||
-    env.MOBILE_TESTING_HOST_ID?.trim() ||
-    env.AOS_HOST_ID?.trim() ||
-    (await resolveHostIdentity({ env })).id;
-  const centerRoot = (env.AOS_CENTER_PROJECT_ROOT ?? "").trim();
-  const query = centerRoot === "" ? "" : `?rootPath=${encodeURIComponent(centerRoot)}`;
-  const url = `${baseUrl.replace(/\/+$/, "")}/panel/api/runners/suite/llm${query}`;
+  const baseUrl = parsed.config.centerUrl.href.replace(/\/+$/, "");
+  const token = parsed.config.token;
+  const hostId = parsed.config.hostId;
+  const url = `${baseUrl}/panel/api/runners/suite/llm`;
   const fetchImpl = options.fetchImpl ?? fetch;
   let response: Awaited<ReturnType<typeof fetch>>;
   try {

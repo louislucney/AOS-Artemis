@@ -463,7 +463,6 @@ export class Runtime {
     if ((centerEnv.AOS_LLM_FROM_CENTER ?? "").trim() === "1") {
       const center = await fetchCenterLlm({
         env: centerEnv,
-        rootPath: this.project.rootDir,
         hostId: identity.id
       });
       if (center.entry !== null) {

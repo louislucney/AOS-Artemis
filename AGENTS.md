@@ -72,6 +72,8 @@ mobile-testing（AOS × ARTEMIS 合并）MCP 服务：Figma 设计上下文（�
 - **重建后必须重启**：`dist/` 变化后当前 MCP 进程仍执行旧代码（ESM 启动时加载）；重启客户端会话加载新构建，`aos_status.build.stale=true` 会提示（启动日志同时 WARN）。
 - **生成物三件套是强制的**：`figma_generate_tests` 在 `save !== false` 时 tests.json + tests.md + tests.xlsx 同时落盘（响应 `savedTo` 三个路径；模版渲染失败则三份都不写）；"只有 md" 不是预期行为。同时每个 taskDesc 注入 `【真实数据】` 硬约束（数据须经被测应用真实请求链路准备——界面操作或后端 API；禁止伪造/写死页面或数据、mock、手造页面）；`suite check` 对**三件套完整性**（tests.xlsx 存在且不早于 tests.json）与**真实数据标记**做硬门禁（缺任一 exit 2，legacy 用例需重新生成），`loop` 与 `run --fail-on-uncovered` 同口径。
 
+- **Runner 包不变量**：runner 永远不持有 provider key、中心项目路径或中心内部 LLM baseUrl；`/llm` 只返回中心代理 URL + `apiKey: null`（runner 用 runner token 调代理）。项目解析在中心（`AOS_RUNNER_DEFAULT_PROJECT` 或任务），**禁止** `AOS_CENTER_PROJECT_ROOT` 出现在 runner 配置/包/configure 提示；runner 配置统一走 `parseRunnerConfig`（`src/runner/config.ts`），不要新增 ad-hoc env 读取。runner 最小运行时：不检查/安装 pen（`AOS_PEN_SKIP=1`）、无 Maestro/JDK。新增 runner env 必须在文档标注“中心侧/执行侧”；执行侧变更加 contract test。交付前跑 `npm run verify`（build/test/lint/type-tests/bundle/contract）；生成包后用 `npm run check:runner-bundle` 验 `project/.env.example`、`setup`、`configure`、README 和疑似 key。
+
 ## 关键机制速查
 
 - **项目身份**：`AOS_PROJECT_DIR` → 向上查找 `aos.config.jsonc` → 回退 cwd（`src/config/loader.ts`）；`aos.config.jsonc` 的 `project.name` 覆盖台账/面板显示名（缺省目录 basename）。
