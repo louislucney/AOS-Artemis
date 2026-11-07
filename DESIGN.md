@@ -3969,6 +3969,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **档案/搜索闭环**：任务详情新增「任务档案」到 `section=archive&task=<id>`；`listArtifacts` 支持关联 needles（task/runId/traceId/manifest basename）过滤，档案页显示任务过滤 chip 并可清除；搜索项目列显示显示名、支持清空、用例集结果加「用例库」入口；批量裁决提交前确认条数与裁决；表格在窄屏显示「左右滑动查看完整表格」提示；footer 贴底、顶栏 meta 去孤立分隔符。
 - **第二轮 critique 回归修复**：设备行「去下发」只转义一次（修复 `&amp;amp;` 死链）；未知 task/run 档案过滤返回 0 并显示关联过滤；项目页「单次运行」移出环境自查折叠层、trace 可点；失败分析空态指向项目页单次运行；表格滚动提示按实际 `scrollWidth` 显示（含 usage 表）；无 `type` 输入框纳入 CSDC 样式。
 - **P3 可读性**：概览项目表设计源警告改为“数量 + 折叠代码明细”；审计新增关键词 `q`（action/summary/actor/refs，Memory/PG 同口径）与清除；新建测试落地页补用例集/Excel/安装包统计条；资产表非 secret 项新增「打开」（xlsx/apk/ipa/zip/pen 走只读产物服务）。
+- **最终可读性 polish**：对比页口径说明折叠为 `<details>`；概览项目卡去掉与顶栏重复的项目数；新增项目表单折叠；用例集来源显示截断到 48 字符（title 保留原文）；下发目标端统一 `Android/iOS` 大小写。
 - **移动卡片/主机历史**：设备与对比宽表在 ≤640px 改为 `td[data-label]` 卡片行；概览接入主机按 hostname 合并，优先在线/已登记/最新并显示 `+N 历史`；审计失败 `action.config` 恢复入口指向运维配置。
 - **响应式/可达性**：移动导航改为换行展示（不再隐藏设备/档案/运维/使用统计）；dropzone 加 `:focus-visible`；减少动态时保留手动「刷新」；表格 `overflow-wrap` 从 `anywhere` 改 `break-word`，避免 `android`/项目名被拆成一字一行；对比表固定最小宽度 + 横向滚动。
 - **测试**：`test/console-dispatch.test.js`（安装包/表单）、`test/panel-console-actions.test.js`（跨机 runner 下发、appAssetId）、`test/panel-compare.test.js`（Web 任务不计入积压）、`test/panel-web.test.js`（批次/轨迹/失败分析链接）、`test/web-devices-ui.test.js`（项目上下文/去下发）；全量 `3101/3101`，lint 0 error。
