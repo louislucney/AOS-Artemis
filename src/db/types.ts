@@ -413,6 +413,26 @@ export type RegressionTaskStatus =
   | "partial"
   | "failed";
 
+export interface TaskProgress {
+  seq: number;
+  phase:
+    | "preflight"
+    | "app_started"
+    | "observing"
+    | "thinking"
+    | "acting"
+    | "case_finished"
+    | "done"
+    | "failed"
+    | "stalled";
+  percent: number;
+  caseId?: string | null;
+  traceId?: string | null;
+  message?: string | null;
+  errorCode?: string | null;
+  at: string;
+}
+
 export interface RegressionTaskRecord {
   id: string;
   projectId: string | null;
@@ -453,6 +473,8 @@ export interface RegressionTaskRecord {
   appPackage: string | null;
   /** 可选用例过滤（重跑失败用例）：runner 仅执行这些 caseId；空＝全部。 */
   caseIds: string[];
+  /** runner 主动上报的最新执行进度；旧任务为 null。 */
+  progress: TaskProgress | null;
 }
 
 /** 旧 `stopped` 行对外统一读作 `cancelled`（`cancelSource=panel` 仅作历史来源标注）。 */
@@ -473,7 +495,8 @@ export function normalizeRegressionTask(record: RegressionTaskRecord): Regressio
     deviceLeaseId: record.deviceLeaseId ?? null,
     appAssetId: record.appAssetId ?? null,
     appPackage: record.appPackage ?? null,
-    caseIds: record.caseIds ?? []
+    caseIds: record.caseIds ?? [],
+    progress: record.progress ?? null
   };
 }
 
@@ -887,6 +910,7 @@ export interface CreateRegressionTaskInput {
   appAssetId?: string | null;
   appPackage?: string | null;
   caseIds?: string[];
+  progress?: TaskProgress | null;
 }
 
 /** Project-scoped persistence for LLM associations, Figma token, and task stats. */

@@ -69,6 +69,7 @@ import {
   PANEL_BATCH_LIMIT_DEFAULT,
   PANEL_BATCH_LIMIT_MAX,
   panelProjectExcluded,
+  taskProgressLabel,
   type PanelBatchDetail,
   type PanelBatchRow,
   type PanelBatchSummary,
@@ -2429,6 +2430,7 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: st
       title: "优先级（越大越先领取）"
     }),
     escapeHtml(taskStatusLabel(task.status)),
+    escapeHtml(taskProgressLabel(task.progress) ?? "—"),
     String(task.refs),
     escapeHtml(task.platforms.join(", ")),
     String(task.runIds),
@@ -2438,7 +2440,7 @@ function renderTaskList(rootPath: string, detail: PanelProjectDetail, hostId: st
     '<section id="tasks">',
     "<h2>任务</h2>",
     renderTable(
-      ["任务", "优先级", "状态", "引用用例集数", "目标端", "运行数", "创建时间"],
+      ["任务", "优先级", "状态", "进度", "引用用例集数", "目标端", "运行数", "创建时间"],
       rows,
       "暂无任务（从上方「下一步」创建）"
     ),
@@ -2719,6 +2721,9 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       task.appPackage === null || task.appPackage === ""
         ? ""
         : `<p>应用包名：<code>${escapeHtml(task.appPackage)}</code> · 执行前锁定并启动</p>`,
+      task.progress === null || task.progress === undefined
+        ? ""
+        : `<p>进度：<strong>${escapeHtml(taskProgressLabel(task.progress) ?? "—")}</strong> · 更新 ${relativeTime(task.progress.at)}</p>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个设备运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });

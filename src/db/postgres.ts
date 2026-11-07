@@ -246,7 +246,8 @@ const SCHEMA = [
      device_lease_id TEXT,
      app_asset_id TEXT,
      app_package TEXT,
-     case_ids TEXT NOT NULL DEFAULT '[]'
+     case_ids TEXT NOT NULL DEFAULT '[]',
+     progress_json TEXT
     )`,
   `CREATE TABLE IF NOT EXISTS suite_runs (
      id TEXT PRIMARY KEY,
@@ -521,6 +522,7 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_asset_id TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_package TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS case_ids TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS progress_json TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_host_id TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS channel TEXT`,
@@ -1068,8 +1070,8 @@ export class PostgresStore implements ProjectStore {
       `INSERT INTO regression_tasks
          (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids,
           target_host_id, created_host_id, priority, job_spec, execution_mode, device_serial, device_lease_id,
-          app_asset_id, app_package, case_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+          app_asset_id, app_package, case_ids, progress_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
       [
         id,
         project?.id ?? null,
@@ -1089,7 +1091,8 @@ export class PostgresStore implements ProjectStore {
         input.deviceLeaseId ?? null,
         input.appAssetId ?? null,
         input.appPackage ?? null,
-        JSON.stringify(input.caseIds ?? [])
+        JSON.stringify(input.caseIds ?? []),
+        input.progress === undefined || input.progress === null ? null : JSON.stringify(input.progress)
       ]
     );
     return {
@@ -1124,7 +1127,8 @@ export class PostgresStore implements ProjectStore {
       deviceLeaseId: input.deviceLeaseId ?? null,
       appAssetId: input.appAssetId ?? null,
       appPackage: input.appPackage ?? null,
-      caseIds: [...(input.caseIds ?? [])]
+      caseIds: [...(input.caseIds ?? [])],
+      progress: input.progress ?? null
     };
   }
 
@@ -1190,6 +1194,7 @@ export class PostgresStore implements ProjectStore {
       claimedHostId?: string | null;
       claimedInstanceId?: string | null;
       startedAt?: string | null;
+      progress?: import("./types.js").TaskProgress | null;
       expectDeviceSerialEmpty?: boolean;
       expectStatuses?: RegressionTaskStatus[];
     }
@@ -1217,6 +1222,12 @@ export class PostgresStore implements ProjectStore {
     if (patch.claimedHostId !== undefined) add("claimed_host_id", patch.claimedHostId);
     if (patch.claimedInstanceId !== undefined) add("claimed_instance_id", patch.claimedInstanceId);
     if (patch.startedAt !== undefined) add("started_at", patch.startedAt);
+    if (patch.progress !== undefined) {
+      add(
+        "progress_json",
+        patch.progress === null ? null : JSON.stringify(patch.progress)
+      );
+    }
     const guards: string[] = [];
     if (patch.expectDeviceSerialEmpty === true) guards.push("device_serial IS NULL");
     if (patch.expectStatuses !== undefined) {
@@ -2765,8 +2776,8 @@ export class PostgresStore implements ProjectStore {
         `INSERT INTO regression_tasks
            (id, project_id, created_at, created_by, refs, platforms, baseline, status, claimed_by, claimed_at,
             run_ids, attempts, cancel_source, cancelled_by, cancelled_host_id, cancelled_at, cancel_note,
-            cancel_requested_at, job_spec, device_serial, device_lease_id, app_asset_id, app_package, case_ids)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+            cancel_requested_at, job_spec, device_serial, device_lease_id, app_asset_id, app_package, case_ids, progress_json)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
          ON CONFLICT (id) DO NOTHING
          RETURNING id`,
         [
@@ -2793,7 +2804,8 @@ export class PostgresStore implements ProjectStore {
           entry.deviceLeaseId ?? null,
           entry.appAssetId ?? null,
           entry.appPackage ?? null,
-          JSON.stringify(entry.caseIds ?? [])
+          JSON.stringify(entry.caseIds ?? []),
+          entry.progress === null || entry.progress === undefined ? null : JSON.stringify(entry.progress)
         ]
       );
       regressionTasks.inserted += Number(inserted.rowCount ?? 0);
@@ -3769,8 +3781,29 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     deviceLeaseId: nullableString(row.device_lease_id),
     appAssetId: nullableString(row.app_asset_id),
     appPackage: nullableString(row.app_package),
-    caseIds: parseStringArray(row.case_ids)
+    caseIds: parseStringArray(row.case_ids),
+    progress: parseTaskProgress(row.progress_json)
   });
+}
+
+function parseTaskProgress(value: unknown): import("./types.js").TaskProgress | null {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  try {
+    const parsed = JSON.parse(value) as import("./types.js").TaskProgress;
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      typeof parsed.seq !== "number" ||
+      typeof parsed.phase !== "string" ||
+      typeof parsed.percent !== "number" ||
+      typeof parsed.at !== "string"
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 function parseJobSpec(value: unknown): Record<string, unknown> | null {

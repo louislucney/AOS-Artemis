@@ -325,6 +325,7 @@ export class FileStore implements ProjectStore {
       claimedHostId?: string | null;
       claimedInstanceId?: string | null;
       startedAt?: string | null;
+      progress?: import("./types.js").TaskProgress | null;
       expectDeviceSerialEmpty?: boolean;
       expectStatuses?: RegressionTaskStatus[];
     }

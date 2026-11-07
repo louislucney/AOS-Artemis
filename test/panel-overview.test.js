@@ -17,7 +17,8 @@ import {
   buildPanelReviewQueue,
   buildPanelStatsView,
   buildPanelTaskDetail,
-  PANEL_BATCH_EMPTY_CAUSES
+  PANEL_BATCH_EMPTY_CAUSES,
+  taskProgressLabel
 } from "../dist/panel/overview.js";
 import { serviceRepoRoot } from "../dist/project-visibility.js";
 import { baseConfig, makeTempDir, makeTempProject } from "./helpers.js";
@@ -248,6 +249,39 @@ test("panel detail: 批次清单权威 + 独立运行过滤 + outcome 映射", a
   const limited = await buildPanelProjectDetail(deps, dir, { batchLimit: 1 });
   assert.equal(limited.batches.length, 1);
   assert.equal(limited.batches[0].runId, newer.runId);
+});
+
+test("task progress: persisted on the task and formatted for the panel", async () => {
+  const store = new MemoryStore();
+  const dir = makeTempProject({ config: baseConfig() });
+  await store.upsertProject({ rootPath: dir, name: "progress-app" });
+  const task = await store.createRegressionTask({
+    rootPath: dir,
+    refs: [{ caseSetId: "set-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest"
+  });
+  const progress = {
+    seq: 3,
+    phase: "acting",
+    percent: 40,
+    caseId: "case-1",
+    traceId: "trace-1",
+    message: "正在执行第 1 个用例",
+    at: "2026-11-08T00:00:00.000Z"
+  };
+  assert.equal(await store.updateRegressionTask(dir, task.id, { progress }), true);
+  assert.deepEqual((await store.getRegressionTask(dir, task.id)).progress, progress);
+  assert.equal(taskProgressLabel(progress), "40% · 正在执行第 1 个用例");
+  assert.equal(
+    taskProgressLabel({
+      ...progress,
+      phase: "failed",
+      message: "LLM 代理不可达",
+      errorCode: "llm-unreachable"
+    }),
+    "40% · LLM 代理不可达"
+  );
 });
 
 test("panel detail: 无批次时给原因清单（不做断言式归因）", async () => {

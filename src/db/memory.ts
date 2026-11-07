@@ -407,7 +407,8 @@ export class MemoryStore implements ProjectStore {
       deviceLeaseId: input.deviceLeaseId ?? null,
       appAssetId: input.appAssetId ?? null,
       appPackage: input.appPackage ?? null,
-      caseIds: [...(input.caseIds ?? [])]
+      caseIds: [...(input.caseIds ?? [])],
+      progress: input.progress ?? null
     };
     this.regressionTasks.push(record);
     return cloneRegressionTask(record);
@@ -470,6 +471,7 @@ export class MemoryStore implements ProjectStore {
       claimedHostId?: string | null;
       claimedInstanceId?: string | null;
       startedAt?: string | null;
+      progress?: import("./types.js").TaskProgress | null;
       expectDeviceSerialEmpty?: boolean;
       expectStatuses?: RegressionTaskStatus[];
     }
@@ -499,6 +501,12 @@ export class MemoryStore implements ProjectStore {
     if (patch.claimedHostId !== undefined) task.claimedHostId = patch.claimedHostId;
     if (patch.claimedInstanceId !== undefined) task.claimedInstanceId = patch.claimedInstanceId;
     if (patch.startedAt !== undefined) task.startedAt = patch.startedAt;
+    if (patch.progress !== undefined) {
+      const next = patch.progress;
+      if (next === null || task.progress === null || next.seq >= task.progress.seq) {
+        task.progress = next === null ? null : { ...next };
+      }
+    }
     return true;
   }
 

@@ -17,6 +17,7 @@ import type {
   RunnerRecord,
   RunnerTools,
   SuiteRunRecord,
+  TaskProgress,
   TaskStatRecord
 } from "../db/types.js";
 import { clientTtlFrom, isClientOnline } from "../host/online.js";
@@ -260,6 +261,29 @@ export interface PanelTaskRow {
   platforms: string[];
   runIds: number;
   createdAt: string;
+  progress: TaskProgress | null;
+}
+
+const PROGRESS_PHASE_LABELS: Record<TaskProgress["phase"], string> = {
+  preflight: "环境预检",
+  app_started: "应用已启动",
+  observing: "观察设备",
+  thinking: "模型规划中",
+  acting: "执行动作",
+  case_finished: "用例完成",
+  done: "执行完成",
+  failed: "执行失败",
+  stalled: "执行停滞"
+};
+
+/** 面板唯一进度文案：百分比 + 当前消息（无消息时用阶段名）。 */
+export function taskProgressLabel(progress: TaskProgress | null | undefined): string | null {
+  if (!progress) return null;
+  const percent = Math.max(0, Math.min(100, Math.round(progress.percent)));
+  const detail =
+    progress.message?.trim() ||
+    (progress.errorCode ? progress.errorCode : PROGRESS_PHASE_LABELS[progress.phase]);
+  return `${percent}% · ${detail}`;
 }
 
 export interface PanelTaskRunView {
@@ -1331,7 +1355,8 @@ export async function buildPanelProjectDetail(
         refs: task.refs.length,
         platforms: task.platforms,
         runIds: task.runIds.length,
-        createdAt: task.createdAt
+        createdAt: task.createdAt,
+        progress: task.progress
       });
     }
   } catch (error) {
