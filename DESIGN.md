@@ -3979,7 +3979,7 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 
 > 2026-11-07。第一次真机 smoke（ESSO-GU My SMILES × win-runner-01）暴露两个跨机问题：中心项目是 legacy（host_id=NULL）时，`POST /panel/api/tasks` 用显式执行机仍被“未归属主机的历史数据”拒绝；`/llm` 代理地址按请求 Host 推导，runner 经回环/转发时拿到 `127.0.0.1`，跨机不可达。另 smoke 结果 3/3 failed、`unclassified`，失败证据只在 runner 本地（`artifactBaseUrl=null`），中心任务页只能显示 Windows 路径。
 
-- **执行机可观测**：项目页执行机表新增版本列（旧 runner 显示“未知”，提示更新）；`artifactBaseUrl=null` 时显示未广播产物基址告警与 `AOS_RUNNER_ADVERTISE_URL` 指引。
+- **执行机可观测**：项目页执行机表新增版本列（旧 runner 显示“未知”，提示更新）；`artifactBaseUrl=null` 时显示未广播产物基址告警，并提示检查 8770 占用、`AOS_RUNNER_ARTIFACT_PORT=0` 与 `AOS_RUNNER_ADVERTISE_URL`。
 - **runner 侧自愈**：`Runtime.refreshCenterLlm` 在每个 `suite run --task` 前重拉 `/llm`（跨机 runner 换中心地址/重启后无需重启 runner）；产物服务默认广告第一块非回环 IPv4（`AOS_RUNNER_ADVERTISE_URL` 可覆盖），避免 `os.hostname()` 在 LAN 无 DNS 时不可解析。
 - **定向下发**：`createTask` 的 legacy 拒绝仅在**未显式指定 host**时生效；显式 host（如 `win-runner-01`）走跨 root runner 校验：中心 owner 项目存在 + 该 host 已注册 suite runner → 写中心 store、`targetHostId=<runner host>`。
 - **中心公开地址**：`AOS_CENTER_PUBLIC_URL` 覆盖 suite 控制面的 `publicBaseUrl`；`/llm` 返回该地址下的代理 URL，避免 runner 拿到回环地址。`.env.example`/README 增加说明。
