@@ -395,13 +395,15 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               ?.trim() ||
             req.headers.host ||
             `${host}:${port}`;
+          const configuredPublicBase = (process.env.AOS_CENTER_PUBLIC_URL ?? "").trim();
           const suiteResponse = await handleSuiteControlRequest({
             method: req.method ?? "GET",
             url,
             headers: req.headers,
             store,
             env: process.env,
-            publicBaseUrl: `${proto}://${hostHeader}`,
+            publicBaseUrl:
+              configuredPublicBase !== "" ? configuredPublicBase : `${proto}://${hostHeader}`,
             ...(suiteBody === undefined ? {} : { body: suiteBody })
           });
           res.writeHead(suiteResponse.status, {

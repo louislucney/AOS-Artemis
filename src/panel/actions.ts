@@ -1562,7 +1562,7 @@ async function createTask(
   } catch {
     hosts = [];
   }
-  if (resolvedHostId === null && hosts.length > 0) {
+  if (resolvedHostId === null && hosts.length > 0 && hostParam === "") {
     const legacy = (await deps.store.listProjects().catch(() => [])).some(
       (project) => project.rootPath === rootPath && project.hostId === null
     );
