@@ -139,6 +139,7 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
       'set "UV_PYTHON=3.12"',
+      'set "UV_SYSTEM_CERTS=1"',
       'if not exist "project\\.env" copy "project\\.env.example" "project\\.env" >nul',
       'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
       'if errorlevel 1 echo [提示] project\\.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。',
@@ -167,6 +168,7 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
       'set "UV_PYTHON=3.12"',
+      'set "UV_SYSTEM_CERTS=1"',
       'if not exist "project\\.env" (',
       "  echo [提示] 缺少 project\\.env：先运行 setup.cmd，再填入中心 runner token。",
       "  exit /b 2",
@@ -216,6 +218,7 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
       'set "UV_PYTHON=3.12"',
+      'set "UV_SYSTEM_CERTS=1"',
       'set "DEVICE=%~1"',
       'if "%DEVICE%"=="" set "DEVICE="',
       'set "TASK=%~2"',
@@ -242,6 +245,7 @@ function writeWindowsLaunchers(staging) {
       'set "AOS_PEN_NO_INSTALL=1"',
       'set "AOS_LLM_FROM_CENTER=1"',
       'set "UV_PYTHON=3.12"',
+      'set "UV_SYSTEM_CERTS=1"',
       'if "%MOBILE_TESTING_HOST_ID%"=="" set "MOBILE_TESTING_HOST_ID=win-runner-01"',
       'if not exist "project\\.env" (',
       "  echo [runner] 缺少 project\\.env；先运行 configure.cmd。",
@@ -307,6 +311,7 @@ export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
 export UV_PYTHON=3.12
+export UV_SYSTEM_CERTS=1
 [ -f "$ROOT/project/.env" ] || cp "$ROOT/project/.env.example" "$ROOT/project/.env"
 if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' "$ROOT/project/.env"; then
   echo "[提示] project/.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。"
@@ -329,6 +334,7 @@ export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
 export UV_PYTHON=3.12
+export UV_SYSTEM_CERTS=1
 if [ ! -f "$ROOT/project/.env" ]; then
   echo "[提示] 缺少 project/.env：先运行 setup.command，再填入中心 runner token。"
   exit 2
@@ -348,6 +354,7 @@ export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
 export UV_PYTHON=3.12
+export UV_SYSTEM_CERTS=1
 DEVICE="\${1:-}"
 TASK="\${2:-打开应用，截图并报告当前页面}"
 if [ -z "$DEVICE" ]; then
@@ -369,6 +376,7 @@ export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
 export AOS_LLM_FROM_CENTER=1
 export UV_PYTHON=3.12
+export UV_SYSTEM_CERTS=1
 : "\${MOBILE_TESTING_HOST_ID:=mac-runner-01}"
 export MOBILE_TESTING_HOST_ID
 if [ ! -f "$ROOT/project/.env" ]; then
@@ -420,11 +428,12 @@ function writeBundleReadme(staging, target) {
           "",
           "`runner.cmd` 首次会自动执行 `doctor --install-deps`（`uv sync`）。启动脚本已固定 `UV_PYTHON=3.12`；如果 `uv` 仍选 3.13，先 `uv python find 3.12` 确认能定位 Python 3.12。",
           "",
-          "如果访问 `pypi.org` 超时：删除半装的 venv，换可达镜像后重试：",
+          "如果访问 `pypi.org` 超时：删除半装的 venv，换可达镜像后重试。若报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），设置 `UV_SYSTEM_CERTS=1` 使用 Windows 系统证书（启动脚本已默认设置）：",
           "",
           "```powershell",
           "Remove-Item -Recurse -Force .\\artemis\\.venv",
           '$env:UV_PYTHON="3.12"',
+          '$env:UV_SYSTEM_CERTS="1"',
           '$env:UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"',
           '$env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"',
           ".\\runner.cmd",
@@ -438,11 +447,12 @@ function writeBundleReadme(staging, target) {
           "",
           "`runner.command` 首次会自动执行 `doctor --install-deps`。启动脚本已固定 `UV_PYTHON=3.12`。",
           "",
-          "如果访问 `pypi.org` 超时：删除半装的 venv，换可达镜像后重试：",
+          "如果访问 `pypi.org` 超时或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截），删除半装的 venv，设置系统证书/镜像后重试：",
           "",
           "```sh",
           "rm -rf artemis/.venv",
           "export UV_PYTHON=3.12",
+          "export UV_SYSTEM_CERTS=1",
           "export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple",
           "export UV_INDEX_URL=$UV_DEFAULT_INDEX",
           "./runner.command",

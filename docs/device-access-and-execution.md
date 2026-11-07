@@ -164,7 +164,7 @@ sudo appium driver run xcuitest tunnel-creation
 - **前置**：Node 20+、`uv`、Python 3.12；中心 runner URL/token（HTTP 控制面）；iOS 另需 Xcode、Appium + xcuitest、`AOS_IOS_XCODE_ORG_ID` 签名团队与 iOS 18+ Remote XPC 隧道。
 - **包内脚本**：`setup` 安装 Artemis 依赖；`doctor` 体检（含中心 LLM）；`smoke` 单条 `mobile_run_task` 验证；`runner` 常驻领取中心任务。
 - **跨机任务包**：中心用 `AOS_RUNNER_DEFAULT_PROJECT` 作为控制面项目；runner 领取任务时中心下发 tests.json/flows 内容，runner 落到本地 `.artemis/design/case-sets` 后执行，不需要复制中心项目，也不需要填写项目路径。
-- **首次依赖安装**：`runner` 首次自动 `uv sync`；脚本固定 `UV_PYTHON=3.12`。若 PyPI 超时，删 `artemis/.venv`，设 `UV_DEFAULT_INDEX`/`UV_INDEX_URL` 到可达镜像后重试；成功标志是 `.venv/.aos-deps.json`。
+- **首次依赖安装**：`runner` 首次自动 `uv sync`；脚本固定 `UV_PYTHON=3.12`、`UV_SYSTEM_CERTS=1`。若 PyPI 超时，删 `artemis/.venv`，设 `UV_DEFAULT_INDEX`/`UV_INDEX_URL` 到可达镜像后重试；若报 `UnknownIssuer`（公司 TLS 拦截），系统证书已默认启用；成功标志是 `.venv/.aos-deps.json`。
 - **下载**：面板「设备 → 接入执行机」；构建：`npm run bundle:mcp-runner`。
 
 ## 7. 当前状态：Maestro 已移除，MCP runner 双端可用

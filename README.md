@@ -389,12 +389,13 @@ Android 真机现走 MCP 原生：
 
 `runner.cmd` 首次会自动执行 `doctor --install-deps`（`uv sync`），启动脚本已固定 `UV_PYTHON=3.12`。如果 `uv` 仍选 3.13，先 `uv python find 3.12` 确认能定位 Python 3.12。
 
-如果访问 `pypi.org` 超时，删除半装的 `.venv`，换可达镜像后重试：
+如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
 cd C:\RUNNER\mobile-testing-mcp-runner-0.1.0-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
+$env:UV_SYSTEM_CERTS="1"
 $env:UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 $env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 .\runner.cmd
