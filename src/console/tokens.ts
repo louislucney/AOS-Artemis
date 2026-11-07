@@ -25,7 +25,7 @@ export const CSDC_TOKENS_CSS = `
   color-scheme:light;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--color-surface-light);color:var(--color-text-primary);
+body{margin:0;min-height:100vh;display:flex;flex-direction:column;background:var(--color-surface-light);color:var(--color-text-primary);
   font-family:var(--font-family-sans);font-size:var(--font-size-body);line-height:var(--line-height-body);
   letter-spacing:var(--tracking-body);-webkit-font-smoothing:antialiased}
 a{color:var(--color-link);text-decoration:none}
@@ -49,7 +49,7 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 .c-topbar-meta{margin-left:auto;color:var(--color-text-secondary);font-size:var(--font-size-callout)}
 
 /* ── CSDC 标准布局：顶栏 + Aside(220) + Main(白) + Footer ──────── */
-.c-layout{display:flex;align-items:flex-start;width:100%;max-width:none;margin:0}
+.c-layout{display:flex;align-items:flex-start;width:100%;max-width:none;margin:0;flex:1 0 auto}
 .c-aside{width:220px;flex:0 0 220px;padding:18px 14px;position:sticky;top:72px;align-self:flex-start;
   background:var(--color-surface-light);border-right:1px solid var(--color-border)}
 .c-aside nav{display:flex;flex-direction:column;gap:4px}
@@ -61,7 +61,7 @@ h3{font-size:var(--font-size-body);font-weight:var(--font-weight-semibold);margi
 .c-nav-item[aria-current="page"]{background:var(--color-accent);color:var(--color-text-primary);font-weight:var(--font-weight-semibold)}
 .c-main{flex:1;min-width:0;padding:20px 36px 80px;background:var(--color-surface-white)}
 .c-main .muted{color:var(--color-text-secondary)}
-.c-footer{width:100%;padding:14px 36px 24px;background:var(--color-surface-light);border-top:1px solid var(--color-border);
+.c-footer{width:100%;margin-top:auto;padding:14px 36px 24px;background:var(--color-surface-light);border-top:1px solid var(--color-border);
   color:var(--color-text-secondary);font-size:var(--font-size-caption)}
 
 /* ── CSDC 区块与卡片：黄色 Section Header + 白色卡片 ───────────── */

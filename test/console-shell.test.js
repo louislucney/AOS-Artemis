@@ -175,7 +175,7 @@ test("console shell: CSDC 官方徽标、全宽布局与组件母版", () => {
   assert.match(html, /data:image\/svg\+xml;base64,/, "顶栏使用 CSDC 官方徽标（内联 data URI）");
   assert.ok(!html.includes('<div class="c-nav-group-title">'), "侧栏分组标题已移除");
   assert.ok(
-    html.includes(".c-layout{display:flex;align-items:flex-start;width:100%;max-width:none;margin:0}"),
+    html.includes(".c-layout{display:flex;align-items:flex-start;width:100%;max-width:none;margin:0;flex:1 0 auto}"),
     "布局全宽，不再 1320 居中"
   );
   assert.ok(html.includes(".c-aside{width:220px;flex:0 0 220px;"), "侧栏 220px（CSDC 标准）");

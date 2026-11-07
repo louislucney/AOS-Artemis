@@ -1520,7 +1520,7 @@ export function renderSearchPage(data: SearchPageData): string {
     `<code>${escapeHtml(entry.basename)}</code>`,
     escapeHtml(entry.source),
     escapeHtml(entry.features),
-    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&amp;section=create&amp;type=suite&amp;source=case-set&amp;ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId).replace(/&/g, "&amp;")}">下发该用例集</a>`
+    `<a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&amp;section=create&amp;type=suite&amp;source=case-set&amp;ref=${encodeURIComponent(entry.id)}${hostQuery(entry.hostId).replace(/&/g, "&amp;")}">下发该用例集</a> <a class="c-button" href="/panel?project=${encodeURIComponent(entry.project)}&amp;section=assets&amp;tab=case-sets${hostQuery(entry.hostId).replace(/&/g, "&amp;")}">用例库</a>`
   ]);
   const taskRows = data.tasks.map((entry) => [
     projectLink(entry.projectName, entry.project, entry.hostId),
@@ -1537,7 +1537,7 @@ export function renderSearchPage(data: SearchPageData): string {
         ? [empty, cEmpty({ title: "输入关键词开始搜索", body: "按名称/路径搜项目，按用例集名/来源/功能搜用例集，按任务 id 搜任务；顶栏搜索框或 `/` 键直达。", action: '<span class="muted">示例：登录 / starbuckstw / regression</span>' })].join("\n")
         : [
             empty,
-            `<p class="muted">关键词「${q}」· 项目 ${data.projects.length} · 用例集 ${data.caseSets.length} · 任务 ${data.tasks.length}${data.truncated ? "（结果已截断）" : ""}</p>`,
+            `<p class="muted">关键词「${q}」· 项目 ${data.projects.length} · 用例集 ${data.caseSets.length} · 任务 ${data.tasks.length}${data.truncated ? "（结果已截断）" : ""} · <a href="/panel?section=search">清空搜索</a></p>`,
             cCard({
               title: "项目",
               body: cTable({ columns: ["项目", "路径"], rows: projectRows, caption: "匹配项目", empty: "无匹配项目" })

@@ -228,7 +228,9 @@ export function renderConsoleShell(input: ConsoleShellInput): string {
       : `<span title="进程级角色（AOS_PANEL_ROLE）">角色：${escapeHtml(
           roleLabels[capabilities.role] ?? capabilities.role
         )}</span>`;
-  const topMeta = [input.meta, roleLabel].filter((part) => part !== "").join(" · ");
+  const topMeta = [input.meta, roleLabel]
+    .filter((part): part is string => typeof part === "string" && part.trim() !== "")
+    .join(" · ");
   const navTargets: Record<string, string> = {};
   for (const item of nav) {
     const href = item.key === "usage" && !capabilities.usage ? null : navHref(item, project, input.projectHostId ?? null);

@@ -2786,6 +2786,8 @@ function renderReviewPage(view: {
           "  var status=document.getElementById('verdict-status');",
           "  if(items.length===0){status.textContent='请先勾选至少一条失败用例';return false;}",
           "  if(verdict===''){status.textContent='请选择裁决结果';return false;}",
+          "  var labels={ 'case-defect':'案例问题','execution-deviation':'执行偏差','app-defect':'应用缺陷','uncertain':'不确定' };",
+          "  if(!window.confirm('确认将 '+items.length+' 条失败用例裁决为「'+(labels[verdict]||verdict)+'」？')) return false;",
           "  status.textContent='提交中…';",
           "  fetch('/panel/api/verdicts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project:" +
             rootJson +
