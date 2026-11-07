@@ -28,6 +28,7 @@ import {
 } from "./panel/web.js";
 import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.js";
 import { handleRunnerJobRequest, matchRunnerJobPath } from "./panel/actions.js";
+import { handleLlmProxyRequest } from "./runner/control/llm-proxy.js";
 import { handleSuiteControlRequest } from "./runner/control/suite-http.js";
 import { panelRoleFrom, panelRoleScopes } from "./panel/roles.js";
 import {
@@ -360,6 +361,11 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
 
+        if (url.pathname.startsWith("/panel/api/runners/suite/llm/proxy/")) {
+          await handleLlmProxyRequest({ req, res, url, store, env: process.env });
+          return;
+        }
+
         if (url.pathname.startsWith("/panel/api/runners/suite/")) {
           let suiteBody: unknown;
           if (req.method === "POST" || req.method === "PATCH") {
@@ -376,12 +382,26 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
               return;
             }
           }
+          const forwardedProto = req.headers["x-forwarded-proto"];
+          const forwardedHost = req.headers["x-forwarded-host"];
+          const proto =
+            (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto)
+              ?.split(",")[0]
+              ?.trim() ||
+            ((req.socket as { encrypted?: boolean }).encrypted === true ? "https" : "http");
+          const hostHeader =
+            (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost)
+              ?.split(",")[0]
+              ?.trim() ||
+            req.headers.host ||
+            `${host}:${port}`;
           const suiteResponse = await handleSuiteControlRequest({
             method: req.method ?? "GET",
             url,
             headers: req.headers,
             store,
             env: process.env,
+            publicBaseUrl: `${proto}://${hostHeader}`,
             ...(suiteBody === undefined ? {} : { body: suiteBody })
           });
           res.writeHead(suiteResponse.status, { "Content-Type": suiteResponse.contentType });

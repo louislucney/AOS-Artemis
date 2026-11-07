@@ -1,6 +1,7 @@
 import type { ProjectStore } from "../../db/types.js";
 import { leaseTokenMatches } from "./lease-token.js";
 import { RunnerControlError } from "./errors.js";
+import { assertLlmProject, resolveCenterLlm } from "./llm-resolver.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -57,7 +58,8 @@ export class SuiteControlService {
     private readonly store: ProjectStore,
     private readonly hostId: string,
     private readonly env: NodeJS.ProcessEnv = process.env,
-    private readonly instanceId: string = ""
+    private readonly instanceId: string = "",
+    private readonly publicBaseUrl: string = ""
   ) {}
 
   private async assertTaskInstance(rootPath: string, taskId: string): Promise<void> {
@@ -152,6 +154,35 @@ export class SuiteControlService {
     const rootPath = requireString(args, "rootPath");
     await assertProject(this.store, rootPath, this.hostId);
     return await this.store.getProjectByPath(rootPath);
+  }
+
+  /** Runner 从中心取 LLM 访问方式：返回中心代理 URL（runner token 作为 key），
+   * 真实 provider key 不出中心。仅经 runner token + host 校验后返回。 */
+  async getLlm(args: Record<string, unknown>): Promise<unknown> {
+    const rootPath = requireString(args, "rootPath");
+    await assertLlmProject(this.store, this.env, this.hostId, rootPath);
+    const active = await resolveCenterLlm(this.store, this.env, rootPath);
+    if (active === null) return { found: false };
+    if (active.provider === "google") {
+      throw new RunnerControlError(
+        "invalid-state",
+        "中心 LLM 代理暂不支持 Google provider；请把项目 active LLM 切到 OpenAI 兼容 provider"
+      );
+    }
+    const base = this.publicBaseUrl.trim().replace(/\/+$/, "");
+    if (base === "") {
+      throw new RunnerControlError("invalid-state", "中心缺少 public base URL，无法生成 LLM 代理地址");
+    }
+    return {
+      found: true,
+      entry: {
+        name: active.name,
+        provider: "custom",
+        model: active.model,
+        baseUrl: `${base}/panel/api/runners/suite/llm/proxy/${Buffer.from(rootPath, "utf8").toString("base64url")}`,
+        apiKey: null
+      }
+    };
   }
 
   async upsertHost(args: Record<string, unknown>): Promise<unknown> {
@@ -350,6 +381,8 @@ export class SuiteControlService {
         return await this.upsertProject(args);
       case "getProject":
         return await this.getProject(args);
+      case "getLlm":
+        return await this.getLlm(args);
       case "upsertHost":
         return await this.upsertHost(args);
       case "upsertHostAddresses":

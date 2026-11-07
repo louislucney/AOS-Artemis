@@ -10,7 +10,7 @@
 
 ```powershell
 .\setup.cmd
-# 编辑 project\.env 填入 AOS_LLM_API_KEY
+# 配置中心 runner URL/token（见包内 README「中心」）；LLM 由中心提供，不需要填 key
 .\doctor.cmd
 .\smoke.cmd 10CF6609P900059 "打开 UAT Mobil Guam，点击 Register now"
 .\runner.cmd

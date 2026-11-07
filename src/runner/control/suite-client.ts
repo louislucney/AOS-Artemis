@@ -12,6 +12,19 @@ export interface SuiteStoreClientOptions {
   instanceId?: string;
 }
 
+export interface RunnerLlmEntry {
+  name: string;
+  provider: string;
+  model: string;
+  baseUrl: string | null;
+  apiKey: string | null;
+}
+
+export interface RunnerLlmConfig {
+  found: boolean;
+  entry?: RunnerLlmEntry;
+}
+
 export class SuiteStoreHttpError extends Error {
   readonly status: number;
   readonly code: string;
@@ -104,6 +117,13 @@ export class SuiteStoreClient {
     return await this.request(
       "GET",
       `/tasks/${encodeURIComponent(args[1])}/bundle?rootPath=${encodeURIComponent(args[0])}`
+    );
+  }
+
+  async getLlm(rootPath: string): Promise<RunnerLlmConfig> {
+    return await this.request(
+      "GET",
+      `/llm?rootPath=${encodeURIComponent(rootPath)}`
     );
   }
 

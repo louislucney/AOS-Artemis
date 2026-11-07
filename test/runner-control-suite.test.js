@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -472,6 +473,135 @@ test("suite control: 定时回归窗口与审计通过 HTTP 资源", async () =>
       assert.ok(schedules[0].lastFiredAt);
     } finally {
       await handle.close();
+    }
+  });
+});
+
+test("suite control: /llm 返回中心 active LLM，runner 通过 AOS_LLM_FROM_CENTER 注入", async () => {
+  const projectDir = makeTempProject({ config: baseConfig() });
+  const central = await makeCentral(projectDir);
+  await central.store.upsertLlm(central.rootPath, {
+    name: "center-deepseek",
+    provider: "custom",
+    model: "deepseek-flash",
+    baseUrl: "https://api.deepseek.com/v1",
+    apiKey: "sk-center-test",
+    makeActive: true
+  });
+  const workspaceRoot = await makeWorkspace();
+  await withEnv("AOS_RUNNER_JOB_TOKEN", TOKEN, async () => {
+    const handle = await createAosHttpServer({
+      port: 0,
+      host: "127.0.0.1",
+      workspaceRoot,
+      store: central.store
+    });
+    const baseUrl = `http://127.0.0.1:${handle.port}`;
+    const headers = { authorization: `Bearer ${TOKEN}`, "x-aos-host-id": HOST };
+    try {
+      const response = await fetch(
+        `${baseUrl}/panel/api/runners/suite/llm?rootPath=${encodeURIComponent(central.rootPath)}`,
+        { headers }
+      );
+      assert.equal(response.status, 200);
+      const payload = await response.json();
+      assert.equal(payload.ok, true);
+      assert.equal(payload.value.found, true);
+      assert.equal(payload.value.entry.model, "deepseek-flash");
+      assert.equal(payload.value.entry.apiKey, null, "真实 key 不下发给 runner");
+      assert.match(payload.value.entry.baseUrl, /\/panel\/api\/runners\/suite\/llm\/proxy\//);
+      assert.equal(JSON.stringify(payload).includes("sk-center-test"), false);
+
+      const env = {
+        AOS_HOST_ID: HOST,
+        AOS_RUNNER_JOB_TOKEN: TOKEN,
+        AOS_RUNNER_CONTROL_URL: baseUrl,
+        MOBILE_TESTING_PANEL_BASE_URL: baseUrl,
+        AOS_PROJECT_DIR: projectDir,
+        AOS_CONFIG: "",
+        AOS_LLM_FROM_CENTER: "1"
+      };
+      const built = await buildRemoteSuiteRuntime(projectDir, env);
+      try {
+        const active = await built.runtime.activeEntry();
+        assert.equal(active?.name, "center:center-deepseek");
+        assert.equal(active?.model, "deepseek-flash");
+        assert.match(active?.baseUrl ?? "", /\/panel\/api\/runners\/suite\/llm\/proxy\//);
+        assert.equal(active?.apiKey, TOKEN, "runner 用 runner token 调中心代理");
+        const entries = await built.runtime.entries();
+        assert.ok(entries.some((entry) => entry.name === "center:center-deepseek"));
+      } finally {
+        await built.dispose();
+      }
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+test("suite control: LLM 代理转发到中心 provider，runner 不接触真实 key", async () => {
+  const projectDir = makeTempProject({ config: baseConfig() });
+  const central = await makeCentral(projectDir);
+  const providerRequests = [];
+  const provider = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      providerRequests.push({
+        url: req.url,
+        authorization: req.headers.authorization,
+        body
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "chatcmpl-test", choices: [] }));
+    });
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  const providerPort = provider.address().port;
+  await central.store.upsertLlm(central.rootPath, {
+    name: "center-deepseek",
+    provider: "custom",
+    model: "deepseek-flash",
+    baseUrl: `http://127.0.0.1:${providerPort}/v1`,
+    apiKey: "sk-upstream",
+    makeActive: true
+  });
+  const workspaceRoot = await makeWorkspace();
+  await withEnv("AOS_RUNNER_JOB_TOKEN", TOKEN, async () => {
+    const handle = await createAosHttpServer({
+      port: 0,
+      host: "127.0.0.1",
+      workspaceRoot,
+      store: central.store
+    });
+    const baseUrl = `http://127.0.0.1:${handle.port}`;
+    try {
+      const proxyUrl = `${baseUrl}/panel/api/runners/suite/llm/proxy/${Buffer.from(
+        central.rootPath,
+        "utf8"
+      ).toString("base64url")}/chat/completions`;
+      const response = await fetch(proxyUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "x-aos-host-id": HOST,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "deepseek-flash",
+          messages: [{ role: "user", content: "hi" }]
+        })
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).id, "chatcmpl-test");
+      assert.equal(providerRequests.length, 1);
+      assert.equal(providerRequests[0].url, "/v1/chat/completions");
+      assert.equal(providerRequests[0].authorization, "Bearer sk-upstream");
+    } finally {
+      await handle.close();
+      await new Promise((resolve) => provider.close(resolve));
     }
   });
 });

@@ -60,6 +60,7 @@ import { resolveHostIdentity, type HostIdentity } from "./host/identity.js";
 import { hostAddressHistoryFrom } from "./host/online.js";
 import { primaryIp, selfReportedAddresses } from "./runner/host-snapshot.js";
 import { ModelCatalog, type FetchLike, type ModelReport, type RefreshReport } from "./llm/catalog.js";
+import { fetchCenterLlm } from "./llm/center.js";
 import {
   entriesFromConfig,
   entryFromEnvScan,
@@ -158,6 +159,8 @@ export class Runtime {
   private scanResult: EnvScanResult;
   private projectRecord: ProjectRecord | null = null;
   private activeCache: { name: string; entry: LlmEntry } | null = null;
+  /** Runner 从中心取的 active LLM：仅内存/子进程 env，不写入本机 .env/台账。 */
+  private transientEntry: LlmEntry | null = null;
   private initialized = false;
   private lastStoreError: string | null = null;
   private _hostIdentity: HostIdentity | null = null;
@@ -437,6 +440,36 @@ export class Runtime {
             }),
           null
         );
+      } else {
+        const active = existing.find((entry) => entry.isActive) ?? existing[0];
+        if (active !== undefined && (active.apiKey ?? "") === "") {
+          await this.safeStore(
+            () =>
+              this.store.upsertLlm(this.project.rootDir, {
+                name: active.name,
+                provider: active.provider,
+                model: active.model,
+                baseUrl: active.baseUrl,
+                apiKey: scan.apiKey,
+                makeActive: active.isActive
+              }),
+            null
+          );
+        }
+      }
+    }
+
+    const centerEnv = { ...this.project.dotenvValues, ...this._baseEnv };
+    if ((centerEnv.AOS_LLM_FROM_CENTER ?? "").trim() === "1") {
+      const center = await fetchCenterLlm({
+        env: centerEnv,
+        rootPath: this.project.rootDir,
+        hostId: identity.id
+      });
+      if (center.entry !== null) {
+        this.transientEntry = center.entry;
+      } else if (center.error !== null) {
+        logWarn(`中心 LLM 不可用：${center.error}`);
       }
     }
 
@@ -493,10 +526,16 @@ export class Runtime {
     const storeEntries = records.map((record) =>
       withEnvKeyFallback(entryFromStore(record), this.project.resolver)
     );
-    return mergeEntries(storeEntries, configEntries, envEntry ? [envEntry] : []);
+    const merged = mergeEntries(storeEntries, configEntries, envEntry ? [envEntry] : []);
+    if (this.transientEntry === null) return merged;
+    return [
+      this.transientEntry,
+      ...merged.filter((entry) => entry.name !== this.transientEntry?.name)
+    ];
   }
 
   async activeEntry(): Promise<LlmEntry | null> {
+    if (this.transientEntry !== null) return this.transientEntry;
     const entries = await this.entries();
     if (entries.length === 0) return null;
 
@@ -584,6 +623,15 @@ export class Runtime {
 
   private async doActivate(name: string, options: { force?: boolean }): Promise<ActivateResult> {
     const warnings: string[] = [];
+    if (this.transientEntry !== null && name === this.transientEntry.name) {
+      return {
+        ok: false,
+        blockedBy: "unknown",
+        error: "中心提供的 LLM 由中心管理，runner 不能在本机切换。",
+        available: [this.transientEntry.name],
+        warnings
+      };
+    }
     const entries = await this.entries();
     const target = entries.find((entry) => entry.name === name);
     if (!target) {

@@ -3332,9 +3332,12 @@ async function suiteRunnerCommand(
   buildRuntime: (projectDir: string | null) => Promise<CliRuntimeBundle>
 ): Promise<number> {
   const env = io.env ?? process.env;
+  const projectEnv = runtime.project.dotenvValues;
   const controlUrl = (
     env.MOBILE_TESTING_RUNNER_CONTROL_URL ??
+    projectEnv.MOBILE_TESTING_RUNNER_CONTROL_URL ??
     env.AOS_RUNNER_CONTROL_URL ??
+    projectEnv.AOS_RUNNER_CONTROL_URL ??
     ""
   ).trim();
   if (runtime.store.kind !== "postgres" && controlUrl === "") {

@@ -3908,3 +3908,16 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 - **面板**（`src/console/pages.ts`）：「设备 → 接入执行机」主按钮改为 Windows/macOS MCP runner，adb-host 降为兼容入口；文案明确前置（Node 20+、uv、Python 3.12；iOS 需 Xcode/Appium/签名/隧道）与边界（Windows 不能执行 iOS）。
 - **边界**：包内不包含 Node/uv/Python 运行时（由宿主安装；`uv` 负责 Python 3.12）；iOS 真机必须连接 Mac，Windows 只支持 Android；MCP runner 与 adb-host 都只是设备接入方式，执行仍由 `mobile_run_task`/`suite run` 承担。
 - **测试**：`test/http-server.test.js` 覆盖 `role=mcp-runner` 的 zip/tar.gz 下载与 content-type；`test/web-devices-ui.test.js` 覆盖双端按钮与 adb-host 兼容入口；构建/测试/lint 保持绿。
+
+### 13.319 调整（MCP runner 走中心 LLM 代理，不再要求本机填 key）
+
+> 2026-11-07。§13.318 的 runner 包按独立 MCP 项目打包，`doctor`/`e2e-device` 仍要求本机 `.env` 填 `AOS_LLM_API_KEY`。这违背“runner 是执行端、中心持有编排与 LLM”的 B 架构；改为 runner 从中心取 **LLM 代理访问方式**，真实 provider key 不出中心。
+
+- **中心 `/llm`**（`src/runner/control/suite-routes.ts`、`suite-service.ts`、`llm-resolver.ts`）：`GET /panel/api/runners/suite/llm?rootPath=...` 复用 runner token + `x-aos-host-id` 鉴权；`assertLlmProject` 默认只允许项目所属 host，跨主机需中心显式 `AOS_RUNNER_SHARED_LLM=1`。返回 `name/provider=model/baseUrl=<中心>/panel/api/runners/suite/llm/proxy/<base64url(rootPath)>/apiKey=null`；真实 key/baseUrl 不下发。
+- **中心代理**（`src/runner/control/llm-proxy.ts`）：`POST/GET /panel/api/runners/suite/llm/proxy/<base64url(rootPath)>/*` 先鉴权，再用 `resolveCenterLlm`（store 优先、项目 `.env` 回退）取真实 provider 条目，替换 `Authorization: Bearer <provider key>` 并转发到 `${baseUrl}${suffix}`；响应流式回传，`accept-encoding: identity` 规避上游错误 gzip 头。真实 key 只出现在中心进程内存与上游请求头，不写日志/不落 runner。
+- **runner client**（`src/runner/control/suite-client.ts`、`src/llm/center.ts`）：`getLlm(rootPath)` 取代理 URL；`AOS_LLM_FROM_CENTER=1` 时 `Runtime.initialize` 拉取并注入 `transientEntry`（仅内存，`entries()`/`activeEntry()` 可见）；代理 URL 的 API key 使用 runner token。`artemis.jsonc` 只写 provider/model；子进程 env 由 `buildChildEnvForEntry` 带代理 URL + runner token。中心条目在 runner 内只读，`activateEntry` 拒绝本机切换。
+- **路径映射**：runner 本地项目路径与中心不同（Windows/Mac）时，`AOS_CENTER_PROJECT_ROOT=<中心项目根路径>` 指定 `/llm` 查询与代理目标；不设置则用 runner 本地路径。
+- **doctor**（`src/commands.ts`）：`AOS_LLM_FROM_CENTER=1` 时调用同一 `fetchCenterLlm`，显示“LLM 由中心提供”；中心不可用才回退本机 `.env` 检查。
+- **包**（`scripts/build-mcp-runner-bundle.mjs`）：所有 setup/doctor/smoke/runner 脚本设置 `AOS_LLM_FROM_CENTER=1`；`.env.example` 不再要求填 key，改为中心控制面 + `AOS_CENTER_PROJECT_ROOT`；README 说明中心 URL/token、`AOS_RUNNER_SHARED_LLM=1` 与“无需本机 key”。
+- **边界**：代理仅支持 OpenAI 兼容 provider；Google provider 显式 501，不伪装成功。跨主机共享 LLM 是受控内网/单机队模式（中心 `AOS_RUNNER_SHARED_LLM=1`）；多租户部署应改用按项目/主机的代理令牌，而不是共享模式。
+- **测试**：`test/runner-control-suite.test.js` 覆盖 `/llm` 不泄露真实 key、runner 注入代理 URL + runner token、代理替换 `Authorization` 并转发到 provider；`test/http-server.test.js`/`test/web-devices-ui.test.js` 覆盖 runner 包下载与面板文案；全量测试/lint 保持绿。

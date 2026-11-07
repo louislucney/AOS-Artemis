@@ -8,6 +8,7 @@ import { resolveArtemisPython } from "./artemis/assembly.js";
 import { ensureArtemisDeps, depsStatus, resolveDepsSource } from "./artemis/bootstrap.js";
 import { penEnvFrom, penCliStatus } from "./pen/cli.js";
 import { ensurePenCli, penNodeTooOld } from "./pen/install.js";
+import { fetchCenterLlm } from "./llm/center.js";
 import { createProjectStore } from "./db/index.js";
 import { errorMessage } from "./util.js";
 
@@ -194,7 +195,34 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
     const { loadProject } = await import("./config/loader.js");
     const project = loadProject();
     const scan = scanProjectEnv(project.resolver);
-    if (scan.llm?.complete) {
+    const centerEnv = { ...project.dotenvValues, ...process.env };
+    const centerEnabled = (centerEnv.AOS_LLM_FROM_CENTER ?? "").trim() === "1";
+    const centerLlm = centerEnabled
+      ? await fetchCenterLlm({ env: centerEnv, rootPath: rootDir })
+      : null;
+    if (centerLlm?.entry) {
+      lines.push({
+        icon: "OK",
+        title: `LLM 由中心提供（${centerLlm.entry.name} · ${centerLlm.entry.model}）`,
+        details: [
+          `base_url: ${centerLlm.entry.baseUrl ?? "（provider 默认）"}`,
+          "api_key: ****（中心持有，runner 不落盘）"
+        ]
+      });
+    } else if (centerEnabled && centerLlm?.error) {
+      degraded = true;
+      lines.push({
+        icon: "WARN",
+        title: "中心 LLM 不可用",
+        details: [
+          centerLlm.error,
+          "将回退本机 .env；检查 MOBILE_TESTING_RUNNER_CONTROL_URL / MOBILE_TESTING_RUNNER_JOB_TOKEN 与中心 active LLM。"
+        ]
+      });
+    }
+    if (centerLlm?.entry) {
+      // 中心已提供 active LLM，不要求本机 .env。
+    } else if (scan.llm?.complete) {
       lines.push({
         icon: "OK",
         title: `LLM 三元组就绪（model=${scan.llm.model}${scan.llm.modelVar ? ` via ${scan.llm.modelVar}` : ""}）`,

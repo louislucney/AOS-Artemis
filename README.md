@@ -381,7 +381,7 @@ Android 真机现走 MCP 原生：
 
 设备宿主只需要 adb（platform-tools）。手机直接插 MCP 服务所在 Mac 时用系统 adb 即可；远程宿主才需要面板「设备 → 接入执行机」下载 **Windows adb-host（约 8MB）或 macOS adb-host（约 16MB）**，启动 `adb -a -P 5037 server nodaemon`，项目配置 `ADB_SERVER_SOCKET=tcp:<宿主IP>:5037`。详细步骤见 [docs/android-mcp-native-testing.md](docs/android-mcp-native-testing.md)。
 
-**MCP runner 双端包（推荐）**：面板「设备 → 接入执行机」还提供 Windows x64（Android）与 macOS arm64（iOS/Android）的 MCP runner。runner 在宿主本机执行 `mobile_run_task` / `suite run`，中心只下发任务并接收结果；包内含 MCP 代码、Artemis 源码、adb 与 setup/doctor/smoke/runner 脚本。前置：Node 20+、uv、Python 3.12；iOS 另需 Xcode、Appium + xcuitest、签名团队与 iOS 18+ Remote XPC 隧道。
+**MCP runner 双端包（推荐）**：面板「设备 → 接入执行机」还提供 Windows x64（Android）与 macOS arm64（iOS/Android）的 MCP runner。runner 在宿主本机执行 `mobile_run_task` / `suite run`，中心只下发任务并接收结果；包内含 MCP 代码、Artemis 源码、adb 与 setup/doctor/smoke/runner 脚本。runner 通过**中心 LLM 代理**使用 active LLM（真实 provider key 不出中心，runner 本机不填 key；跨主机需中心 `AOS_RUNNER_SHARED_LLM=1`，路径不同时设 `AOS_CENTER_PROJECT_ROOT`）。前置：Node 20+、uv、Python 3.12；中心 runner URL/token（或中心 PG）；iOS 另需 Xcode、Appium + xcuitest、签名团队与 iOS 18+ Remote XPC 隧道。
 
 构建：`npm run toolchain:fetch && npm run bundle:adb-host`（仅 adb）或 `npm run bundle:mcp-runner`（双端 MCP runner）；中心 `GET /panel/runner-bundle?role=adb-host&platform=win32&arch=x64` / `...&role=mcp-runner&platform=darwin&arch=arm64`。
 

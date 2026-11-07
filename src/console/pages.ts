@@ -1194,6 +1194,7 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
     <section class="c-card" id="runner-download">
       <h2 class="c-card-title">接入执行机（Android / iOS）</h2>
       <p class="c-card-subtitle"><strong>MCP runner</strong> 在宿主本机运行 MCP 执行代码：中心下发任务，runner 用本机 adb / 模拟器执行并回传结果。Windows 跑 Android；macOS 跑 iOS（模拟器/真机）和 Android。</p>
+      <p class="c-card-subtitle c-card-subtitle-tight">LLM 由中心代理提供（runner 只拿 runner token），真实 provider key 不出中心；runner 本机不需要填 LLM key。</p>
       <p class="c-card-subtitle c-card-subtitle-tight">手机直接插在 MCP 服务所在的 Mac 时，用系统 adb 即可，不需要下载包。</p>
       <p class="c-card-subtitle c-card-subtitle-tight">前置：Node 20+、uv、Python 3.12；iOS 还需要 Xcode、Appium + xcuitest、签名团队与 iOS 18+ Remote XPC 隧道。包内含 adb、MCP 代码与 Artemis 源码。</p>
       <div class="c-download-grid" aria-label="MCP runner 安装包下载">

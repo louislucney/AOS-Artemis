@@ -91,11 +91,19 @@ function writeProject(staging) {
   fs.writeFileSync(
     path.join(projectDir, ".env.example"),
     [
-      "# 填入真实 key 后另存为 .env（不要提交）",
-      "AOS_LLM_NAME=deepseek",
-      "AOS_LLM_MODEL=deepseek-flash",
-      "AOS_LLM_BASE_URL=https://api.deepseek.com/v1",
-      "AOS_LLM_API_KEY=",
+      "# 中心控制面（HTTP 模式）",
+      "# MOBILE_TESTING_RUNNER_CONTROL_URL=http://<中心IP>:8765",
+      "# MOBILE_TESTING_RUNNER_JOB_TOKEN=",
+      "# MOBILE_TESTING_HOST_ID=win-runner-01",
+      "# 中心项目根路径（runner 本地路径与中心不同时填写，用于取中心 LLM）",
+      "# AOS_CENTER_PROJECT_ROOT=/Users/you/AOS/ESSO-GU",
+      "",
+      "# runner 不需要本机 LLM key：从中心 LLM 代理获取（AOS_LLM_FROM_CENTER=1，真实 key 不出中心）",
+      "# 仅当中心不可用、需要本机兜底时才填下面四项",
+      "# AOS_LLM_NAME=deepseek",
+      "# AOS_LLM_MODEL=deepseek-flash",
+      "# AOS_LLM_BASE_URL=https://api.deepseek.com/v1",
+      "# AOS_LLM_API_KEY=",
       "",
       "# runner 不需要 pen CLI（启动脚本已设置）",
       "# AOS_PEN_SKIP=1",
@@ -126,11 +134,12 @@ function writeWindowsLaunchers(staging) {
       pathLine,
       'set "AOS_PEN_SKIP=1"',
       'set "AOS_PEN_NO_INSTALL=1"',
+      'set "AOS_LLM_FROM_CENTER=1"',
       'if not exist "project\\.env" copy "project\\.env.example" "project\\.env" >nul',
       "echo [1/2] 检查环境并安装 Artemis 依赖（首次较慢，需要网络）...",
       "node dist\\cli.js doctor --install-deps",
       "echo.",
-      "echo [2/2] 完成。请编辑 project\\.env 填入 AOS_LLM_API_KEY，然后运行 doctor.cmd。",
+      "echo [2/2] 完成。LLM 由中心提供，无需填写 key；运行 doctor.cmd 体检。",
       ""
     ].join("\r\n"),
     "utf8"
@@ -146,6 +155,7 @@ function writeWindowsLaunchers(staging) {
       pathLine,
       'set "AOS_PEN_SKIP=1"',
       'set "AOS_PEN_NO_INSTALL=1"',
+      'set "AOS_LLM_FROM_CENTER=1"',
       'if not exist "project\\.env" (',
       "  echo [提示] 缺少 project\\.env：先运行 setup.cmd，再填入 AOS_LLM_API_KEY。",
       "  exit /b 2",
@@ -166,6 +176,7 @@ function writeWindowsLaunchers(staging) {
       pathLine,
       'set "AOS_PEN_SKIP=1"',
       'set "AOS_PEN_NO_INSTALL=1"',
+      'set "AOS_LLM_FROM_CENTER=1"',
       'set "DEVICE=%~1"',
       'if "%DEVICE%"=="" set "DEVICE="',
       'set "TASK=%~2"',
@@ -190,6 +201,7 @@ function writeWindowsLaunchers(staging) {
       pathLine,
       'set "AOS_PEN_SKIP=1"',
       'set "AOS_PEN_NO_INSTALL=1"',
+      'set "AOS_LLM_FROM_CENTER=1"',
       'if "%MOBILE_TESTING_HOST_ID%"=="" set "MOBILE_TESTING_HOST_ID=win-runner-01"',
       'node dist\\cli.js suite runner --project "%AOS_PROJECT_DIR%" --name "%MOBILE_TESTING_HOST_ID%"',
       ""
@@ -207,10 +219,11 @@ export AOS_PROJECT_DIR="$ROOT/project"
 export PATH="$ROOT/tools/platform-tools:$PATH"
 export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
+export AOS_LLM_FROM_CENTER=1
 [ -f "$ROOT/project/.env" ] || cp "$ROOT/project/.env.example" "$ROOT/project/.env"
 node dist/cli.js doctor --install-deps
 echo
-echo "完成。请编辑 project/.env 填入 AOS_LLM_API_KEY，然后运行 doctor.command。"
+echo "完成。LLM 由中心提供，无需填写 key；运行 doctor.command 体检。"
 `;
   const doctor = `#!/bin/sh
 set -eu
@@ -220,6 +233,7 @@ export AOS_PROJECT_DIR="$ROOT/project"
 export PATH="$ROOT/tools/platform-tools:$PATH"
 export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
+export AOS_LLM_FROM_CENTER=1
 if [ ! -f "$ROOT/project/.env" ]; then
   echo "[提示] 缺少 project/.env：先运行 setup.command，再填入 AOS_LLM_API_KEY。"
   exit 2
@@ -234,6 +248,7 @@ export AOS_PROJECT_DIR="$ROOT/project"
 export PATH="$ROOT/tools/platform-tools:$PATH"
 export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
+export AOS_LLM_FROM_CENTER=1
 DEVICE="\${1:-}"
 TASK="\${2:-打开应用，截图并报告当前页面}"
 if [ -z "$DEVICE" ]; then
@@ -253,6 +268,7 @@ export AOS_PROJECT_DIR="$ROOT/project"
 export PATH="$ROOT/tools/platform-tools:$PATH"
 export AOS_PEN_SKIP=1
 export AOS_PEN_NO_INSTALL=1
+export AOS_LLM_FROM_CENTER=1
 : "\${MOBILE_TESTING_HOST_ID:=mac-runner-01}"
 export MOBILE_TESTING_HOST_ID
 node dist/cli.js suite runner --project "$AOS_PROJECT_DIR" --name "$MOBILE_TESTING_HOST_ID"
@@ -294,14 +310,15 @@ function writeBundleReadme(staging, target) {
       "",
       "- Node.js 20+（推荐 22/24）",
       "- `uv`（Python 3.12 由 uv 管理）",
+      "- 中心已配置 active LLM；runner 通过中心 LLM 代理使用（真实 key 不出中心），不要求本机填 key",
       "- Android：本机 adb 可见设备",
       "- iOS（仅 macOS）：Xcode、Appium + xcuitest、签名团队、iOS 18+ Remote XPC 隧道",
       "",
       "## 启动",
       "",
       target.platform === "win32"
-        ? "1. `setup.cmd`（首次安装 Artemis 依赖）\n2. 编辑 `project\\.env` 填入 `AOS_LLM_API_KEY`\n3. `doctor.cmd` 确认全绿\n4. `smoke.cmd [设备序列号] [任务描述]`\n5. `runner.cmd` 常驻领取中心任务"
-        : "1. `./setup.command`（首次安装 Artemis 依赖）\n2. 编辑 `project/.env` 填入 `AOS_LLM_API_KEY`\n3. `./doctor.command` 确认全绿\n4. `./smoke.command [设备UDID] [任务描述]`\n5. `./runner.command` 常驻领取中心任务",
+        ? "1. `setup.cmd`（首次安装 Artemis 依赖）\n2. 配置中心 runner URL/token（见下方「中心」）；**不需要填 LLM key**\n3. `doctor.cmd` 确认全绿\n4. `smoke.cmd [设备序列号] [任务描述]`\n5. `runner.cmd` 常驻领取中心任务"
+        : "1. `./setup.command`（首次安装 Artemis 依赖）\n2. 配置中心 runner URL/token（见下方「中心」）；**不需要填 LLM key**\n3. `./doctor.command` 确认全绿\n4. `./smoke.command [设备UDID] [任务描述]`\n5. `./runner.command` 常驻领取中心任务",
       "",
       "## 设备",
       "",
@@ -313,10 +330,15 @@ function writeBundleReadme(staging, target) {
       "",
       "在中心创建回归任务（`suite task create` 或面板），目标平台选 android/ios，执行机指向本 runner 的主机名。",
       "",
-      "runner 连接中心二选一：",
+      "runner 连接中心二选一（写进 `project/.env` 即可，进程 env 优先）：",
       "",
       "- HTTP 控制面：`MOBILE_TESTING_RUNNER_CONTROL_URL=http://<中心>:8765` + `MOBILE_TESTING_RUNNER_JOB_TOKEN=<token>`",
       "- 直连中心 PG：`MOBILE_TESTING_DATABASE_URL=postgres://...`",
+      "",
+      "跨主机 runner 还需要：",
+      "",
+      "- 中心打开 `AOS_RUNNER_SHARED_LLM=1`（允许 runner 取中心 LLM 代理；单机队/受控内网，多租户不要开）",
+      "- runner 本地项目路径与中心不同时，设置 `AOS_CENTER_PROJECT_ROOT=<中心项目根路径>`",
       "",
       "未配置时 runner 只使用本机文件台账，不会领取中心任务。主机名用 `MOBILE_TESTING_HOST_ID` 指定（默认 win-runner-01 / mac-runner-01）。",
       ""

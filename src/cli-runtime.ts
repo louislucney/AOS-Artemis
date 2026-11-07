@@ -55,25 +55,31 @@ export async function buildRemoteSuiteRuntime(
   projectDir: string | null,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<CliRuntimeBundle> {
+  const baseEnv = projectDir
+    ? { ...env, AOS_PROJECT_DIR: projectDir, AOS_CONFIG: "" }
+    : env;
+  const project = loadProject({ env: baseEnv });
+  const resolvedEnv: NodeJS.ProcessEnv = {
+    ...project.dotenvValues,
+    ...baseEnv,
+    AOS_PROJECT_DIR: project.rootDir,
+    AOS_CONFIG: ""
+  };
   const controlUrl = (
-    env.MOBILE_TESTING_RUNNER_CONTROL_URL ??
-    env.AOS_RUNNER_CONTROL_URL ??
+    resolvedEnv.MOBILE_TESTING_RUNNER_CONTROL_URL ??
+    resolvedEnv.AOS_RUNNER_CONTROL_URL ??
     ""
   ).trim();
   if (controlUrl === "") {
     throw new Error("MOBILE_TESTING_RUNNER_CONTROL_URL 未配置（旧名 AOS_RUNNER_CONTROL_URL 兼容）");
   }
-  const token = runnerJobTokenFrom(env);
+  const token = runnerJobTokenFrom(resolvedEnv);
   if (token.length < 16) {
     throw new Error("MOBILE_TESTING_RUNNER_JOB_TOKEN 至少需要 16 个字符");
   }
-  const resolvedEnv = projectDir
-    ? { ...env, AOS_PROJECT_DIR: projectDir, AOS_CONFIG: "" }
-    : env;
-  const project = loadProject({ env: resolvedEnv });
   const identity = await resolveHostIdentity({ env: resolvedEnv });
   const panelBaseUrl =
-    (env.MOBILE_TESTING_PANEL_BASE_URL ?? env.AOS_PANEL_BASE_URL ?? "").trim() ||
+    (resolvedEnv.MOBILE_TESTING_PANEL_BASE_URL ?? resolvedEnv.AOS_PANEL_BASE_URL ?? "").trim() ||
     controlUrl;
   let local;
   try {
@@ -81,13 +87,13 @@ export async function buildRemoteSuiteRuntime(
   } catch {
     local = new MemoryStore();
   }
-  const runnerFetch = createRunnerFetch(env);
+  const runnerFetch = createRunnerFetch(resolvedEnv);
   const client = new SuiteStoreClient({
     baseUrl: panelBaseUrl,
     token,
     hostId: identity.id,
-    timeoutMs: runnerHttpTimeoutMs(env),
-    instanceId: (env.AOS_RUNNER_INSTANCE_ID ?? "").trim(),
+    timeoutMs: runnerHttpTimeoutMs(resolvedEnv),
+    instanceId: (resolvedEnv.AOS_RUNNER_INSTANCE_ID ?? "").trim(),
     ...(runnerFetch === undefined ? {} : { fetchImpl: runnerFetch })
   });
   await client.upsertHost({

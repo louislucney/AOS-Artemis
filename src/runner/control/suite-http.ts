@@ -12,6 +12,8 @@ export interface SuiteControlHttpInput {
   body?: unknown;
   store: ProjectStore;
   env?: NodeJS.ProcessEnv;
+  /** 中心对外基址（如 `http://192.168.3.91:8765`），用于生成 LLM 代理 URL。 */
+  publicBaseUrl?: string;
 }
 
 export interface SuiteControlHttpResponse {
@@ -48,7 +50,13 @@ export async function handleSuiteControlRequest(
     const rawInstance =
       input.headers["x-mobile-testing-instance-id"] ?? input.headers["x-aos-instance-id"];
     const instanceId = (Array.isArray(rawInstance) ? rawInstance[0] : rawInstance ?? "").trim();
-    const service = new SuiteControlService(input.store, hostId, env, instanceId);
+    const service = new SuiteControlService(
+      input.store,
+      hostId,
+      env,
+      instanceId,
+      input.publicBaseUrl ?? ""
+    );
     return json(200, { ok: true, value: await service.execute(route.op, route.args) });
   } catch (error) {
     if (error instanceof RunnerControlError) {
