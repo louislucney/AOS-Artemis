@@ -102,6 +102,10 @@ export interface DispatchView {
   embeddedCreate?: boolean;
 }
 
+function platformLabel(platform: "android" | "ios"): string {
+  return platform === "android" ? "Android" : "iOS";
+}
+
 function dispatchPlatforms(params: URLSearchParams): ("ios" | "android")[] {
   const raw = params.getAll("platforms");
   const values = (raw.length === 0 ? ["android"] : raw)
@@ -615,7 +619,7 @@ export function renderDispatchPage(view: DispatchView): string {
       (platform) =>
         `<label class="dispatch-option"><input type="checkbox" name="platforms" value="${platform}"${
           preview.platforms.includes(platform) ? " checked" : ""
-        }> ${platform}</label>`
+        }> ${platformLabel(platform)}</label>`
     )
     .join(" ");
   const setOptions = preview.setOptions
@@ -779,7 +783,10 @@ export function renderDispatchPage(view: DispatchView): string {
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
     cStat({ label: "优先级", value: `P${preview.priority}` }),
-    cStat({ label: "目标端", value: preview.platforms.join("、") || "—" }),
+    cStat({
+      label: "目标端",
+      value: preview.platforms.map((platform) => platformLabel(platform)).join("、") || "—"
+    }),
     cStat({
       label: "安装包",
       value:

@@ -1724,7 +1724,10 @@ function renderCreateProjectCard(): string {
   const script = actionsOff
     ? ""
     : `<script>(function(){function aosBindCreateProjectForm(){var form=document.getElementById('create-project-form');if(!form||form.getAttribute('data-aos-bound')==='1')return;form.setAttribute('data-aos-bound','1');var status=document.getElementById('create-project-status');form.addEventListener('submit',function(e){e.preventDefault();var f=new FormData(form);var platforms=f.getAll('platform');if(!(f.get('name')||'').trim()){status.textContent='请填写项目名称';return;}if(platforms.length===0){status.textContent='请至少选择一个平台';return;}if(!(f.get('appPackage')||'').trim()){status.textContent='请填写应用包名';return;}var customer=(f.get('customerName')||'').trim();var body={name:(f.get('name')||'').trim(),platforms:platforms,appPackage:(f.get('appPackage')||'').trim(),customerName:customer||null};fetch('/panel/api/projects',{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j.ok&&res.j.project){window.aosFlash&&aosFlash('项目已创建');location.href='/panel?project='+encodeURIComponent(res.j.project.rootPath);}else{status.textContent='创建失败：'+((res.j&&res.j.error)||res.status);}}).catch(function(err){status.textContent='创建失败：'+err;});});}window.aosBindCreateProjectForm=aosBindCreateProjectForm;var prevHook=window.aosOnRefresh;window.aosOnRefresh=function(){aosBindCreateProjectForm();if(typeof prevHook==='function')prevHook();};aosBindCreateProjectForm();})();</script>`;
-  return `<div id="new-project">${cCard({ title: "新增项目", body: `${form}${script}` })}</div>`;
+  return `<details class="c-details" id="new-project"><summary>新增项目</summary>${cCard({
+    title: "新增项目",
+    body: `${form}${script}`
+  })}</details>`;
 }
 
 function renderOverviewPage(view: PanelOverview, cacheNote: string): string {
@@ -1790,7 +1793,7 @@ try{
             `<p><a class="c-button c-button-primary" href="${escapeHtml(projectHref(view.projects[0].rootPath, view.projects[0].hostId))}">进入最近活跃项目：${escapeHtml(view.projects[0].name)} →</a></p>`,
             cCard({
               title: "项目",
-              subtitle: `生成时间 ${relativeTimeText(view.generatedAt)} · 项目 ${view.projects.length} 个${excludedNote} · ${cacheNote}`,
+              subtitle: `生成时间 ${relativeTimeText(view.generatedAt)} · ${cacheNote}`,
               body: cTable({
                 columns: ["项目", "主机", "接入健康", "栈", "最后活跃", "最新批次", "备注"],
                 columnWidths: ["18%", "12%", "25%", "10%", "10%", "20%", "5%"],
@@ -3591,7 +3594,9 @@ function renderComparePage(view: PanelCompareView, cacheNote: string): string {
       `<p class="muted">生成时间 ${relativeTime(view.generatedAt)} · 项目 ${view.projects.length} 个${
         view.truncated ? "（已截断）" : ""
       }${view.excludedProjects > 0 ? ` · 已隐藏 ${view.excludedProjects} 个排除项目` : ""} · ${escapeHtml(cacheNote)}</p>`,
-      `<p class="muted">${escapeHtml(scope)}</p>`,
+      `<details class="c-details"><summary>口径说明</summary><p class="muted">${escapeHtml(
+        scope
+      )}</p></details>`,
       warnings,
       "</header>",
       "<main>",

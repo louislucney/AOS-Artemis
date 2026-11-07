@@ -36,7 +36,9 @@ function sourceLabelText(raw: string): string {
 /** 来源（用例集 source / 批次 source / 任务 createdBy）：中文＋title 原文。 */
 export function sourceHtml(source: string | null | undefined): string {
   if (source === null || source === undefined || source === "") return "—";
-  return `<span title="${escapeHtml(source)}">${escapeHtml(sourceLabelText(source))}</span>`;
+  const label = sourceLabelText(source);
+  const shown = label.length > 48 ? `${label.slice(0, 48)}…` : label;
+  return `<span title="${escapeHtml(source)}">${escapeHtml(shown)}</span>`;
 }
 
 const AUDIT_DOMAINS: Record<string, string> = {
