@@ -2592,27 +2592,38 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
   ]);
   const runActions = (run: PanelTaskRunView): string => {
     const links: string[] = [];
+    const remoteEvidence =
+      run.manifestPath !== null &&
+      (/^[A-Za-z]:[\\/]/.test(run.manifestPath) || run.manifestPath.startsWith("\\\\"));
     if (run.manifestPath !== null) {
       links.push(
-        `<a class="c-button" href="${escapeHtml(
-          batchHref(view.rootPath, path.basename(run.manifestPath), view.hostId)
-        )}">批次</a>`
+        remoteEvidence
+          ? `<span class="muted" title="${escapeHtml(
+              run.manifestPath
+            )}">执行机本地清单</span>`
+          : `<a class="c-button" href="${escapeHtml(
+              batchHref(view.rootPath, path.basename(run.manifestPath), view.hostId)
+            )}">批次</a>`
       );
     }
-    links.push(
-      `<a class="c-button" href="/panel?project=${encodeURIComponent(
-        view.rootPath
-      )}&amp;section=archive&amp;kind=trace&amp;q=${encodeURIComponent(run.runId)}${hostSuffix(
-        view.hostId
-      ).replace(/&/g, "&amp;")}">轨迹</a>`
-    );
-    links.push(
-      `<a class="c-button" href="/panel?project=${encodeURIComponent(
-        view.rootPath
-      )}&amp;section=archive&amp;run=${encodeURIComponent(run.runId)}${hostSuffix(
-        view.hostId
-      ).replace(/&/g, "&amp;")}">运行档案</a>`
-    );
+    if (remoteEvidence) {
+      links.push('<span class="muted" title="trace 在 runner 本地">执行机本地 trace</span>');
+    } else {
+      links.push(
+        `<a class="c-button" href="/panel?project=${encodeURIComponent(
+          view.rootPath
+        )}&amp;section=archive&amp;kind=trace&amp;q=${encodeURIComponent(run.runId)}${hostSuffix(
+          view.hostId
+        ).replace(/&/g, "&amp;")}">轨迹</a>`
+      );
+      links.push(
+        `<a class="c-button" href="/panel?project=${encodeURIComponent(
+          view.rootPath
+        )}&amp;section=archive&amp;run=${encodeURIComponent(run.runId)}${hostSuffix(
+          view.hostId
+        ).replace(/&/g, "&amp;")}">运行档案</a>`
+      );
+    }
     if (run.failed > 0) {
       links.push(
         `<a class="c-button" href="/panel?project=${encodeURIComponent(
@@ -2777,6 +2788,13 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       )} --device &lt;serial&gt;</code> <button class="c-button" type="button" data-copy="${escapeHtml(
         `node dist/cli.js suite run --task ${task.id} --device <serial>`
       )}">复制命令</button>。产物在执行机磁盘（上方清单路径），中心侧仅展示路径。</p>`,
+      detail.runs.some(
+        (run) =>
+          run.manifestPath !== null &&
+          (/^[A-Za-z]:[\\/]/.test(run.manifestPath) || run.manifestPath.startsWith("\\\\"))
+      )
+        ? '<p class="note">本次产物在远端 runner 本地，中心无法打开本地清单/trace。配置 runner 的 <code>AOS_RUNNER_ADVERTISE_URL</code>（如 <code>http://192.168.3.21:8770</code>）并重启后，批次与证据链接才可用。</p>'
+        : "",
       `<script>(function(){document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-copy]'):null;if(!b)return;var text=b.getAttribute('data-copy')||'';var done=function(){b.textContent='已复制';setTimeout(function(){b.textContent='复制命令';},1500);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(function(){b.textContent='复制失败';});}else{b.textContent='复制失败';}});})();</script>`,
       "</section>",
       "</main>"
