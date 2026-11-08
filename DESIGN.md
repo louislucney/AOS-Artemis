@@ -4011,4 +4011,5 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > - **快速失败**：case poll 同时检查 `status.error` 与 trace `stderr.log` 的 `CRITICAL ERROR`/`LLMExhaustedError`/`APIConnectionError`；命中立即失败；默认单用例超时 180s（`AOS_SUITE_CASE_TIMEOUT_MS` 可覆盖）。
 > - **取消终止**：轮询中检查 `shouldAbort`，命中即停止等待并对 Artemis 子进程 `markForRestart`。
 > - **证据上传**：runner 失败时 best-effort 上传 `status.json`/`stderr.log`/`stdout.log` 到中心 `.artemis/remote-evidence/<taskId>/<traceId>/`；白名单、单文件 256KB、总包 1MB；面板只给「查看失败证据」链接。
+- **每主机 token 免 host 头**：`AOS_RUNNER_HOST_TOKENS` 命中的 runner token 本身绑定 host；LLM 代理请求（Artemis/OpenAI 客户端只带 Authorization）不再强制 `X-AOS-Host-Id`，否则会 403。全局 token 仍要求 host 头。
 > - **版本**：runner 包与 `AOS_MCP_VERSION` 升至 0.2.3。

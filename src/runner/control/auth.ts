@@ -152,12 +152,9 @@ export function authenticateRunner(
       return { ok: false, status: 401, code: "unauthorized", error: "无效的 runner token" };
     }
     if (hostHeader === "") {
-      return {
-        ok: false,
-        status: 403,
-        code: "host-required",
-        error: "每主机 token 请求必须带 X-AOS-Host-Id"
-      };
+      // 每主机 token 本身已绑定 host；Artemis/OpenAI 客户端只带 Authorization，
+      // 不能强制要求 X-AOS-Host-Id，否则 LLM 代理请求会被 403。
+      return { ok: true, hostId: matched.hostId, source: "host-token" };
     }
     if (hostHeader !== matched.hostId) {
       return {
