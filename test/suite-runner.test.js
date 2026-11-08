@@ -76,6 +76,25 @@ test("suite runner: Android 提交前剔除 iOS 脚本断言块，iOS 保留", a
   assert.ok(!taskDescForTarget(taskDesc, null).includes("【AOS-EXPECT】"), "无设备缺省按 Android 剔除");
 });
 
+test("suite runner: repeated chat retries fail fast with a proxy hint", async () => {
+  const { runtime, run } = await setup({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "running" } }
+  });
+  const traceDir = runtime.traceDir("trace-1");
+  fs.mkdirSync(traceDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(traceDir, "stderr.log"),
+    Array.from({ length: 4 }, () =>
+      "INFO:openai._base_client:Retrying request to /chat/completions in 0.4 seconds"
+    ).join("\n"),
+    "utf-8"
+  );
+  const report = await run({ pollTimeoutMs: 500 });
+  assert.match(report.cases[0].error ?? "", /NO_PROXY|持续重试/);
+  assert.equal(report.cases[0].status, "failed");
+});
+
 test("suite runner: uploads failure evidence when the store supports it", async () => {
   const store = new MemoryStore();
   const uploads = [];

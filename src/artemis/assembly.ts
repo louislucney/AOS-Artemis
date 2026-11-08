@@ -316,6 +316,29 @@ export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
   if (entry.apiKey) env[keyEnvName] = entry.apiKey;
   if (entry.provider !== "google" && entry.baseUrl) env.OPENAI_BASE_URL = entry.baseUrl;
 
+  // 公司代理（Zscaler 等）会把发往中心 LAN 的 Python 请求也代理掉。
+  // 从 runner 中心控制面 URL 自动补 NO_PROXY，不要求用户手工改 runner.cmd。
+  const centerUrl =
+    args.dotenv?.().MOBILE_TESTING_RUNNER_CONTROL_URL ??
+    baseEnv.MOBILE_TESTING_RUNNER_CONTROL_URL ??
+    "";
+  if (centerUrl.trim() !== "") {
+    try {
+      const centerHost = new URL(centerUrl).hostname;
+      if (centerHost !== "") {
+        const existing = (env.NO_PROXY ?? env.no_proxy ?? "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter((value) => value !== "");
+        const merged = [...new Set([...existing, centerHost, "localhost", "127.0.0.1"])];
+        env.NO_PROXY = merged.join(",");
+        env.no_proxy = env.NO_PROXY;
+      }
+    } catch {
+      /* 非 URL 的中心地址不阻断子进程 */
+    }
+  }
+
   if (config.artemis.deviceSerial) env.ADB_DEVICE_SERIAL = config.artemis.deviceSerial;
 
   // ADR-0011 远程 Android 设备宿主：进程 env / 项目 .env / config.deviceHosts → ADB_SERVER_SOCKET。

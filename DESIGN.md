@@ -4013,3 +4013,11 @@ M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、�
 > - **证据上传**：runner 失败时 best-effort 上传 `status.json`/`stderr.log`/`stdout.log` 到中心 `.artemis/remote-evidence/<taskId>/<traceId>/`；白名单、单文件 256KB、总包 1MB；面板只给「查看失败证据」链接。
 - **每主机 token 免 host 头**：`AOS_RUNNER_HOST_TOKENS` 命中的 runner token 本身绑定 host；LLM 代理请求（Artemis/OpenAI 客户端只带 Authorization）不再强制 `X-AOS-Host-Id`，否则会 403。全局 token 仍要求 host 头。
 > - **版本**：runner 包与 `AOS_MCP_VERSION` 升至 0.2.3。
+
+### 13.329 代理绕过与重试诊断（0.2.4）
+
+> 2026-11-08。0.2.3 真机证据显示：中心预检已通过，但 Artemis 子进程持续 `Retrying request to /chat/completions`，180s 后超时。原因是 Windows 公司代理拦截了发往中心 LAN 的 Python 请求。
+>
+> - `buildChildEnvForEntry` 从 `MOBILE_TESTING_RUNNER_CONTROL_URL` 自动提取中心 host，合并到子进程 `NO_PROXY`/`no_proxy`（并保留 localhost/127.0.0.1）；不再要求用户手工改 `runner.cmd`。
+> - `traceTerminalError` 检测 `Retrying request to /chat/completions` ≥3 次，立即失败并提示检查中心代理/NO_PROXY。
+> - 版本升至 0.2.4。

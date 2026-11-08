@@ -253,3 +253,16 @@ test("projectTracesDir: defaults into the project; explicit override wins and re
   assert.equal(second.env.ARTEMIS_TRACES_DIR, path.resolve("/var/aos-traces"));
   assert.notEqual(first.fingerprint, second.fingerprint);
 });
+
+test("entry env: center control URL host is added to NO_PROXY", () => {
+  const result = buildChildEnvForEntry({
+    config,
+    rootDir: "/tmp/proj",
+    entry: { provider: "custom", model: "m1", baseUrl: "http://center/proxy", apiKey: "k1" },
+    baseEnv: { HTTP_PROXY: "http://zscaler:8080" },
+    dotenv: () => ({ MOBILE_TESTING_RUNNER_CONTROL_URL: "http://192.168.3.91:8765" })
+  });
+  assert.match(result.env.NO_PROXY, /192\.168\.3\.91/);
+  assert.match(result.env.NO_PROXY, /localhost/);
+  assert.equal(result.env.no_proxy, result.env.NO_PROXY);
+});

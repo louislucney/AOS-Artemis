@@ -40,6 +40,10 @@ export function traceTerminalError(traceDir: string): string | null {
         if (critical) return `Artemis 执行失败：${critical[1].trim()}`;
         const llm = /((?:LLMExhaustedError|openai\.APIConnectionError):[^\r\n]+)/i.exec(text);
         if (llm) return `Artemis 执行失败：${llm[1].trim()}`;
+        const retries = (text.match(/Retrying request to \/chat\/completions/g) ?? []).length;
+        if (retries >= 3) {
+          return "Artemis LLM 请求持续重试：检查中心代理地址与 NO_PROXY（公司代理不能代理 192.168.x）";
+        }
       } finally {
         fs.closeSync(fd);
       }
