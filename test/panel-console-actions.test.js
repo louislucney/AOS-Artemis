@@ -597,6 +597,7 @@ test("console actions: 安装包 appAssetId 写入任务；非法/平台不匹�
       platforms: ["android"],
       appAssetId: pkg.id,
       appPackage: "com.example.app",
+      caseIds: ["case-1"],
       previewId: dispatchPreviewId(preview, dispatchFormSignature(params), rootPath)
     }),
     deps
@@ -604,6 +605,7 @@ test("console actions: 安装包 appAssetId 写入任务；非法/平台不匹�
   assert.equal(ok.status, 200);
   assert.equal(JSON.parse(ok.body).task.appAssetId, pkg.id);
   assert.equal(JSON.parse(ok.body).task.appPackage, "com.example.app");
+  assert.deepEqual(JSON.parse(ok.body).task.caseIds, ["case-1"]);
 
   const missing = await handlePanelActionRequest(
     request("/panel/api/tasks", {

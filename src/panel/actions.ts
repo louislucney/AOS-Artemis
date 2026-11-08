@@ -1691,6 +1691,11 @@ async function createTask(
     }
     appPackage = rawAppPackage;
   }
+  const caseIds = Array.isArray(payload.caseIds)
+    ? payload.caseIds
+        .filter((value): value is string => typeof value === "string" && value.trim() !== "")
+        .map((value) => value.trim())
+    : [];
   const rawAppAssetId =
     typeof payload.appAssetId === "string" ? payload.appAssetId.trim() : "";
   let appAssetId: string | null = null;
@@ -1745,7 +1750,8 @@ async function createTask(
     createdHostId: dispatcherHostId,
     priority,
     appAssetId,
-    appPackage
+    appPackage,
+    caseIds
   });
   return json(200, { ok: true, task, ...(warnings.length > 0 ? { warnings } : {}) });
 }
