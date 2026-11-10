@@ -179,6 +179,8 @@ test("web assets page: asset versions, upload form and mapping hooks", async (t)
     html.indexOf('id="asset-upload"') < html.indexOf('id="excel-assets"'),
     "上传卡在资产表之前（打开页面即可看到）"
   );
+  assert.match(html, /id="design-import-modal"/, "设计增强导入弹窗");
+  assert.match(html, /window\.aosDesignImport/, "导入按钮先走设计预检");
   assert.match(html, /id="asset-upload-form"/, "上传表单");
   assert.match(html, /data-import-excel="[^"]+"/, "Excel 资产可一键导入用例库");
   assert.match(html, /id="asset-upload"/, "上传锚点");
@@ -329,6 +331,17 @@ test("web assets JSON view exposes assets and mappings", async (t) => {
   assert.equal(payload.mappings[0].id, mapping.id);
 });
 
+test("web assets page: inline scripts parse", async (t) => {
+  const { deps, rootPath } = await setup(t);
+  const response = await handlePanelRequest(assetsUrl(rootPath), deps);
+  assert.equal(response.status, 200);
+  const scripts = inlineScripts(response.body);
+  assert.ok(scripts.length >= 2, "主脚本 + 设计导入脚本");
+  for (const [index, script] of scripts.entries()) {
+    assert.doesNotThrow(() => new Function(script), `inline script ${index + 1} 语法错误`);
+  }
+});
+
 test("web assets page: viewer/dispatcher get no write actions", async (t) => {
   const { deps, rootPath } = await setup(t);
   for (const role of ["viewer", "dispatcher"]) {
@@ -345,6 +358,7 @@ test("web assets page: viewer/dispatcher get no write actions", async (t) => {
       !response.body.includes("/panel/api/projects/excel/mapping"),
       `${role} 页面不暴露写动作脚本`
     );
+    assert.ok(!response.body.includes('id="design-import-modal"'), `${role} 不渲染设计导入弹窗`);
   }
 
   const writable = await handlePanelRequest(assetsUrl(rootPath), {
@@ -354,6 +368,7 @@ test("web assets page: viewer/dispatcher get no write actions", async (t) => {
   assert.ok(!/id="asset-upload-submit"[^>]* disabled/.test(writable.body), "maintainer 可上传");
   assert.ok(!/id="mapping-save"[^>]* disabled/.test(writable.body), "maintainer 可保存");
   assert.match(writable.body, /\/panel\/api\/projects\/excel\/mapping/);
+  assert.match(writable.body, /id="design-import-modal"/, "maintainer 看到设计导入弹窗");
 });
 
 test("web assets page: panel actions off disables writes", async (t) => {

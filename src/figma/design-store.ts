@@ -4,6 +4,11 @@ import path from "node:path";
 import { isExploreKind, resolveProvenance, summarizeScriptProvenance } from "../provenance.js";
 import { normalizeFlowGraph, type FlowGraph } from "./flows.js";
 import type { ExploreStepSignal } from "./reconciliation.js";
+import {
+  validateStructuredActions,
+  type ActionEngine,
+  type StructuredAction
+} from "./structured-actions.js";
 
 /** design 资源单一读取（DESIGN §13.84）：tests.json / flows.json 的所有消费方
  * （suite-runner / preflight / run-report / feedback / CLI / case-index）经本模块，
@@ -63,6 +68,10 @@ export interface GeneratedCaseRecord {
   screens: string[];
   steps: string[];
   expectations: unknown[];
+  /** Phase 1 structured actions (raw; validated by consumers). */
+  actions: unknown[];
+  engine: ActionEngine | null;
+  engineReason: string | null;
   /** 功能段 key（回归服务 §5.1；旧产物缺失 → null）。 */
   feature: string | null;
 }
@@ -111,6 +120,15 @@ export function readTestsDocument(
         screens: stringArray(record.screens),
         steps: stringArray(record.steps),
         expectations: Array.isArray(record.expectations) ? record.expectations : [],
+        actions: Array.isArray(record.actions) ? record.actions : [],
+        engine:
+          record.engine === "native" || record.engine === "artemis" || record.engine === "auto"
+            ? record.engine
+            : null,
+        engineReason:
+          typeof record.engineReason === "string" && record.engineReason !== ""
+            ? record.engineReason
+            : null,
         feature:
           typeof record.feature === "string" && record.feature !== "" ? record.feature : null
       });
@@ -188,9 +206,14 @@ export interface GeneratedCase {
   hintScreens: Array<{ screen: string; hints: string[] }>;
   /** Script provenance counts from tests.json expectations (null = legacy). */
   scriptProvenance: { asserts: number; explores: number } | null;
+  /** Phase 1 structured actions (parsed; empty for legacy/artemis cases). */
+  actions: StructuredAction[];
+  engine: ActionEngine | null;
+  engineReason: string | null;
 }
 
 export function toGeneratedCase(record: GeneratedCaseRecord): GeneratedCase {
+  const parsedActions = validateStructuredActions(record.actions, record.steps.length);
   return {
     id: record.id,
     name: record.name,
@@ -202,7 +225,10 @@ export function toGeneratedCase(record: GeneratedCaseRecord): GeneratedCase {
     feature: record.feature,
     exploreSteps: exploreStepsOf(record.expectations),
     hintScreens: hintScreensOf(record.expectations),
-    scriptProvenance: summarizeScriptProvenance(record.expectations)
+    scriptProvenance: summarizeScriptProvenance(record.expectations),
+    actions: parsedActions.actions,
+    engine: record.engine,
+    engineReason: record.engineReason
   };
 }
 

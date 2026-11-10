@@ -1,6 +1,7 @@
 import type { NativeToolDefinition } from "./types.js";
 import { z } from "zod";
 import { figmaExtractFlows, type ExtractFlowsArgs } from "../../figma/flows.js";
+import { listFigmaFrames } from "../../figma/inventory.js";
 import { figmaGapAnalysis, type GapAnalysisArgs } from "../../figma/gaps.js";
 import { figmaGenerateTests, type GenerateTestsArgs } from "../../figma/test-gen.js";
 import { figmaImportAssets, type ImportAssetsArgs } from "../../figma/import.js";
@@ -13,10 +14,10 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "figma_extract_flows",
     description:
-      "解析 Figma 文件的原型交互 → 流程图：screens（含建议路由）+ edges（元素/触发器/导航/转场，支持 ON_CLICK/AFTER_TIMEOUT/拖拽/BACK 等连续动作）+ entryScreens；无原型交互时默认按箭头/连线、画板旁文字注释、画布顺序合成流程（staticFallback，INFERRED/low；staticFallback:false 或 AOS_STATIC_FALLBACK=0 关闭）；屏幕截图（screens，默认开）批量渲染各屏嵌入 flow-map.md（图片落 .artemis/design/screens/figma-<fileKey>/，相对路径引用；单屏未就绪有界重试后逐屏降级 screenshot-skipped / screenshot-render-unavailable，不阻断）。落盘 <项目>/.artemis/design/flows.json + flow-map.md。REST 模式需 FIGMA_ACCESS_TOKEN。",
+      "解析 Figma 文件的原型交互 → 流程图：screens（含建议路由）+ edges（元素/触发器/导航/转场，支持 ON_CLICK/AFTER_TIMEOUT/拖拽/BACK 等连续动作）+ entryScreens；无原型交互时默认按箭头/连线、画板旁文字注释、画布顺序合成流程（staticFallback，INFERRED/low；staticFallback:false 或 AOS_STATIC_FALLBACK=0 关闭）；**传 nodeId 或 URL 带 node-id 时走 Figma `/files/:key/nodes` 仅取该节点子树，不再整文件下载**；不传 node-id 才拉整份文件（大文件/flow board 建议按节点或页面提取）。屏幕截图（screens，默认开）批量渲染各屏嵌入 flow-map.md（图片落 .artemis/design/screens/figma-<fileKey>/，相对路径引用；单屏未就绪有界重试后逐屏降级 screenshot-skipped / screenshot-render-unavailable，不阻断）。落盘 <项目>/.artemis/design/flows.json + flow-map.md。REST 模式需 FIGMA_ACCESS_TOKEN。",
     schema: z.object({
       url: z.string().min(1).describe("Figma 文件 URL（可选带 node-id 限定范围）"),
-      nodeId: z.string().optional().describe("可选：只解析该节点子树"),
+      nodeId: z.string().optional().describe("可选：只解析该节点子树（走 /files/:key/nodes，不整文件下载；支持 1-2 或 1:2）"),
       save: z.boolean().optional().describe("是否落盘 flows.json + flow-map.md，默认 true"),
       screens: z
         .boolean()
@@ -28,6 +29,28 @@ export const FIGMA_NATIVE_TOOLS: NativeToolDefinition[] = [
         .describe("无原型交互时按箭头/连线/文字注释/画布顺序合成流程（INFERRED）；默认开，false 或 AOS_STATIC_FALLBACK=0 关闭")
     }),
     handler: (runtime, args) => figmaExtractFlows(runtime, args as unknown as ExtractFlowsArgs)
+  },
+  {
+    name: "figma_list_frames",
+    description:
+      "列出 Figma 文件的页面与顶层画板/组件（REST `?depth=2`，不下载完整节点树）；把返回的页面/画板 id 作为 `figma_extract_flows.nodeId` 做节点级提取。适合大文件/flow board：先看清单再选范围，避免整文件拉取。REST 模式需 FIGMA_ACCESS_TOKEN。",
+    schema: z.object({
+      url: z.string().min(1).describe("Figma 文件 URL（可带 node-id，但本工具只做文件级清单）")
+    }),
+    handler: async (runtime, args) => {
+      const token =
+        (runtime.project.dotenvValues?.FIGMA_ACCESS_TOKEN ?? "").trim() ||
+        (process.env.FIGMA_ACCESS_TOKEN ?? "").trim() ||
+        null;
+      const inventory = await listFigmaFrames({
+        url: (args as { url: string }).url,
+        token
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(inventory, null, 2) }],
+        ...(inventory.ok ? {} : { isError: true })
+      };
+    }
   },
   {
     name: "figma_gap_analysis",

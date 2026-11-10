@@ -56,6 +56,39 @@ test("preflightGeneratedTests: weak steps, screen/edge coverage, generation stat
   assert.deepEqual(report.generation, { maxFlows: 10, truncated: false, droppedPaths: 0 });
 });
 
+test("preflightGeneratedTests: engine=native 的 actions 缺失/无 expect 显式报错", () => {
+  const tests = JSON.stringify({
+    flows: [
+      {
+        id: "case-native",
+        name: "Native",
+        screens: ["Home"],
+        steps: ["点击 A"],
+        taskDesc: "任务",
+        engine: "native",
+        actions: [
+          {
+            stepIndex: 0,
+            action: "tap",
+            target: { kind: "resource-id", value: "btn_a" }
+          }
+        ],
+        expectations: [{ kind: "assert", screen: "Home", hints: ["Home"] }]
+      }
+    ]
+  });
+  const configDir = makeDesignDir({ tests });
+  const report = preflightGeneratedTests(configDir);
+  assert.ok(report);
+  assert.equal(report.structuredActions.native, 1);
+  assert.equal(report.structuredActions.artemis, 0);
+  assert.ok(
+    report.structuredActions.errors.some((entry) =>
+      entry.message.includes("actions 未覆盖所有断言步骤")
+    )
+  );
+});
+
 test("preflightGeneratedTests: explore-kind steps are not counted as weak assertions", () => {
   const tests = JSON.stringify({
     flows: [

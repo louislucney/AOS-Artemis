@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
-import type { HostRecord, ProjectStore } from "../db/types.js";
+import type { HostRecord, ProjectStore, WebAssetRecord } from "../db/types.js";
 import { clientTtlFrom, isClientOnline } from "../host/online.js";
 import { LEGACY_HOST_REASON } from "../host/legacy.js";
 import { projectAllowed, projectExcluded } from "../project-visibility.js";
@@ -9,6 +10,7 @@ import { errorMessage, escapeHtml } from "../util.js";
 import { cBadge, cBanner, cCard, cStat, cTable } from "./components.js";
 import { renderConsoleShell, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
 import { listWebAssets } from "../web/assets.js";
+import { inferAppIdFromPackage } from "../web/package-inspect.js";
 
 export interface DispatchDeps {
   store: ProjectStore;
@@ -258,6 +260,23 @@ async function hostQueueDepth(store: ProjectStore, hostId: string): Promise<numb
     }
   }
   return depth;
+}
+
+const APP_ID_CACHE = new Map<string, string | null>();
+
+/** 从安装包资产推断应用包名；优先用上传时写入的 metadata，避免每次预览重解开 APK。 */
+async function appIdForAsset(asset: WebAssetRecord): Promise<string | null> {
+  const stored = asset.metadata?.appId;
+  if (typeof stored === "string" && stored.trim() !== "") return stored.trim();
+  if (APP_ID_CACHE.has(asset.sha256)) return APP_ID_CACHE.get(asset.sha256) ?? null;
+  let appId: string | null = null;
+  try {
+    appId = await inferAppIdFromPackage(await readFile(asset.storagePath), asset.filename);
+  } catch {
+    appId = null;
+  }
+  APP_ID_CACHE.set(asset.sha256, appId);
+  return appId;
 }
 
 export async function computeDispatchPreview(
@@ -521,6 +540,17 @@ export async function computeDispatchPreview(
   if (requestedAppAssetId !== "" && appAssetId === null) {
     warnings.push("所选安装包不存在或已删除：请重新选择（本次不会安装）");
   }
+  let resolvedAppPackage = appPackage;
+  if (appAssetId !== null) {
+    const asset = packageAssets.find((entry) => entry.id === appAssetId);
+    if (asset) {
+      const derived = await appIdForAsset(asset);
+      if (derived !== null) resolvedAppPackage = derived;
+      else if (resolvedAppPackage === "") {
+        warnings.push("未能从安装包自动识别应用包名：执行机将沿用设备当前应用");
+      }
+    }
+  }
 
   let label = "";
   let caseCount = 0;
@@ -598,7 +628,7 @@ export async function computeDispatchPreview(
     projects,
     priority,
     appAssetId,
-    appPackage,
+    appPackage: resolvedAppPackage,
     appPackages,
     hostBlocked,
     sourceStore: { tier: sourceTier, hostId: sourceHostId, error: sourceError },
@@ -756,7 +786,12 @@ export function renderDispatchPage(view: DispatchView): string {
     preview.appPackages.length === 0
       ? `<p class="muted">安装包：项目还没有上传 APK/IPA。可在 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=assets&amp;tab=packages#asset-upload">测试资产 → 安装包</a> 上传；也可以先手动装到设备上。</p>`
       : `<p><label>安装包（可选） <select name="appAssetId" aria-label="安装包"><option value="">不安装（设备需已安装）</option>${appPackageOptions}</select></label> <span class="muted">选择后执行机在跑用例前安装；不选则要求设备已安装。</span></p>`;
-  const appPackageField = `<p><label>应用包名（可选） <input type="text" name="appPackage" aria-label="应用包名" value="${escapeHtml(preview.appPackage)}" placeholder="com.example.app"></label> <span class="muted">填写后执行机会锁定并启动该应用；不填则沿用设备当前应用。</span></p>`;
+  const appPackageField =
+    preview.appPackage === ""
+      ? `<input type="hidden" name="appPackage" value="">`
+      : `<p class="muted">应用包名：<code>${escapeHtml(preview.appPackage)}</code>${
+          preview.appAssetId === null ? "" : "（从安装包自动识别）"
+        }</p><input type="hidden" name="appPackage" value="${escapeHtml(preview.appPackage)}">`;
 
   const paramsBody = [
     `<fieldset class="c-fieldset"><legend>目标端</legend>${platformChecks}</fieldset>`,
@@ -783,6 +818,25 @@ export function renderDispatchPage(view: DispatchView): string {
               `${device.serial}（${device.platform}${device.model === null ? "" : ` · ${device.model}`}）`
           )
           .join("、");
+  const deviceStat =
+    eligibleDevices.length === 0
+      ? cStat({
+          label: "设备",
+          value: preview.devices.length > 0 ? preview.devices.join("、") : deviceSummary
+        })
+      : eligibleDevices.length === 1
+        ? cStat({
+            label: "设备",
+            value: eligibleDevices[0]!.serial,
+            hint: `${eligibleDevices[0]!.platform}${
+              eligibleDevices[0]!.model === null ? "" : ` · ${eligibleDevices[0]!.model}`
+            }`
+          })
+        : cStat({
+            label: "设备",
+            value: `${eligibleDevices.length} 台`,
+            hint: eligibleDevices.map((device) => device.serial).join("、")
+          });
   const previewBody = [
     `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
     `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：尚未引用任何用例集。请选择用例集或输入关键词后点「刷新预览」。</p>`,
@@ -803,10 +857,7 @@ export function renderDispatchPage(view: DispatchView): string {
             "已选择")
     }),
     cStat({ label: "应用", value: preview.appPackage || "未指定" }),
-    cStat({
-      label: "设备",
-      value: preview.devices.length > 0 ? preview.devices.join("、") : deviceSummary
-    }),
+    deviceStat,
     `</div>`,
     cTable({
       columns: ["用例集", "用例集 ID", "用例数"],

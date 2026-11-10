@@ -1,5 +1,6 @@
 import type { ProjectStore } from "../db/types.js";
 import type { DesignConfig } from "../config/types.js";
+import type { StackId } from "../projects/stack.js";
 
 /** Minimal LLM entry the design pipeline needs (active entry shape). */
 export interface DesignLlmEntry {
@@ -17,7 +18,7 @@ export interface DesignRuntimeLike {
   project: {
     rootDir: string;
     dotenvValues?: Record<string, string>;
-    config?: { design?: DesignConfig };
+    config?: { design?: DesignConfig; project?: { stack?: StackId[] } };
   };
   store: ProjectStore;
   /** Only called when no explicit `chat` is injected; the open service always injects. */

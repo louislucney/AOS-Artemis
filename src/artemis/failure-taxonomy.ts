@@ -220,7 +220,7 @@ export function classifyFailure(input: FailureInput): FailureClassification {
     return {
       domain: "case-defect",
       confidence: "medium",
-      reason: "轮询超时未获得终态：用例可能无法推进或设备长时间无响应",
+      reason: "轮询超时未获得终态：用例可能无法推进或设备长时间无响应（可用 AOS_SUITE_CASE_TIMEOUT_MS 延长等待）",
       evidence: []
     };
   }

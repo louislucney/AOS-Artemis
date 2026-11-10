@@ -27,6 +27,15 @@ export function dataPolicyGateIssue(preflight: PreflightReport | null): string |
   );
 }
 
+/** Phase 1 结构化动作硬门禁：engine=native 的用例必须 actions 完整合法。 */
+export function structuredActionGateIssue(preflight: PreflightReport | null): string | null {
+  if (!preflight) return null;
+  const errors = preflight.structuredActions.errors;
+  if (errors.length === 0) return null;
+  const first = errors.slice(0, 3).map((entry) => `${entry.caseId}: ${entry.message}`).join("；");
+  return `结构化动作校验失败：${first}${errors.length > 3 ? ` 等 ${errors.length} 条` : ""}`;
+}
+
 function coverageTierIssue(preflight: PreflightReport, options: { strict?: boolean }): string | null {
   const coverage = preflight.coverage;
   if (!coverage.available) {
@@ -78,8 +87,14 @@ export function gateIssueForTests(
   preflight: PreflightReport | null,
   options: { strict?: boolean } = {}
 ): string | null {
-  if (!isImportedTestsFile(testsPath)) return coverageGateIssue(preflight, options);
-  const issues = [artifactGateIssue(preflight), dataPolicyGateIssue(preflight)].filter(
+  const actionIssue = structuredActionGateIssue(preflight);
+  if (!isImportedTestsFile(testsPath)) {
+    const coverageIssue = coverageGateIssue(preflight, options);
+    return [actionIssue, coverageIssue]
+      .filter((issue): issue is string => issue !== null)
+      .join("；") || null;
+  }
+  const issues = [actionIssue, artifactGateIssue(preflight), dataPolicyGateIssue(preflight)].filter(
     (issue): issue is string => issue !== null
   );
   return issues.length > 0 ? issues.join("；") : null;

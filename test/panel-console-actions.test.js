@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -28,6 +28,24 @@ function request(pathname, body, overrides = {}) {
     body,
     ...overrides
   };
+}
+
+async function waitDesignJob(deps, rootPath, assetId, jobId) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const response = await handlePanelActionRequest(
+      request("/panel/api/import", {
+        project: rootPath,
+        assetId,
+        mode: "design-source-status",
+        jobId
+      }),
+      deps
+    );
+    const payload = JSON.parse(response.body);
+    if (payload.job && payload.job.status !== "running") return payload.job;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`design job ${jobId} timeout`);
 }
 
 test("console actions: 同源守卫（cross-site 403；自定义头放行）", async () => {
@@ -562,6 +580,325 @@ test("console actions: 从 Web Excel 资产导入用例库（同一 Excel 双向
   assert.equal((await store.listCaseSets(rootPath)).length, 1, "同一资产重复导入不新增用例集");
   const assets = await store.listWebAssets(rootPath, "excel");
   assert.equal(assets.length, 1, "同一内容不重复登记 Web 资产");
+});
+
+test("console actions: 导入前设计预检与设计增强导入", async () => {
+  const { deps, rootPath, store, runtime } = await setup();
+  const designDir = join(runtime.configDirAbs, "design");
+  await mkdir(designDir, { recursive: true });
+  await writeFile(
+    join(designDir, "flows.json"),
+    JSON.stringify({ screens: [{ id: "h1", name: "Homepage" }] })
+  );
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例编号", "用例名称", "步骤", "期望结果", "Wireframe"]);
+  sheet.addRow(["TC-1", "首页", "打开首页", "看到首页", "Homepage"]);
+  const asset = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
+  });
+  const withRuntime = { ...deps, runtimeFor: async () => runtime };
+
+  const preview = await handlePanelActionRequest(
+    request("/panel/api/import", {
+      project: rootPath,
+      assetId: asset.id,
+      mode: "design-preview"
+    }),
+    withRuntime
+  );
+  assert.equal(preview.status, 200, preview.body);
+  const previewJson = JSON.parse(preview.body);
+  assert.equal(previewJson.design.available, true);
+  assert.equal(previewJson.design.indexKind, "flows");
+  assert.equal(previewJson.design.report.summary.withWireframe, 1);
+  assert.equal(previewJson.design.report.summary.screenStatus.exact, 1);
+  assert.equal(previewJson.design.report.summary.rowStatus.matched, 1);
+
+  const applied = await handlePanelActionRequest(
+    request("/panel/api/import", {
+      project: rootPath,
+      assetId: asset.id,
+      mode: "design-apply"
+    }),
+    withRuntime
+  );
+  assert.equal(applied.status, 200, applied.body);
+  const sets = await store.listCaseSets(rootPath);
+  assert.equal(sets.length, 1);
+  const document = JSON.parse(await readFile(sets[0].features[0].jsonPath, "utf8"));
+  assert.deepEqual(document.flows[0].designRefs.nodeIds, ["h1"]);
+
+  await rm(join(designDir, "flows.json"));
+  const missing = await handlePanelActionRequest(
+    request("/panel/api/import", {
+      project: rootPath,
+      assetId: asset.id,
+      mode: "design-preview"
+    }),
+    withRuntime
+  );
+  assert.equal(missing.status, 200, missing.body);
+  assert.equal(JSON.parse(missing.body).design.reason, "design-index-missing");
+});
+
+test("console actions: 设计来源 pen/figma 提取后统一预检", async () => {
+  const { deps, rootPath, store, runtime } = await setup();
+  const designDir = join(runtime.configDirAbs, "design");
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例编号", "用例名称", "步骤", "期望结果", "Wireframe"]);
+  sheet.addRow(["TC-1", "首页", "打开首页", "看到首页", "Homepage"]);
+  const excel = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: Buffer.from(await workbook.xlsx.writeBuffer())
+  });
+  const pen = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "reference",
+    filename: "design.pen",
+    buffer: Buffer.from("pen")
+  });
+  const calls = [];
+  const writeFlows = async () => {
+    await mkdir(designDir, { recursive: true });
+    await writeFile(
+      join(designDir, "flows.json"),
+      JSON.stringify({ screens: [{ id: "h1", name: "Homepage" }] })
+    );
+    return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+  };
+  const designExtract = {
+    pen: async (_runtime, args) => {
+      calls.push({ name: "pen_extract_flows", args });
+      return writeFlows();
+    },
+    figma: async (_runtime, args) => {
+      calls.push({ name: "figma_extract_flows", args });
+      return writeFlows();
+    }
+  };
+  const withRuntime = { ...deps, runtimeFor: async () => runtime, designExtract };
+
+  const originalFetch = globalThis.fetch;
+  const oldToken = process.env.FIGMA_ACCESS_TOKEN;
+  const oldTtl = process.env.AOS_FIGMA_CACHE_TTL_MS;
+  process.env.FIGMA_ACCESS_TOKEN = "tok-list";
+  process.env.AOS_FIGMA_CACHE_TTL_MS = "0";
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        name: "Inventory",
+        document: {
+          id: "0:0",
+          name: "Document",
+          type: "DOCUMENT",
+          children: [
+            {
+              id: "0:1",
+              name: "Page 1",
+              type: "CANVAS",
+              children: [{ id: "1:1", name: "Homepage", type: "FRAME", children: [] }]
+            }
+          ]
+        }
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  try {
+    const listResult = await handlePanelActionRequest(
+      request("/panel/api/import", {
+        project: rootPath,
+        assetId: excel.id,
+        mode: "design-figma-list",
+        figmaUrl: "https://www.figma.com/design/InventoryKey/demo"
+      }),
+      withRuntime
+    );
+    assert.equal(listResult.status, 200, listResult.body);
+    const inventory = JSON.parse(listResult.body).inventory;
+    assert.equal(inventory.pages.length, 1);
+    assert.equal(inventory.pages[0].frames[0].id, "1:1");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (oldToken === undefined) delete process.env.FIGMA_ACCESS_TOKEN;
+    else process.env.FIGMA_ACCESS_TOKEN = oldToken;
+    if (oldTtl === undefined) delete process.env.AOS_FIGMA_CACHE_TTL_MS;
+    else process.env.AOS_FIGMA_CACHE_TTL_MS = oldTtl;
+  }
+
+  const penResult = await handlePanelActionRequest(
+    request("/panel/api/import", {
+      project: rootPath,
+      assetId: excel.id,
+      mode: "design-source",
+      source: "pen",
+      penAssetId: pen.id
+    }),
+    withRuntime
+  );
+  assert.equal(penResult.status, 202, penResult.body);
+  const penJobId = JSON.parse(penResult.body).jobId;
+  const penJob = await waitDesignJob(withRuntime, rootPath, excel.id, penJobId);
+  assert.equal(penJob.status, "completed", JSON.stringify(penJob));
+  assert.equal(penJob.result.design.available, true);
+  assert.equal(calls[0].name, "pen_extract_flows");
+  assert.equal(calls[0].args.vision, false);
+  assert.equal(calls[0].args.screens, false);
+
+  const figmaResult = await handlePanelActionRequest(
+    request("/panel/api/import", {
+      project: rootPath,
+      assetId: excel.id,
+      mode: "design-source",
+      source: "figma",
+      figmaUrl: "https://www.figma.com/design/abc",
+      nodeId: "1:2"
+    }),
+    withRuntime
+  );
+  assert.equal(figmaResult.status, 202, figmaResult.body);
+  const figmaJobId = JSON.parse(figmaResult.body).jobId;
+  const figmaJob = await waitDesignJob(withRuntime, rootPath, excel.id, figmaJobId);
+  assert.equal(figmaJob.status, "completed", JSON.stringify(figmaJob));
+  assert.equal(calls[1].name, "figma_extract_flows");
+  assert.equal(calls[1].args.url, "https://www.figma.com/design/abc");
+  assert.equal(calls[1].args.nodeId, "1:2");
+  assert.equal(calls[1].args.screens, false);
+});
+
+test("console actions: 已保存模板映射驱动导入 Section/Wireframe/Related TC", async () => {
+  const { deps, rootPath, store, runtime } = await setup();
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("APP");
+  sheet.addRow([
+    "TC",
+    "Modules",
+    "S1",
+    "Test Case",
+    "Test Step",
+    "Expected Result",
+    "WF",
+    "REL"
+  ]);
+  sheet.addRow([
+    "TC_01",
+    "Login / Register",
+    "Register (Smiles card)",
+    "Register with Smiles card",
+    "1.Open register",
+    "1.See register form",
+    "0.1_Login/Register\n0.3.2_Register_Card Info (Smile Classic)",
+    "TC_00"
+  ]);
+  const content = Buffer.from(await workbook.xlsx.writeBuffer());
+  const sha256 = createHash("sha256").update(content).digest("hex");
+  const storageDir = join(rootPath, ".artemis", "web", "assets", "excel");
+  await mkdir(storageDir, { recursive: true });
+  const storagePath = join(storageDir, `${sha256}.xlsx`);
+  await writeFile(storagePath, content);
+  await store.createWebProject({
+    rootPath,
+    name: "p",
+    normalizedName: "p",
+    platforms: ["android"]
+  });
+  const asset = await store.createWebAsset({
+    rootPath,
+    kind: "excel",
+    filename: "navigation-menu.xlsx",
+    sha256,
+    size: content.length,
+    storagePath,
+    uploadedBy: "test",
+    metadata: {}
+  });
+  await store.saveExcelMapping({
+    rootPath,
+    assetId: asset.id,
+    sheetName: "APP",
+    headerFingerprint: "test-fingerprint",
+    columnMap: {
+      caseId: "TC",
+      name: "Test Case",
+      steps: "Test Step",
+      expected: "Expected Result",
+      module: "Modules",
+      section: "S1",
+      wireframe: "WF",
+      relatedTc: "REL"
+    },
+    createdBy: "test"
+  });
+
+  const response = await handlePanelActionRequest(
+    request("/panel/api/import", { project: rootPath, assetId: asset.id }),
+    { ...deps, runtimeFor: async () => runtime }
+  );
+  assert.equal(response.status, 200, response.body);
+  const sets = await store.listCaseSets(rootPath);
+  assert.equal(sets.length, 1);
+  assert.equal(sets[0].features[0].name, "Register (Smiles card)", "Section 拆集");
+  const document = JSON.parse(await readFile(sets[0].features[0].jsonPath, "utf8"));
+  const flow = document.flows[0];
+  assert.deepEqual(flow.screens, [
+    "0.1_Login/Register",
+    "0.3.2_Register_Card Info (Smile Classic)"
+  ]);
+  assert.deepEqual(flow.designRefs, {
+    screens: ["0.1_Login/Register", "0.3.2_Register_Card Info (Smile Classic)"],
+    nodeIds: []
+  });
+  assert.deepEqual(flow.relatedCases, ["TC_00"]);
+
+  // 同一模板的新资产（表头相同）没有自己的映射：按表头兼容性复用旧映射。
+  const workbook2 = new ExcelJS.Workbook();
+  const sheet2 = workbook2.addWorksheet("APP");
+  sheet2.addRow(["TC", "Modules", "S1", "Test Case", "Test Step", "Expected Result", "WF", "REL"]);
+  sheet2.addRow([
+    "TC_02",
+    "Login / Register",
+    "Register (Smiles card)",
+    "Register again",
+    "1.Open register",
+    "1.See register form",
+    "0.1_Login/Register",
+    "TC_01"
+  ]);
+  const content2 = Buffer.from(await workbook2.xlsx.writeBuffer());
+  const sha2 = createHash("sha256").update(content2).digest("hex");
+  const storagePath2 = join(storageDir, `${sha2}.xlsx`);
+  await writeFile(storagePath2, content2);
+  const asset2 = await store.createWebAsset({
+    rootPath,
+    kind: "excel",
+    filename: "navigation-menu-v2.xlsx",
+    sha256: sha2,
+    size: content2.length,
+    storagePath: storagePath2,
+    uploadedBy: "test",
+    metadata: {}
+  });
+  const second = await handlePanelActionRequest(
+    request("/panel/api/import", { project: rootPath, assetId: asset2.id }),
+    { ...deps, runtimeFor: async () => runtime }
+  );
+  assert.equal(second.status, 200, second.body);
+  const v2 = (await store.listCaseSets(rootPath)).find((set) =>
+    set.basename.includes("navigation-menu-v2")
+  );
+  assert.ok(v2, "新资产生成用例集");
+  assert.equal(v2.features[0].name, "Register (Smiles card)", "复用映射后仍按 Section 拆集");
+  const document2 = JSON.parse(await readFile(v2.features[0].jsonPath, "utf8"));
+  assert.deepEqual(document2.flows[0].screens, ["0.1_Login/Register"]);
 });
 
 test("console actions: 安装包 appAssetId 写入任务；非法/平台不匹配拒绝", async () => {

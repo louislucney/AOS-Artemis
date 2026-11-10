@@ -27,10 +27,28 @@ function validWinFiles() {
     ],
     ["doctor.cmd", "node dist\\cli.js doctor\r\n"],
     [
+      "setup-offline.cmd",
+      [
+        "@echo off",
+        'if exist "artemis\\.venv\\Scripts\\python.exe" (',
+        '  "artemis\\.venv\\Scripts\\python.exe" -c "import sys;print(sys.version_info[:2])"',
+        "  rmdir /s /q \"artemis\\.venv\"",
+        ")",
+        ""
+      ].join("\r\n")
+    ],
+    [
       "runner.cmd",
       [
         'set "UV_PYTHON=3.12"',
+        'set "ARTEMIS_DESKTOP_NOTIFY=0"',
+        'set "NO_PROXY=*"',
+        'set "no_proxy=*"',
+        'set "HTTP_PROXY="',
+        'set "HTTPS_PROXY="',
+        'set "ALL_PROXY="',
         'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
+        '"artemis\\.venv\\Scripts\\python.exe" -c "import sys;print(sys.version_info[:2])"',
         'if not exist "artemis\\.venv\\.aos-deps.json" node dist\\cli.js doctor --install-deps',
         "node dist\\cli.js suite runner",
         ""
@@ -51,6 +69,21 @@ function validWinFiles() {
 
 test("runner bundle contract: valid Windows package passes", () => {
   const result = checkBundleFiles(validWinFiles(), "win32");
+  assert.equal(result.ok, true, result.errors.join("\n"));
+});
+
+test("runner bundle contract: offline runner can use bundled deps instead of online doctor", () => {
+  const files = validWinFiles();
+  files.set(
+    "runner.cmd",
+    files
+      .get("runner.cmd")
+      .replace(
+        "node dist\\cli.js doctor --install-deps",
+        'call "%~dp0setup-offline.cmd"'
+      )
+  );
+  const result = checkBundleFiles(files, "win32");
   assert.equal(result.ok, true, result.errors.join("\n"));
 });
 

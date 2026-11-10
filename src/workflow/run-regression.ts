@@ -12,7 +12,12 @@ import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
 import { latestFeatures, normalizeKeyword, provenanceOf, selectByScope, type CaseTarget } from "./case-selection.js";
 import { defaultListDevices, pickDevice } from "./devices.js";
-import { importTestDocument, type ImportColumns, type ImportedSet } from "./excel-import.js";
+import {
+  importTestDocument,
+  type DesignImportContext,
+  type ImportColumns,
+  type ImportedSet
+} from "./excel-import.js";
 import { checkLlm, type SetupDeps } from "./setup.js";
 
 export interface RunRegressionArgs {
@@ -121,6 +126,7 @@ export async function runRegression(
   let targets: CaseTarget[];
   let importOutcome: "imported" | "skipped" | null = null;
   let importWarnings: string[] = [];
+  let importDesign: DesignImportContext | null = null;
 
   if (excelPath !== null) {
     mode = "import";
@@ -147,6 +153,7 @@ export async function runRegression(
     });
     importOutcome = imported.status;
     importWarnings = imported.warnings ?? [];
+    importDesign = imported.design ?? null;
     targets = importedTargets(imported.sets, imported.sourceId);
     if (keyword !== null) {
       targets = selectByScope(targets, keyword);
@@ -284,6 +291,7 @@ export async function runRegression(
   return jsonResult({
     ok: true,
     ...(importOutcome !== null ? { import: { outcome: importOutcome } } : {}),
+    ...(importDesign !== null ? { design: importDesign } : {}),
     ...(importWarnings.length > 0 ? { importWarnings } : {}),
     ...(scopeHits !== null ? { scope: { keyword: scope, hits: scopeHits } } : {}),
     steps,

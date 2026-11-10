@@ -12,6 +12,10 @@ export interface TaskScriptAdherenceSummary {
   unresolved: number;
   deferredTotal: number;
   deferredReached: number;
+  /** Optional detail (iOS/Android executors); older records omit them. */
+  checkable?: number;
+  satisfied?: number;
+  unchecked?: number;
 }
 
 export interface TaskTestSummary {
@@ -70,7 +74,7 @@ function failedItemsOf(value: unknown): TaskFailedItem[] {
   return items;
 }
 
-function testSummaryOf(value: unknown): TaskTestSummary | null {
+export function parseTestSummary(value: unknown): TaskTestSummary | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   let adherence: TaskScriptAdherenceSummary | null = null;
@@ -85,7 +89,10 @@ function testSummaryOf(value: unknown): TaskTestSummary | null {
     adherence = {
       unresolved: Array.isArray(adherenceRecord.unresolved) ? adherenceRecord.unresolved.length : 0,
       deferredTotal: asNumber(deferred.total) ?? 0,
-      deferredReached: asNumber(deferred.reached) ?? 0
+      deferredReached: asNumber(deferred.reached) ?? 0,
+      checkable: asNumber(adherenceRecord.checkable) ?? 0,
+      satisfied: asNumber(adherenceRecord.satisfied) ?? 0,
+      unchecked: asNumber(adherenceRecord.unchecked) ?? 0
     };
   }
   return {
@@ -167,7 +174,7 @@ export function taskStatusOf(
     deviceSerial: asString(payload.device_serial),
     error: asString(payload.error),
     message: asString(payload.message),
-    testSummary: testSummaryOf(payload.test_summary),
+    testSummary: parseTestSummary(payload.test_summary),
     notesDir: asString(payload.notes_dir),
     stderrLog: asString(payload.stderr_log),
     stdoutLog: asString(payload.stdout_log),

@@ -239,8 +239,8 @@ button:disabled,.c-button:disabled,input:disabled,select:disabled,textarea:disab
   padding:14px 20px;min-width:160px;flex:1 1 160px}
 .c-stats-row>.c-card{margin-bottom:0;flex:1 1 280px}
 .c-stat-label{font-size:var(--font-size-caption);color:var(--color-text-secondary)}
-.c-stat-value{font-size:var(--font-size-title-2);font-weight:var(--font-weight-semibold);line-height:1.2}
-.c-stat-hint{font-size:var(--font-size-caption);color:var(--color-text-secondary)}
+.c-stat-value{font-size:var(--font-size-title-2);font-weight:var(--font-weight-semibold);line-height:1.2;overflow-wrap:anywhere}
+.c-stat-hint{font-size:var(--font-size-caption);color:var(--color-text-secondary);overflow-wrap:anywhere}
 .c-empty{text-align:center;padding:36px 20px;background:var(--color-surface-white);border-radius:var(--radius-card);border:1px dashed var(--color-border)}
 .c-empty p{color:var(--color-text-secondary);margin:6px 0 0}
 .c-empty-action{margin-top:14px}

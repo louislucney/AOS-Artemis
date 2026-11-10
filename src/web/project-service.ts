@@ -86,7 +86,7 @@ export interface CreateWebProjectResult {
 }
 
 /** 写入前置条件失败（归档/非托管项目）：action 层映射为 409，不依赖错误文案。 */
-export type WebProjectStateErrorCode = "project-archived" | "not-a-web-project";
+export type WebProjectStateErrorCode = "project-archived";
 
 export class WebProjectStateError extends Error {
   readonly code: WebProjectStateErrorCode;
@@ -99,18 +99,14 @@ export class WebProjectStateError extends Error {
   }
 }
 
-/** 资产上传/映射保存等 Plan 1 写路径的统一闸门：只允许 active 的托管 Web 项目。 */
+/** 资产上传/映射保存等写路径的统一闸门：归档项目禁止写；**本地注册的非 Web 项目允许写**。
+ * 返回对应 `web_projects` 行（存在时），调用方当前不使用返回值。 */
 export async function assertProjectActive(
   store: ProjectStore,
   rootPath: string
-): Promise<WebProjectRecord> {
+): Promise<WebProjectRecord | null> {
   const web = await store.getWebProject(rootPath);
-  if (!web) {
-    throw new WebProjectStateError(
-      "not-a-web-project",
-      `不是托管 Web 项目：${rootPath}（资产/映射写动作仅适用于网页创建的项目）`
-    );
-  }
+  if (web === null) return null;
   if (web.status !== "active") {
     throw new WebProjectStateError(
       "project-archived",

@@ -606,6 +606,61 @@ test("suite control: LLM 代理转发到中心 provider，runner 不接触真实
   });
 });
 
+test("suite control: LLM 代理原样转发上游错误（429）", async () => {
+  const projectDir = makeTempProject({ config: baseConfig() });
+  const central = await makeCentral(projectDir);
+  const provider = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(429, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "rate limited" } }));
+    });
+  });
+  await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
+  const providerPort = provider.address().port;
+  await central.store.upsertLlm(central.rootPath, {
+    name: "center-deepseek",
+    provider: "custom",
+    model: "deepseek-flash",
+    baseUrl: `http://127.0.0.1:${providerPort}/v1`,
+    apiKey: "sk-upstream",
+    makeActive: true
+  });
+  const workspaceRoot = await makeWorkspace();
+  await withEnv("AOS_RUNNER_JOB_TOKEN", TOKEN, async () => {
+    const handle = await createAosHttpServer({
+      port: 0,
+      host: "127.0.0.1",
+      workspaceRoot,
+      store: central.store
+    });
+    const baseUrl = `http://127.0.0.1:${handle.port}`;
+    try {
+      const proxyUrl = `${baseUrl}/panel/api/runners/suite/llm/proxy/${Buffer.from(
+        central.rootPath,
+        "utf8"
+      ).toString("base64url")}/chat/completions`;
+      const response = await fetch(proxyUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "x-aos-host-id": HOST,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "deepseek-flash",
+          messages: [{ role: "user", content: "hi" }]
+        })
+      });
+      assert.equal(response.status, 429);
+      assert.deepEqual((await response.json()).error.message, "rate limited");
+    } finally {
+      await handle.close();
+      await new Promise((resolve) => provider.close(resolve));
+    }
+  });
+});
+
 test("suite control: default project + bundle documents allow a different runner root", async () => {
   const centerDir = await makeWorkspace();
   const central = await makeCentral(centerDir);
@@ -866,5 +921,35 @@ test("suite runner: control URL from project .env is used (bundle scenario)", as
         await handle.close();
       }
     })
+  );
+});
+
+test("SuiteStoreClient: 网络失败包含中心地址与排查提示", async () => {
+  const client = new SuiteStoreClient({
+    baseUrl: "http://10.0.0.9:8765",
+    token: TOKEN,
+    hostId: HOST,
+    fetchImpl: async () => {
+      const failure = new TypeError("fetch failed");
+      Object.assign(failure, {
+        cause: Object.assign(new Error("connect ECONNREFUSED 10.0.0.9:8765"), {
+          code: "ECONNREFUSED"
+        })
+      });
+      throw failure;
+    }
+  });
+  await assert.rejects(
+    () => client.getDefaultProject(),
+    (error) => {
+      assert.equal(error.code, "network-error");
+      assert.match(
+        error.message,
+        /http:\/\/10\.0\.0\.9:8765\/panel\/api\/runners\/suite\/default-project/
+      );
+      assert.match(error.message, /ECONNREFUSED/);
+      assert.match(error.message, /MOBILE_TESTING_RUNNER_CONTROL_URL/);
+      return true;
+    }
   );
 });

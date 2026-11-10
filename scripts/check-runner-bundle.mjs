@@ -10,6 +10,7 @@ import JSZip from "jszip";
 const WANTED = new Set([
   "setup.cmd",
   "setup.command",
+  "setup-offline.cmd",
   "configure.cmd",
   "configure.command",
   "doctor.cmd",
@@ -34,6 +35,19 @@ export function checkBundleFiles(files, platform) {
   const required = platform === "win32" ? REQUIRED_WIN : REQUIRED_MAC;
   for (const name of required) {
     if (!files.has(name)) errors.push(`缺少 ${name}`);
+  }
+  if (platform === "win32") {
+    const runner = text(files, "runner.cmd");
+    for (const marker of [
+      "ARTEMIS_DESKTOP_NOTIFY=0",
+      "NO_PROXY=*",
+      "no_proxy=*",
+      "HTTP_PROXY=",
+      "HTTPS_PROXY=",
+      "ALL_PROXY="
+    ]) {
+      if (!runner.includes(marker)) errors.push(`runner.cmd 缺少 ${marker}`);
+    }
   }
   if (files.has("project/.env")) {
     errors.push("bundle 不应包含 project/.env（只允许 .env.example）");
@@ -71,8 +85,8 @@ export function checkBundleFiles(files, platform) {
   }
   const runnerName = platform === "win32" ? "runner.cmd" : "runner.command";
   const runner = text(files, runnerName);
-  if (!runner.includes("doctor --install-deps")) {
-    errors.push(`${runnerName} 未包含首次依赖安装`);
+  if (!runner.includes("doctor --install-deps") && !runner.includes("setup-offline.cmd")) {
+    errors.push(`${runnerName} 未包含首次依赖安装（在线 doctor 或离线 setup-offline.cmd）`);
   }
   if (!runner.includes("MOBILE_TESTING_RUNNER_JOB_TOKEN")) {
     errors.push(`${runnerName} 未检查 runner token`);
@@ -82,6 +96,18 @@ export function checkBundleFiles(files, platform) {
   }
   if (!runner.includes(".aos-deps.json")) {
     errors.push(`${runnerName} 未检查 Artemis 依赖 stamp`);
+  }
+  if (platform === "win32" && !runner.includes("sys.version_info") && !runner.includes("aos-venv-version")) {
+    errors.push(`${runnerName} 未校验 venv Python 3.12（旧 3.13 venv 会与离线依赖不兼容）`);
+  }
+  const setupOffline = text(files, "setup-offline.cmd");
+  if (platform === "win32" && setupOffline !== "") {
+    if (!setupOffline.includes("sys.version_info")) {
+      errors.push("setup-offline.cmd 未校验 venv Python 版本");
+    }
+    if (!setupOffline.includes("rmdir /s /q")) {
+      errors.push("setup-offline.cmd 未在 Python 版本不符时重建 venv");
+    }
   }
   const configureName = platform === "win32" ? "configure.cmd" : "configure.command";
   const configure = text(files, configureName);

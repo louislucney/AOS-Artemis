@@ -1,0 +1,4069 @@
+# DESIGN 历史实施记录（归档）
+
+> 2026-11-09 从 DESIGN.md 归档：保留旧版全文与 §13.x 编号，供追溯；当前架构、契约与活跃决策见根目录 `DESIGN.md`。
+>
+> 归档内容不再维护；新决策写入 `DESIGN.md`。
+
+# mobile-testing（AOS × ARTEMIS 合并）MCP 服务 — 设计文档
+
+- **版本**: v0.3（容器化多租户 + PostgreSQL 版）
+- **日期**: 2026-09-28
+- **状态**: 已按新需求（容器部署 / 多项目 / PG 存储 / 全 OpenAI 兼容端点）重构，待实现
+- **部署形态**: 容器化部署，挂载共享工作区（如 `/workspace`），为公司内部多个项目提供服务
+- **仓库布局**: 同一根目录 —— 本服务源码（根目录 `src/`）+ 两个 **git submodule**：`artemis/`（`google/artemis`）、`design-context-bridge/`（`CristinaFores/design-context-bridge`）
+
+> **v0.3 变更摘要**（相对 v0.2）：
+>
+> 1. **项目为一等实体**：每个项目在 PostgreSQL 中有注册记录（路径/名称/时间戳）、多条 LLM 条目（name/base_url/model/key，含明文，按需求）+ active 指针、任务/调用统计。
+> 2. **.env 首扫导入**：项目首次启用服务时扫描其 `.env`（新名 `AOS_LLM_*` 优先，兼容 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`OPENAI_BASE_URL` 等旧名）→ 导入 PG；缺失则返回 `setup_required` + `aos_configure` 工具引导补全。
+> 3. **Figma 可选**：token 存在则读取（含 `FIGMA_ACCESS_TOKEN`），不存在忽略；仅在实际调用 Figma REST 能力时提醒提供。
+> 4. **全 OpenAI 兼容**：所有 LLM 均按 OpenAI 请求方式（参考 DeepSeek）；artemis 侧统一 `custom` provider（`OPENAI_BASE_URL` + `OPENAI_API_KEY` + model）。
+> 5. **H2 规则演化为自动重指**：非 Google 条目自动生成 `nodeOverrides`（object_detector/hopper → 当前 provider）并携带精度警告；不再硬性阻断（新部署模型下无 Google key 是常态）。
+> 6. **传输层**：stdio 先行；`Transport` 抽象预留 HTTP（streamable-HTTP/SSE），项目身份由 `AOS_PROJECT_DIR`/会话标识携带。
+
+---
+
+## 1. 背景与目标
+
+### 1.1 场景
+
+公司内部多个项目的开发与测试一体化。服务以**容器**形式部署（挂载包含各项目的共享工作区），任意 CLI（opencode / Claude Code / Cursor / …）接入后：
+
+1. **项目自带凭证**：每个项目在自己的 `.env` 中声明 LLM（OpenAI 兼容三元组：model / base_url / key）与可选的 Figma token。Key 的支付方即项目方；
+2. **服务识别项目并导入**：项目首次启用时扫描其 `.env`，把 LLM 关联与 key 导入 PostgreSQL；缺失则引导补全；
+3. **动态切换 LLM**：项目可挂多条 LLM 条目（不同网关/模型/计费 key），随时切换 active；
+4. **Figma 设计上下文**（可选）：插件/REST 双模式；
+5. **ARTEMIS 真机自动化**：用项目当前的 active LLM 驱动真机完成开发验证与测试；
+6. **项目信息与任务统计**：全部记录到 PostgreSQL。
+
+### 1.2 目标（Must）
+
+| #  | 目标                                                    | 验收方式                                          |
+| -- | ------------------------------------------------------- | ------------------------------------------------- |
+| G1 | 单 MCP 入口，聚合 Figma 20 + mobile 5 + llm/配置类工具  | `ListTools` 返回 30+ 工具                       |
+| G2 | 项目`.env` 首扫导入（新名优先兼容旧名）               | 集成测试：temp 项目 + 内存/PG 存储                |
+| G3 | 缺失时`setup_required` + `aos_configure` 可写入补全 | 工具输出含`setup_required` / `configure` 成功 |
+| G4 | 项目多条 LLM + active 切换（PG 持久化）                 | 切换后 PG`is_active` 唯一；下个任务用新模型     |
+| G5 | Figma token 可选；调用 REST 时缺失则提醒                | 无 token 时 REST 工具返回引导                     |
+| G6 | 项目信息/任务统计写入 PG；DB 不可用降级不阻断           | `aos_status.db` 状态 + 任务仍可运行             |
+| G7 | 任意 CLI 接入（stdio）；传输层可扩展 HTTP               | 冒烟测试 + 设计评审                               |
+
+### 1.3 非目标（当前范围）
+
+- 不切换 CLI 自身的对话模型（客户端侧）；
+- HTTP 模式为无状态 streamable-HTTP（每项目独立 runtime），会话级隔离（如按用户分区）不在当前范围；
+- 设计/执行能力的当前边界以 §6、§12 为准。
+
+### 1.4 成功标准
+
+- 首次接入一个已有 `.env` 的项目 ≤ 1 次工具调用即完成导入并可用；
+- 无 `.env` LLM 的项目收到清晰的 `setup_required`（含逐行修复指引）；
+- 切换 active LLM 对下一任务 100% 生效；运行中任务不受影响；
+- 密钥只出现在 `.env` 与 PostgreSQL（按需求明文），**永不**出现在工具响应的明文里（masked）。
+
+---
+
+## 2. 关键调研结论（可行性依据）
+
+| 结论                                                                                                          | 证据                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| artemis 的独立任务运行器支持项目级 LLM 配置覆盖                                                               | `artemis/mcp_server/background/task_runner.py:72-110`（`ARTEMIS_CONFIG_DIR` → `llm-config.override.jsonc`，但该 loader 深合并"已展开"配置、忽略 `default/nodes` 键）、`:210-214`；`artemis/config/paths.py:149-159`（`ARTEMIS_ARTEMIS_JSONC` 环境变量优先，统一格式可正常展开） |
+| 覆盖文件深合并                                                                                                | `artemis/artemis/config/llm.py:334-373`                                                                                                                                                                                                                                                      |
+| **artemis `custom` provider = OpenAI 兼容**：key 读 `OPENAI_API_KEY`、端点读 `OPENAI_BASE_URL`    | `artemis/artemis/llm/router.py:369-383`（`ModelProvider.OLLAMA/VLLM/CUSTOM` 分支）                                                                                                                                                                                                         |
+| 用户运行时即`provider: custom` + `deepseek-flash`（`.env`: `DEEPSEEK_API_KEY` + `OPENAI_BASE_URL`） | `/Users/louis/artemis/config/artemis.jsonc` 本地改动 + `.env` 变量名（旧运行时安装已于 2026-10-08 移除，证据为历史记录）                                                                                                                                                                                                                       |
+| 任务进程 detached，任务（含排队）不依赖网关进程                                                               | `artemis/mcp_server/utils/env_utils.py:52-65`、`tools/task_runner.py:445-509`                                                                                                                                                                                                              |
+| 基础配置将`object_detector`/`hopper` 钉死为 Google 模型 → 非 Google 需覆盖                               | `artemis/config/artemis.jsonc:77-103`                                                                                                                                                                                                                                                        |
+| Figma 插件硬编码`localhost:3055` 且 manifest 仅允许该域                                                     | `design-context-bridge/figma-plugin/code.ts:283,394,402`、`manifest.json`                                                                                                                                                                                                                  |
+| PostgreSQL 访问：Node`pg`；测试可用 `pg-mem`（SQL 级模拟）                                                | —                                                                                                                                                                                                                                                                                             |
+
+---
+
+## 3. 总体架构
+
+### 3.1 部署拓扑（容器 + 共享工作区 + PG）
+
+```
+┌─ 容器（公司内网）──────────────────────────────────────────────┐
+│  CLI 客户端（opencode/Claude Code/Cursor…）                    │
+│     │ stdio（M4: streamable-HTTP）                             │
+│     ▼                                                          │
+│  mobile-testing-mcp 服务（Node ≥20）                                      │
+│   ├─ 项目层：定位项目（AOS_PROJECT_DIR/工作区扫描）→ 扫描 .env │
+│   ├─ 存储层：PostgreSQL（projects / project_llms / task_stats）│
+│   ├─ 工具：llm_list / llm_switch / aos_configure / aos_status  │
+│   ├─ Figma 20 工具 + 本地桥 3055（M2；token 取 PG/.env）      │
+│   └─ stdio MCP Client ──► artemis mcp_server（Python 子进程）  │
+│         env：OPENAI_API_KEY/OPENAI_BASE_URL ← 项目 active LLM  │
+│         └─ 任务进程（detached）→ 真机（ADB/Helper）            │
+│                                                                │
+│  挂载：/workspace   （含全部内部项目，供扫描 .env 与项目识别） │
+│  网络：→ 内网 PostgreSQL；→ api.figma.com（REST 模式）         │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 3.2 项目身份与配置来源
+
+| 来源                               | 角色                                                    | 优先级                            |
+| ---------------------------------- | ------------------------------------------------------- | --------------------------------- |
+| PostgreSQL`project_llms`         | **运行时事实源**（active 指针、多条目、动态修改） | ①                                |
+| 项目`.env`                       | 首次导入来源 + 无 DB 时降级运行；Figma token            | ②                                |
+| `aos.config.jsonc`（可选高级层） | 多 profile/nodeOverrides/设备固定等精细控制             | ③（条目合并时高于 env、低于 PG） |
+
+---
+
+## 4. 项目配置与 .env 契约
+
+### 4.1 `.env` 契约（新名优先 + 兼容旧名）
+
+| 新变量（优先）         | 兼容旧变量                                 | 说明                                                       |
+| ---------------------- | ------------------------------------------ | ---------------------------------------------------------- |
+| `AOS_LLM_NAME`       | —                                         | 条目名（可选；默认取 model 名）                            |
+| `AOS_LLM_MODEL`      | —                                         | 模型名（必填；如`deepseek-flash`）                       |
+| `AOS_LLM_BASE_URL`   | `OPENAI_BASE_URL`                        | OpenAI 兼容端点（必填；如`https://api.deepseek.com/v1`） |
+| `AOS_LLM_API_KEY`    | `DEEPSEEK_API_KEY` → `OPENAI_API_KEY` | 密钥                                                       |
+| `FIGMA_ACCESS_TOKEN` | —                                         | 可选；Figma REST 用                                        |
+
+- 全 OpenAI 请求方式（参考 DeepSeek）；provider 固定为 `custom`（artemis 侧同款）。
+- `.env` 永不提交（`.gitignore`）；服务输出只给 `****末4位`。
+- 首扫逻辑：`AOS_LLM_*` 任一缺失 → 按旧名补位；model/base_url/key 三者不齐 → `setup_required`。
+
+### 4.2 `aos.config.jsonc`（可选高级层）
+
+保留 v0.2 的 `llm.profiles`（高级用户可定义多条带 provider 的档案）与 `artemis.deviceSerial` 等；**缺失时服务照常工作**（纯 .env/PG 模式）。profiles 与 PG/env 条目合并（同名冲突：PG > config > env）。
+
+### 4.3 项目发现顺序
+
+1. `AOS_PROJECT_DIR`（推荐；容器内由客户端 MCP 配置注入）→ 项目根；
+2. `AOS_CONFIG`（显式配置文件路径，兼容旧用法）；
+3. 从 `cwd` 向上查找 `aos.config.jsonc`；找不到则以 `cwd` 为项目根。
+
+项目根确定后：`<root>/.env`（必需）、`<root>/aos.config.jsonc`（可选）。
+
+### 4.4 首次启用流程（导入状态机）
+
+```
+启动 → 定位项目根 → 扫描 .env
+  ├─ 有完整 LLM 三元组：
+  │    ├─ PG 无任何条目 → 导入一条（name 默认取 model）并置 active；记 Figma token（若有）
+  │    └─ PG 已有条目   → 不导入（PG 为准）；仅补记缺失的 Figma token
+  ├─ 无/不完整 LLM：
+  │    └─ setup_required（工具返回逐行指引；aos_configure 可一键补全）
+  └─ DB 不可用：降级为「env 只读条目 + 会话内存」；切换仅影响当前会话（警告）
+```
+
+### 4.5 PostgreSQL 数据模型（v1）
+
+连接：`MOBILE_TESTING_DATABASE_URL`（MCP 客户端配置 env 注入，进程级，跨项目共享）。本地开发可用 compose 的 `local-db` profile（专用 PG 于 `127.0.0.1:5433`，见 README）；表结构首次连接自动创建。
+时间戳用 ISO TEXT（pg-mem 兼容，v1 务实选择）；ID 用 `crypto.randomUUID()`。
+
+```sql
+CREATE TABLE IF NOT EXISTS projects (
+  id            TEXT PRIMARY KEY,
+  root_path     TEXT NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
+  figma_token   TEXT,
+  created_at    TEXT NOT NULL,
+  last_seen_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_llms (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  provider    TEXT NOT NULL DEFAULT 'custom',
+  base_url    TEXT,
+  model       TEXT NOT NULL,
+  api_key     TEXT,
+  is_active   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  UNIQUE (project_id, name)
+);
+-- active 唯一性在应用层保证（事务内先清后置），避免部分索引的兼容性问题
+
+CREATE TABLE IF NOT EXISTS task_stats (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  trace_id     TEXT NOT NULL,
+  case_id      TEXT,
+  model        TEXT,
+  profile      TEXT,
+  status       TEXT NOT NULL,
+  task_desc    TEXT,
+  submitted_at TEXT NOT NULL,
+  finished_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS llm_model_cache (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  cache_key  TEXT NOT NULL,          -- sha256(base_url + api_key) 前 24 位
+  base_url   TEXT NOT NULL,
+  models     TEXT NOT NULL DEFAULT '[]',   -- JSON 数组（OpenAI /models 的 data[].id）
+  fetched_at TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (project_id, cache_key)
+);
+```
+
+降级策略：`MOBILE_TESTING_DATABASE_URL` 缺失或连接失败 → `MemoryStore`（会话内有效）+ `aos_status` 警告，**不阻断**任务执行。
+
+---
+
+## 5. 运行时装配（项目 active LLM → artemis）
+
+### 5.1 子进程环境（统一 OpenAI 兼容）
+
+```
+<artemis.repo>/.venv/bin/python -m mcp_server     # cwd = <artemis.repo>
+env:
+  ARTEMIS_STANDALONE=1
+  ARTEMIS_CONFIG_DIR=<project>/.artemis            # 生成物目录
+  ARTEMIS_ARTEMIS_JSONC=<project>/.artemis/artemis.jsonc   # 项目级统一配置（见 §5.2）
+  OPENAI_API_KEY=<active 条目的 key>
+  OPENAI_BASE_URL=<active 条目的 base_url>
+  PYTHONUNBUFFERED/PYTHONUTF8=1；PYTHONPATH=<artemis.repo>
+  ADB_DEVICE_SERIAL（若配置）
+  （主动删除 ARTEMIS_DAEMON_PORT）
+```
+
+`env 指纹` = hash(provider + key + base_url + configDir + deviceSerial)；**模型/label 变化不触发重启**。
+
+### 5.2 生成的 `<project>/.artemis/artemis.jsonc`（项目级统一配置）
+
+以 artemis 基础配置（`<repo>/config/artemis.jsonc`）为底，仅替换/合并 LLM 部分后写出；通过 `ARTEMIS_ARTEMIS_JSONC` 注入（`get_config_path` 环境变量优先）。保留底层文件里的 `agent`/`memory`/`video` 等全部非 LLM 段落。
+
+```jsonc
+{
+  // …基础配置的 agent/memory/… 段落原样保留…
+  "default": {
+    "provider": "custom",
+    "model": "deepseek-flash",
+    "thinking_level": "medium",     // 基础 default 的其余字段保留
+    "fallback": { "provider": "custom", "model": "deepseek-flash" }
+  },
+  "nodes": {
+    // 基础 nodes 原样保留；非 Google 条目自动重指（v0.3 H2 演化；附精度警告）
+    "object_detector": { "provider": "custom", "model": "deepseek-flash" },
+    "hopper":          { "provider": "custom", "model": "deepseek-flash" }
+  }
+}
+```
+
+若条目显式提供 `nodeOverrides`（config 高级层 / aos_configure 扩展）→ 以显式值为准。**不使用** `llm-config.override.jsonc`：该 loader 把 override 深合并到"已展开"的 LLMConfig 上，`default/nodes` 键会被静默忽略（实测任务会回退到 Google 默认并因缺 key 失败）；激活时若发现历史遗留的该文件会被清理。
+
+**非 Google 条目的额外调整**：`agent.flash.step_summarizer.enabled=false`——该后台压缩器硬绑定 Google 轻量模型（`get_google_llm`）且在 `FlashRunner.__init__` 即初始化，不关会导致 Flash 任务启动即失败；记忆 chunk 胶囊（`memory.chunking.model`）与 Pro 轻量裁判（pixel safety net / planner validation）同样是硬 Google 依赖，前者懒触发、后者按需构造，自定义 provider 下会降级或失败（需 Google key 才能完全启用）。`llm_switch` 会就此返回警告。
+
+---
+
+## 6. MCP 工具面
+
+### 6.1 新增/变更（zod）
+
+| 工具                          | 输入                                                                                 | 输出要点                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm_list`                  | `{}`                                                                               | 条目列表（name/source/model/baseUrl/key masked/isActive）+`setupRequired` + 警告                                                                                                                                                                                                                                                                                     |
+| `llm_switch`                | `{name, force?}`                                                                   | 激活条目（PG/内存）；模型下个任务生效；key/base_url 变化触发网关重启（H1 守卫：运行中任务存在时默认拒绝，`force:true` 跳过）                                                                                                                                                                                                                                         |
+| `llm_models`                | `{action: list\|refresh, entry?}`                                                 | 厂商模型目录：`list` 读缓存（含 `deprecated/suggestedModel`），`refresh` 立即 `GET {baseUrl}/models` 并按需自动修复（见 §6.6）；返回 8 家国产厂商预设                                                                                                                                                                                                        |
+| `aos_configure`             | `{apiKey, model?, baseUrl?, vendor?, name?, makeActive?, writeEnv?, force?, figmaToken?, jiraSite?, jiraEmail?, jiraApiToken?}` | 新增/更新条目（PG 或内存）+ 回写项目`.env`（`AOS_LLM_*`）+ 可选置 active；`vendor` 预设（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）可自动填 baseUrl 并按稳定别名选型；显式三元组不触网；Jira 三件套（须同时提供，站点仅 `https://*.atlassian.net`）写入 `.env` 的 `JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN`；返回 masked 摘要 |
+| `aos_status`                | `{}`                                                                               | 项目、DB 状态、条目数、active、子进程、Figma 桥/就绪性、Jira 配置（masked）、setup 状态                                                                                                                                                                                                                                                                                                     |
+| `aos_tasks`                 | `{limit?, sync?}`                                                                  | 任务/调用统计（trace/状态/模型/时间）；默认先向 artemis 同步完成态                                                                                                                                                                                                                                                                                                     |
+| `aos_crashes`               | `{action, signature?, traceId?, package?, kind?, since?, limit?}`                  | 崩溃取证：`list` 列出签名（kind/package/since/limit 过滤 + 采集开关）；`get` 返回完整栈/日志摘录；`scan` 手动扫描（指定 traceId 强制重扫）                                                                                                                                                                                                                       |
+| `aos_usage`                 | `{action?, tool?, status?, days?, limit?}`                                         | 使用统计（调用事件）：`summary` 概览（含零调用工具）/ `signals` 信号分布（错误类、unknown 模板聚类、warnings 码、降级标记、参数键频次）/ `events` 流水（limit ≤200）；`AOS_USAGE=0` 时显式标注采集已关闭、历史数据仍可查；只统计客户端发起的调用（ADR-0006，见 §13.54）                                                                                          |
+| `jira_issue_get`            | `{key}`                                                                            | 读取 Jira Cloud issue（key 或 browse URL）→ 规范化上下文：summary/status/statusCategory/type/labels/project/assignee/reporter/updated/created + `description.text`（ADF→纯文本）/`acceptanceCriteria`（启发式：标题段与 `AC:` 行，`heuristic:true`）/`raw`（原始 ADF）；缺凭证返回 `howToFix`（M8a，§6.8/§13.55）                                                    |
+| `jira_issue_search`         | `{jql, limit?, fields?, nextPageToken?}`                                           | JQL 搜索（`POST /rest/api/3/search/jql` 游标分页、无 total）：key/url/summary/status/type/labels/updated/assignee；limit 默认 20、上限 100；`nextPageToken`/`isLast` 透传（M8a，§6.8/§13.55）                                                                                                                                                                        |
+| `compare_design_and_device` | `{figmaUrl, nodeId?, deviceSerial?}`                                               | 组合工具：Figma 节点渲染图（PNG@2x）+ 真机截图，一并以 image content 返回供多模态比对                                                                                                                                                                                                                                                                                  |
+| `design_device_diff`        | `{design:{source?,figmaUrl?,penPath?,imagePath?,nodeId?,renderOut?}, device?:{mode?,serial?,traceId?,stepNumber?,image?,lossless?}, alignment?:{insets?,ignoreRegions?}, diff?:{pixelThreshold?,minAreaRatio?,clusterGap?,maxRegions?,maxEdge?,nodeProximity?,colorTolerance?,systemBandRatio?}, save?, dryRun?}` | 设计 vs 真机差异（设计源 Figma、`.pen`（`design:{source:"pen",penPath?,renderOut?}`，pen CLI 渲染）或现成 PNG（`design:{source:"image",imagePath}`，仅 PNG；无节点几何 → pixel/tiles、低分辨率 `design-upscaled`）；设备源 live 实时截图或 step（traceId 必填；stepNumber 可省略 → 失败证据自动检索，记录 anchor 来源/候选；默认 post）；live 可加 `lossless:true` 经 adb 抓无损 PNG（避免 JPEG 伪影，失败自动回退 live JPEG））：确定性对齐（设计宽度缩放 + 顶部对齐，insets 修正，默认按设计图最长边降采样到 1440px）+ 像素差异判定（pixelmatch，抗 JPEG 噪声：阈值/最小面积/聚类/上限可配）→ 结构化差异报告（区域/类别 `missing/extra/text/asset/position-size/color`（无节点几何时 `pixel`）/严重度/证据，设计节点几何与阈值入报告）+ 标注图；默认落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`（report.json / annotated.png / design.png / device.png），响应摘要 + 标注图 + 路径；`ignoreRegions` 屏蔽动态区域；`dryRun` 不取图不写盘；判定不依赖 LLM（ADR-0001/0002）；差异区域经 `screen-map.json` 输出 `localized`（mapped=`mapEntry`/unmapped=候选/no-candidates=原因） |
+| `screen_map` | `{action:"list/propose/save", entries?, merge?}` | 持久屏幕映射 `<项目>/.artemis/design/screen-map.json`（设计屏幕/组件 ↔ 路由/组件/文件）：`propose` 基于 build-brief + 栈约定给粗粒度候选（confidence/unmatched，需 agent 复核）；`save` 显式写入（幂等，`merge` 增量）；`list` 读取；差异报告据此定位（ADR-0004） |
+| `figma_extract_flows`       | `{url, nodeId?, save?}`                                                            | 原型交互 → 流程图（screens/edges/entryScreens/unresolved + `warnings`：`no-entry`/`unreachable-screens`/`unresolved-destinations`/`no-interactions`），落盘`.artemis/design/flows.json`；供后续"流程→测试生成"消费（M-B；契约见 §6.10）                                                                                                                                                                                                                                     |
+| `figma_gap_analysis`        | `{url, id?, assetGlobs?, tokenFiles?, save?}`                                      | 设计资源/色板 vs 项目资产/tokens 缺口（missingAssets/missingColors），**扫描规则按检测到的技术栈选择**（`src/projects/stack.ts`：Flutter/RN/原生 Android/iOS/Web 档案，含资产目录/定位/代码/命名约定），缺失资源按栈重命名（如 Android `ic_home.svg`、Flutter `home_icon.svg`）并给出目标目录；落盘 `.artemis/design/gaps.json`；供"资源导入"消费（M-C） |
+| `figma_generate_tests`      | `{url?, flowsPath?, maxFlows?, save?, excelPath?, excelTemplate?, requireFullCoverage?}`                 | 连续交互线性化为端到端流程（entry→…→终态/BACK），生成 artemis 可直接执行的任务描述；落盘`tests.json` + `tests.md`（过程文档）+ `tests.xlsx`（每流程一行：用例名/页面链路/步骤/任务描述；默认表，`excelPath` 改路径；`excelTemplate` 传 `.xlsx` 模版时填充 `{{meta.*}}/{{counts.*}}/{{case.*}}/{{index}}` 占位符并复制行模版）；响应与 `tests.json` 写 `coverage`（**硬覆盖**：未覆盖屏幕/跳转、`truncated`、`entryFallback`；`explore` 报告 inferred 缺口），`requireFullCoverage:true` 时硬覆盖不完整即报错且三份都不落盘（M-B；契约见 §6.10；每个 taskDesc 注入 `【真实数据】` 硬约束条款，§13.93）                                                                                              |
+| `figma_import_assets`       | `{url?, gapPath?, destDir?, ids?, format?, densities?, overwrite?, dryRun?, save?}`            | 按 gaps.json 导出缺失资源（SVG 内联/PNG 下载）→ 按栈命名与首选目录写入；PNG 默认按栈倍率集（Android xhdpi/xxhdpi、Flutter 2.0x/3.0x、iOS imageset、RN @2x/@3x；`densities:false` 回退单文件 @2x）；**唯一性三层**：命名规范化 → 目标路径幂等（同内容 `unchanged`；异内容 `skipped_exists`/`overwrite`）→ **内容 sha256 去重**（批次内 + 项目资产索引，跨文件同名/异名重复记 `duplicate_of`）；`dryRun` 按同样规则预览；落盘 `import-report.json`（M-C/§13.35）                |
+| `figma_export_brief`        | `{url, save?, includeFlows?, includeGaps?, scaffold?, maxComponents?, overwrite?}` | 构建简报：tokens（颜色/字阶/间距/圆角/阴影）+ 页面路由 + 组件与变体 + 流程概览 + 缺口摘要 + 栈编码约定 →`build-brief.{json,md}`；`scaffold` 按栈生成组件骨架（幂等）（M-D）                                                                                                                                                                                       |
+| `pen_inspect`               | `{path?, save?}`                                                                   | pen.dev 离线检查：解析 `.pen`（开放 JSON，容忍 `//` 注释）→ 结构校验（id 唯一/无 `/`、ref 可解析、`$变量` 可解析）+ 摘要（屏幕/组件/实例/文案/变量与主题/图片资产与缺失）；path 缺省取 `.artemis/design` 下最新 `*.pen`；`save:true` 落盘 `.artemis/design/pen/summary.json`；无账号与网络需求（P1）                                                                              |
+| `pen_extract_flows`         | `{path?, save?, maxScreens?, vision?}`                                                      | pen 流程合成：`.pen` 无原型交互数据时，以「Flow 标注 > 屏内首个文本 > 图层名」命名屏幕、按标签前缀归并状态变体（主屏 + states）、按画板序号与画布排布推断跳转（`trigger/actionType=INFERRED`）；可选视觉识别（`vision: auto`（默认）/`true`/`false`）——active LLM 具备视觉时渲染每屏识别交互元素（受控类别/意图 + bbox → nodeId grounding），产出元素清单（`vision-inferred`/low）与未决目的地（`to:null`）探索边，不可用显式降级不阻断；落盘 `.artemis/design/flows.json`（schemaVersion 3，供 `figma_generate_tests`/`suite check` 消费）+ `flow-map.md`；返回碎片度统计、视觉统计与 warnings（契约见 §6.10 生成策略相邻条目、§13.91） |
+| `pen_import_tokens`         | `{path?, dryRun?, overwrite?, save?, enforcement?}`                                | pen 颜色变量 → canonical `tokens.json`（DTCG；**变量名即 token 名**，主题取值写入 `modes`（`axis=value`），`$别名` → `aliasOf`）+ 按栈 token 文件（复用 `writeStackTokenFile` 幂等写入）；输出 new/updated/unchanged/unused、裸色扫描与 enforcement（语义同 `figma_import_tokens`）；完全离线（P1）                                                                                                                                                                 |
+| `pen_import_strings`        | `{path?, locale?, dryRun?, save?, enforcement?}`                                   | `.pen` 文本节点 → `strings.json` + 按栈资源写入（复用 `runStringsImport` 全流水线：冻结 key/冲突闭环/硬编码扫描/五栈写入）；`reusable` 组件自成屏幕上下文，`ref` 不展开；完全离线（P1）                                                                                                                                                                                                                                |
+| `pen_export_brief`          | `{path?, save?, includeGaps?, scaffold?, maxComponents?, overwrite?}`              | `.pen` → `build-brief.{json,md}`（颜色/字阶/间距/圆角/阴影、屏幕与建议路由、可复用组件、按栈约定、可选 gaps 摘要）；复用 Figma 版 markdown 渲染与 `scaffoldComponentSkeleton`；完全离线（P1）                                                                                                                                                                                                                        |
+| `pen_export`                | `{path?, out?, format?, scale?, dryRun?, timeoutMs?}`                              | headless CLI 渲染导出：`.pen` → PNG/JPEG/WEBP/PDF（默认 `.artemis/design/pen/<name>.<ext>`；`dryRun` 返回命令）；pen CLI 缺失时自动托管安装（`~/.aos/pen-cli`，`AOS_PEN_NO_INSTALL=1` 关闭；`AOS_PEN_CLI_PATH`/`AOS_PEN_CLI_DIR`/`AOS_PEN_VERSION` 可覆盖、`AOS_PEN_TIMEOUT_MS` 默认 120s），需已登录（`pen login` 或 `.env` `PEN_CLI_KEY` 自动透传）（P1 写回）  |
+| `pen_apply_tokens`          | `{path?, tokensPath?, out?, dryRun?, timeoutMs?}`                                  | CLI 写回：`tokens.json`（含 modes 主题取值）→ `.pen` `SetVariables`；默认**原位更新**（临时文件 → 回读校验变量值 → 原子替换；校验失败不动原文件），`out` 可另存；别名 token 不单独写入（P1 写回）                                                                                                                                                                                                                       |
+| `pen_apply_strings`         | `{path?, stringsPath?, out?, dryRun?, timeoutMs?}`                                 | CLI 写回：`strings.json` 的 nodeId→sourceText → `.pen` 文本节点 `Update(content)`；原位更新/校验/另存语义同上；nodeId 不存在记入 `notFound`（P1 写回）                                                                                                                                                                                                                                                                    |
+| `pen_agent`                 | `{path?, out?, prompt, agent?, model?, effort?, anthropicBaseUrl?, custom?, exportPath?, exportType?, exportScale?, maxFailedCalls?, dryRun?, timeoutMs?}` | headless CLI agent 生成/修改设计：prompt → `.pen`（默认原位：临时文件→结构校验→原子替换，失败不动原文件；`out` 新建/另存）；pen CLI 缺失时自动托管安装（同 `pen_export`）；**凭证复用 active LLM**（不落日志/响应），项目 `.env` 的 `PEN_*`/`ANTHROPIC_*` 透传（active LLM 派生值优先），Anthropic 兼容端点按 provider 桥接：DeepSeek（apiKey，已实测）、Kimi/Z.AI/百炼（authToken + 模型映射，按官方文档，待真实 key 冒烟）；其他 provider 仅注入 `PEN_AGENT_API_KEY` 并告警（可 `anthropicBaseUrl`/`AOS_PEN_ANTHROPIC_BASE_URL` 覆盖）；有桥接时 claude agent 自动 `--custom`；可选 `exportPath` 顺带出图（P1 写回） |
+| `pen_import_assets`         | `{path?, ids, format?, densities?, destDir?, overwrite?, dryRun?, save?, timeoutMs?}` | CLI 资源导入（headless，需登录）：`.pen` 节点 → 位图（interactive `Export`：单会话、命令数=倍率数、单命令全 ids；png/jpeg/webp）→ 按栈命名/倍率集/目录幂等写入（复用 figma 写盘管线：路径幂等 + sha256 去重 + `duplicate_of`；`densities:false` 回退单 @2x）；产物以 CLI `Exported` 路径对账（缺产物记 `export-no-output` + 批次告警；未知 id 离线预校验失败）；报告 `.artemis/design/import-report.pen.json`（`schemaVersion`/`penCliVersion`/`vector:"unsupported"`；独立于 figma 报告）；超时会话级自适应（`AOS_PEN_IMPORT_TIMEOUT_MS`）；`dryRun` 仍渲染以获得去重结果（§13.58） |
+
+`setup_required` 语义：无任何可用条目时，`llm_list` 正常返回并带 `setupRequired: true` + 指引；`mobile_run_task` 直接返回结构化 `setup_required` 错误（不调用子进程）；其余 mobile 工具放行。
+
+**测试用例 Excel 导出（`figma_generate_tests`，2026-10-23 双层）**：`save !== false` 时除 `tests.json`/`tests.md` 外默认落盘 `tests.xlsx`（`excelPath` 改路径）；无模版时生成开箱表：人类主表 `#/用例名称/涉及页面/前置假设/步骤/用例编号/模块/Section/测试数据/关联用例/预期结果/备注待确认`，隐藏「执行器」sheet 放 `caseId/displayId/humanStepsHash/taskDesc/设计引用`；任务描述含 `【真实数据】` 硬约束条款与 `【AOS-EXPECT】` 断言块（§13.93）。`apiReview` 存在时另出「API 说明」sheet。传 `excelTemplate`（`.xlsx`）时读取用户模版填充占位符（`case.steps` 为人类步骤、`case.taskDesc` 为机器描述）：
+
+- 元数据（任意 sheet 单元格内子串替换；独占单元格的数字写为数字）：`{{meta.source}}`、`{{meta.generatedAt}}`、`{{counts.cases}}`、`{{counts.screens}}`、`{{counts.edges}}`。
+- 行模版：含 `{{index}}`/`{{case.name}}`/`{{case.screens}}`/`{{case.steps}}`/`{{case.humanSteps}}`/`{{case.taskDesc}}` 的**首个**行按用例数复制（样式随行复制），逐行填充；多 sheet 各自可有行模版，纯元数据 sheet 允许；0 用例时行模版行被移除。
+- 未识别的 `{{...}}` 原样保留；整个模版无行级占位符 → 报错且**不写任何文件**（模版读取与渲染在写盘前完成，Buffer 先行）。实现依赖 `exceljs`（仅运行时，测试不联网）。
+
+### 6.2 Figma 20 工具（M2，vendor + zod）
+
+沿用 dcb 工具名；token 解析顺序：PG 项目记录 → `.env`；REST 工具在 token 缺失时返回"请提供 `FIGMA_ACCESS_TOKEN`（或通过 `aos_configure` 写入）"的引导；插件模式不受影响。
+
+**REST 限流加固**（2026-09-29 补丁，NOTICE 第 5 条）：`figma-rest/client.ts` 对 429 做有界处理——`Retry-After ≤ AOS_FIGMA_RETRY_MAX_WAIT_MS`（默认 60s）时等待一次并重试；超限则抛 `FigmaRateLimitError`（携带 `tier`/`retry-after`）并写入**按 token 指纹的冷却记忆**（冷却期内直接快速失败、不发请求）；响应缓存 TTL 提升为 10min 且可配（`AOS_FIGMA_CACHE_TTL_MS`，0 关闭），一次流水线运行对同一文件只拉取一次。背景：企业版文件 + 访客席位返回 `x-figma-rate-limit-type: low`，大文件少数请求即可触发多日冷却（实测 `retry-after≈4.4 天`），原实现会按 Retry-After 无限期 sleep 挂起调用。
+
+### 6.3 mobile 5 工具（代理，schema 透传）
+
+同 v0.2（原样透传，不做 zod 镜像，契约测试锁定）。
+
+### 6.4 任务统计
+
+本服务的 `CallTool` 拦截 `mobile_run_task`（不再限定成功）：记录（项目、trace、case、model、profile、desc、status）。成功且有 `trace_id` → `submitted`；即时错误或无有效 `trace_id` → 直接 `failed` 终态（`finished_at` 置位，`trace_id` 以 `local-<uuid>` 占位，不进入 pending）。**用例关联**：提交时用 `task_desc` 与 `.artemis/design/tests.json` 的 `taskDesc` 精确匹配，命中写入生成器冻结的 `case_id`（无法匹配留空，不做近似错配）；`aos_tasks` 输出 `case_id`；`model` 取 `mobile_run_task.model`，`profile` 不再混用同值。**完成态同步**：后台定时（30s）与 `aos_tasks` 调用时，通过 `mobile_manage_task(status)` 轮询 pending 行，终态（completed/failed/cancelled/orphaned）写回 `finished_at`；网关子进程不在线时跳过本轮，不打断任务。
+
+### 6.5 崩溃取证（Crash Triage）
+
+任务终态后自动对任务时间窗做一次设备崩溃扫描，把"能引发 crash 的问题"登记为可去重、可定位的签名。实现位于 `src/crash/`（AOS 层），不改动 artemis 子模块。
+
+**触发**：`syncTaskStatuses` 写回终态时入队（stdio/HTTP 的 30s 定时器与 `aos_tasks` 调用均会触发）；`aos_crashes(action="scan")` 手动兜底（指定 `traceId` 时强制重扫）。扫描经 Runtime 内串行队列执行（同一 Runtime 内不会并发 adb），失败只记日志不打断同步；`AOS_CRASH_CAPTURE=0` 关闭。
+
+**采集**（`src/crash/collect.ts`）：`adb -s <serial> logcat -b crash -v threadtime -d`（crash buffer 独立于 main buffer，抗滚动）→ 空/失败时回退 `logcat -v threadtime -d -T "<窗口起点>"`（main buffer 时间窗）；采集前后用 `adb shell date +%s` 探测设备时钟偏差并补偿（探测失败按零偏差 + 告警）。serial 取 status.json，缺失时单设备兜底；跳过原因分类：`disabled / already-scanned / no-window / no-serial / device-offline / adb-not-found / command-failed`。
+
+**解析与签名**（`src/crash/parse.ts`）：识别 `FATAL EXCEPTION`（Java/Kotlin）、`Fatal signal` + DEBUG 块 `>>> pkg <<<`（native）、`ANR in <pkg>`；**归属强约束**——只收录能解析出包名的崩溃，并按任务 `locked_app_package`（本次会话内从 `mobile_run_task` 参数记录，过滤其他 app/系统噪声）过滤；窗口 = status.json `start_time/end_time`（epoch 秒）±5s，日志时间按参考时刻推断年份（跨年回滚）。签名 = `sha256(包名|kind|根因异常类|首个应用帧)` 前 16 位；根因取 Caused by 链尾异常类，帧取根因段首个属于该包的帧（回退字面栈顶）；`signatureBasis` 记录构成。签名永远基于原始栈，mapping/retrace 只做展示增强。
+
+**存储**：`<项目>/.artemis/crashes/index.json`（签名索引）+ `<id>.json`（完整栈/日志摘录；frames≤60、摘录≤200 行且≤16KB）+ `scanned.json`（已扫描 trace，保留 200）。同签名累加 `occurrences`/`outcomeCounts`（区分任务 failed 与 completed 时出现的崩溃），`traceIds` 保留最近 20；超过 `AOS_CRASH_MAX_RECORDS`（默认 200）按最近出现淘汰（被淘汰签名再现会重置计数，属已知语义）。写入原子（tmp+rename），`index.json`/`scanned.json` 损坏自动隔离为 `.corrupt` 并重建。
+
+**环境变量**：`AOS_CRASH_CAPTURE=0` 关闭；`AOS_ADB_PATH` 显式 adb；`AOS_CRASH_TIMEOUT_MS`（默认 15000，1s–120s）；`AOS_CRASH_MAX_RECORDS`（默认 200）。
+
+**已知边界（v1）**：仅本地/同机 adb（不读 artemis 的 `ADB_HOST/ADB_PORT` 远程配置）；设备在任务结束后即销毁的场景无法事后采集（云真机，根治=任务中采集，待 M4/上游）；release 混淆构建的签名基于混淆栈（mapping.txt/retrace 为后续增强）；跨进程同时写同一项目 `.artemis/crashes` 未加锁（同一 Runtime 内已串行化）。
+
+### 6.6 厂商模型目录与自动修复（M7）
+
+**动机**：厂商会下线旧模型（DeepSeek 文档：`deepseek-flash` 是稳定别名；旧名 `deepseek-v4-flash` 已下线，请求仍会被路由到新模型）。写死的 model 名一旦失效，任务会在 artemis 内部失败——整个项目"卡住"。
+
+**机制**（`src/llm/providers.ts` 预设 + `src/llm/catalog.ts` 目录）：
+
+- **预设目录**：8 家国产厂商（DeepSeek / 阿里百炼 / 智谱 / Kimi / 硅基流动 / 阶跃 / 火山方舟 / 腾讯混元）的 OpenAI 兼容端点、文档链接与稳定别名，供 `aos_configure(vendor=…)` 一键配置。
+- **定时刷新**：对已配置条目 `GET {base_url}/models`（Bearer key，10s 超时，解析 `data[].id`）；缓存到 PG `llm_model_cache`（行键 = `sha256(base_url + api_key)` 前 24 位）。stdio/HTTP 的 30s 后台循环按 TTL 检查（`AOS_MODEL_REFRESH_HOURS`，默认 12h，0 关闭定时；读项目 `.env`，进程 env 优先），`llm_models(action="refresh")` 强制刷新。请求失败保留旧列表并记 `last_error`，不影响任务。
+- **报告**：`llm_list` / `aos_status` 每条目附 `models.{known,fetchedAt,stale,count,activeModelAvailable,deprecated,suggestedModel}`。`stale` 缓存不做"下线"判断（避免误报）。
+- **自动修复**（`AOS_LLM_AUTO_REPAIR=0` 关闭，默认开）：新鲜缓存中 active 模型缺失时，① 优先厂商稳定别名（旧名含 capability 标记 reasoner/pro/max/ultra/vision/vl/coder/code 时跳过，避免降级语义）；② 否则同 token 核等价（忽略版本/日期段，最短名优先）；无法确信 → 只报告不修改。修复写回顺序：store（PG/内存）→（模型源自项目 `.env` 时）项目 `.env` →（active 条目）`.artemis/artemis.jsonc` + activeCache。模型变化不在 env 指纹内，不触发子进程重启。
+- **任务拦截**：`mobile_run_task` 前置 `ensureActiveModelUsable()`——新鲜缓存判定模型已下线且无法自动修复时，返回结构化 `model_deprecated` 错误（含 `availableModels` 与 `suggestedModel`），不再等 artemis 跑到一半才报 `model_not_found`。
+- **已知边界**：仅支持 OpenAI 风格 `GET /models` 的厂商（google/anthropic 条目跳过）；预设别名是静态提示，刷新列表才是事实源（别名不在列表中时不采用）；缓存按"项目 + key 指纹"存储，换 key 产生新行（旧行不清理）；Node `fetch` 默认不读代理变量，公司内网需 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（Node ≥24；`install` 会把代理变量带入客户端 env）。
+
+### 6.7 产物落盘路径（项目内）
+
+**决策**：接入项目的一切运行产物默认落在项目自己的 `.artemis/` 下，artemis 仓库不再承载新产物；显式环境变量可覆盖。
+
+- **任务轨迹**：给 artemis 子进程设 `ARTEMIS_TRACES_DIR=<项目>/.artemis/traces`（`src/artemis/assembly.ts` 的 `projectTracesDir()`）。步骤截图（`traces/images/`、`<trace_id>/step_N_overlay.jpg`）、Pro `notes/`（`task_plan.md` / `output.md`）、`stdout.log` / `stderr.log`、`status.json`、`run_outcome.json` 与历史库 `data_engine.db` 全部随之下沉；`mobile_inspect_trace` / `mobile_manage_task` 免改动即读到项目内文件。
+- **覆盖语义**：显式 `ARTEMIS_TRACES_DIR`（客户端/进程 env，`install` 会透传）优先；相对路径按项目根解析，子进程与 AOS 侧（崩溃取证扫描、任务完成态文件同步）共用同一绝对路径。`tracesDir` 纳入子进程 env 指纹——改动会在下次调用时重启网关子进程。
+- **live_screenshot**：上游 `mobile_get_device_state` 把文件写在 artemis 仓库根（返回 `file://<repo>/live_screenshot_<device>.jpg`），AOS 在代理转发后自动复制一份到 `<项目>/.artemis/traces/live_screenshots/`（`src/artemis/artifacts.ts`；工具响应与 schema 原样透传，复制失败只记日志）。`compare_design_and_device` 复用同一文件，同样被镜像。
+- **设计 vs 真机 diff（v1）**：`design_device_diff` 的产物按对比单元落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`：`report.json`（schemaVersion=1；unit/alignment/ignoredRegions/regions/summary/elapsedMs）、`annotated.png`（差异框 + 编号）、`design.png`（设计源渲染原图，1×）、`device.png`（真机原图：live JPEG 或 `lossless` 无损 PNG，统一重编码为 PNG）；失败时不保留半成品目录。差异引擎为纯函数（`src/diff/engine.ts`），像素栈为纯 JS（pngjs/jpeg-js/pixelmatch，ADR-0002）。
+- **测试文档**：`figma_generate_tests` 等设计流水线产物仍在 `<项目>/.artemis/design/`（见 §13），本次不变。
+- **注意**：`ARTEMIS_*` 变量属于客户端/进程 env（项目 `.env` 不注入子进程），覆盖要写在 MCP 客户端配置的 env 或 shell 环境。
+
+### 6.8 Jira Cloud 接入（M8a 读取；M8b/M8c 见 §13.55）
+
+**范围**：M8a 为客户端 + 凭证 + 读取（`jira_issue_get`/`jira_issue_search`）；证据回写（M8b）与 CLI/工作流迁移（M8c）见 §11 M8 与 §13.55。
+
+- **凭证**：项目 `.env` 的 `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN`（`aos_configure` 可三件套写入，须同时提供）；凭证由 resolver 解析（进程 env 优先；启动与 `aos_configure` 后刷新，手动编辑 `.env` 需重启会话），不落 PG；站点仅接受 `https://<site>.atlassian.net`（去尾斜杠，排除 Server/DC 与自定义域）；`aos_status.jira` 显示 configured/site/email/token（masked）/missing。
+- **客户端**：Basic auth（email:token）；`AbortSignal.timeout`（`AOS_JIRA_TIMEOUT_MS` 默认 30s）；429 按 Figma 模式：`Retry-After ≤ AOS_JIRA_RETRY_MAX_WAIT_MS`（默认 60s）等待一次并重试，否则按凭证指纹记录冷却（冷却期 fail-fast、不发请求）并抛 `JiraRateLimitError`（含 `RateLimit-Reason`）；不做响应缓存；非 2xx 抛 `JiraApiError`（status + body ≤500 截断 + 可行动 hint：400 有界 JQL / 401 token 一年过期轮换 / 403 权限 / 404 可见性 / 413 附件上限）。
+- **读取契约**：issue 上下文规范化为纯文本 + 启发式验收标准（标题段延续到下一标题，外加 `AC:` 行回退；`heuristic:true` 明示不可全信），保留原始 ADF 供深入消费；搜索走 `/rest/api/3/search/jql`（显式字段、游标分页；JQL 需有界，API 侧 400 原样映射）。
+- **里程碑后续**：M8b 已落地——票 03（评论/附件原语）：`jira_issue_comment`（纯文本→ADF；`AOS-TRACE:<traceId>` 页脚 marker 幂等更新/新建；评论属性 best-effort）、`jira_issue_attach`（multipart、确定性命名 `<basename>-<sha8><ext>`、同名同大小去重、上限取站点 meta 与 `AOS_JIRA_ATTACH_MAX_MB` 较小者、超限跳过）；票 04（证据 composite）：`jira_evidence_post`（复用 `traceEvidence` 聚合失败步骤截图/设计差异标注图/失败清单/崩溃签名；`classifyFailure` 确定性失败域；platform/deviceSerial 覆盖或按 serial 推断；`dryRun` 不触网；平台注释）；客户端扩展（comments/attachment meta/list/upload，JSON 请求抽象为 rawRequest 复用冷却与重试；写操作走 requestVoid 兼容 200/201/204/空体）。M8c 票 05（CLI）已落地：`mobile-testing-mcp jira issue create|comment|label|transition|link`（同客户端；`--project`/`--json`；exit 0/1/2；建单支持 Task/Bug、描述 ADF、标签、父级与 Blocks 链接；流转按可用 transitions 目标状态名匹配，不匹配列出可用项）；票 06 工作流文档已迁移（`docs/agents/issue-tracker.md` 重写为 Jira 工作流、`triage-labels.md` 加 tracker 映射、AGENTS 摘要同步）；**沙箱端到端验收待使用方提供沙箱凭证后执行**（记录于票据 06 Comments）。
+
+### 6.9 iOS 真机后端（Appium + WDA；M9a–M9c）
+
+真机 UDID（`classifyIosSerial=device`）由 AOS 接管并走 Appium + WebDriverAgent（模拟器保持 idb/simctl 双后端）：
+
+- **服务**：`ios/appium`（service/server/client/session/facade/xml/capabilities/detect）——配置按项目 `.env` 打底、进程 env（客户端配置）覆盖（同模型目录规则，见 §13.57）；`AOS_APPIUM_URL` 直连或托管懒启动 `appium --port`（`AOS_IOS_APPIUM_PORT` 默认 4723，启动前先探测复用）；`/status` 就绪轮询；`disposeIosWda()` 随 stdio/HTTP 关停回收。
+- **会话**：同 UDID FIFO 互斥 + 任务级 lease（finally 释放）+ 观测会话空闲回收（`AOS_IOS_SESSION_IDLE_MS` 默认 30min，0=保活）；观测拿锁有界等待（`AOS_IOS_OBSERVE_WAIT_MS` 默认 5s）→ `device_busy` + 最近缓存帧（结构化变体）；截图 busy 且有缓存帧 → 降级返回缓存帧路径并标注 `capturedAt`/`age`，超过 `AOS_IOS_CACHED_FRAME_MAX_AGE_MS`（默认 10min，0=关闭）追加「已陈旧」，层级 busy → 结构化报错（实现见 §13.79/§13.83）；自愈阶梯（DELETE→POST→托管重启一次）。
+- **能力**：截图、层级（page source XML 经 fast-xml-parser；解析失败 `parse_failed` 回退截图）、tap/swipe（W3C actions）、文本输入（先聚焦→有界等键盘→`POST /keys`；`mobile: typeText` 在 xcuitest 12.15 已移除）、terminate/activate/install/deepLink。
+- **签名**：`AOS_IOS_XCODE_ORG_ID`（证书 OU 团队 ID，真机必填）、`AOS_IOS_XCODE_SIGNING_ID`（默认 Apple Development）、`AOS_IOS_WDA_BUNDLE_ID`（默认 com.aos.mcp.wda）；`useNewWDA=false` + `allowProvisioningDeviceRegistration=true`（真机实测）；多项目团队各异时各自在项目 `.env` 声明（分层规则见 §13.57）。
+- **路由**：`mobile_get_device_state` device 分支（busy/parse_failed 降级）、`captureLiveScreenshot`（design diff / compare 真机截图，note "iOS 真机 WDA PNG" 即 backend 标识）、`mobile_run_task`（执行器设备 façade 对 device 走 WDA）。观察读取统一经 `src/ios/observation.ts`、执行器为门面 + 分模块（§13.81/§13.77）。真机崩溃经 `devicectl systemCrashLogs`、真机日志经 `idevicesyslog` 实时尾采样（M9c，窗口近似 `clockWarning`；缺工具降级 `ios-log-tool-missing`）。
+- **排障**：doctor/`aos_status.ios` 显示 Appium/xcuitest/签名/隧道指引；iOS 18+ 真机需建立并**保持运行** Remote XPC 隧道（`sudo appium driver run xcuitest tunnel-creation`；独立常驻进程，可被多个 Appium server/会话复用；主机重启、设备重连/新增设备或进程退出后需重跑；AOS 只给指引，不代为 sudo 启动；运行中的 registry 由 Appium 自动发现/复用）。
+
+### 6.10 接入契约：流程完整性保证（2026-10-08）
+
+**契约**：项目接入 AOS 后，"设计流程 → 用例 → 执行"的**路线完整性由 MCP 保证**，项目侧只需提供最小输入；不要求项目自建测试套件或测试规范（自建 XCUITest 不在此保证范围内）。
+
+- **项目最小输入**：① 可运行应用（模拟器/真机安装方式）；② 设计源（Figma URL 或 `.pen`）；③ 凭证（项目 `.env`：`FIGMA_ACCESS_TOKEN` + LLM key；iOS 真机另需 `AOS_IOS_XCODE_ORG_ID`）。
+- **闸 1・提取**（`figma_extract_flows`）：`warnings` 数组显式报告 `no-entry`（无入口屏→entryFallback）、`unreachable-screens`（无法从入口到达）、`unresolved-destinations`（跳转目标缺失），与流程图一同落盘 `flows.json`。
+- **闸 2・生成**（`figma_generate_tests`）：`coverage` 分**硬/探索**两类——`complete/uncoveredScreens/uncoveredEdges` 为硬覆盖（explicit/observed/confirmed 及 legacy 证据），`explore`（`uncoveredScreens/uncoveredEdges/complete`）报告 inferred 探索缺口（仅展示，不阻断）；`requireFullCoverage:true` 时硬覆盖不完整（未硬覆盖屏幕/跳转或路径截断）即报错，且 `tests.json/tests.md/tests.xlsx` 三份都不落盘。
+- **闸 3・执行**（`suite run --fail-on-uncovered`）：按预检**硬覆盖**（未硬覆盖屏幕/跳转、生成截断）判定，命中即 exit 2；探索缺口仅报告；`--strict` 追加弱断言门禁；自定义 `--tests` 同样校验（cases 来自指定文件，flows 仍取 `.artemis/design/flows.json`）；缺/坏 `flows.json` 视为校验不可用并按不通过处理（fail-closed）；套件未执行时执行失败信息优先展示，覆盖结论并列输出。
+- **执行闭环（既有）**：每用例为入口→终点的连续任务（`mobile_run_task`，iOS 走 idb/Appium 执行器），`case_id` 回填台账、失败步骤证据、`compare_design_and_device`/`design_device_diff` 视觉核对、崩溃取证。
+- **默认姿势**：设计流水线脚本 `scripts/design-pipeline.mjs` 调 `figma_generate_tests` 时默认 `requireFullCoverage:true`；文档示例推荐同参数（MCP 参数本身保持可选，不改变既有调用方语义）。
+- **口径**：边覆盖按屏幕对（`From → To`）计；BACK/自环不产生新屏幕步骤，不计边；覆盖计算为单一实现（`src/figma/coverage.ts` 的 `computeClassifiedCoverage`，生成闸与执行预检同口径分硬/探索两分区）：**硬类 = 非 `inferred`/`vision-inferred`**（含 legacy-unknown——旧产物不因缺字段静默弱化门禁，失败响亮），**探索类 = `inferred`/`vision-inferred`（ADR-0010）**（不参与门禁，仅报告）；`--strict` 时非探索弱断言计入门禁；`entryFallback` 为告警项不阻断（除非覆盖本身不完整）。
+- **生成策略**：线性化选路为"覆盖贪心 + 长路径优先"——先选覆盖增量（屏幕+跳转+未决探索边）最大的路径，同增量取更长者，无新增覆盖的冗余短片段不产出；**未决目的地边（`to:null`）不计入覆盖目标但按"每条只探索一次"保留用例**（否则视觉识别/未决交互永远不会被执行，对账拿不到真机观测）；`maxDepth` 默认 30、可配（`figma_generate_tests` 参数，上限 50），是单条用例的边数上限；**到上限不丢尾**——以截断屏为起点生成首尾相接的续段用例（`visited` 继承防环，覆盖仍完整），`generation.depthSplits` 报告接续条数，响应 hint 提示调大 `maxDepth` 可获得更长单条连续用例（修复：此前深度截断直接丢弃剩余路径，长链只剩 12 步且尾部屏幕全未覆盖）。
+- **续段自包含 + 步骤断言结构化（执行约束力）**：续段用例携带"入口 → 切点"的前导导航步骤（`prelude`；taskDesc 增「前导导航（仅到达起点，不计断言）」段，`continuation:true`/`startScreen` 字段标注），执行时不再依赖上段状态（修复：此前仅写"如不在该页，先导航过去"一句文案，接续段起点不可达）。所有用例每步输出结构化 `expectations`（目标屏名 + 设计文本 hints，与 `steps` 对齐），随 taskDesc 以 `【AOS-EXPECT】` JSON 块传递；taskDesc 同时注入 `【真实数据】` 硬约束条款（数据须经真实请求链路，禁止伪造页面/假数据，见 §13.93）；iOS 执行器逐步确定性核对（空白归一化、hints 全部包含）：命中序号记入 step `scriptHits`，汇总为 `script_adherence`（run.json）与 `test_summary.adherence`（`checkable/satisfied/unchecked/unresolved`）；未出现项作为证据写入终态验证提示词与完成摘要（`⚠ 脚本断言未出现`）。口径为**建议级**（替代路径不硬失败，verify=final 下交模型裁量），tests.json 保持平台中立（Android 侧忽略该行）。
+- **起始屏 preflight（确定性前置）**：`【AOS-EXPECT】` 块携带 `start`（journey 入口屏 + 设计 hints，`GeneratedTest.preflight` 字段；hints 为空则不下发）；iOS 执行器首步观测核对（`pending → matched/unmatched`，unchecked 表示不可核对）：未命中时每步向模型注入「起始屏核对未通过，请先导航到该页」提示（替代即兴导航），全程留痕——`test_summary.preflight.{screen,status,matched_at_step}`、run.json `preflight`、验证提示词「起始屏核对（确定性）」段与完成摘要 `⚠ 起始屏核对未通过`（同样建议级，不硬失败）。
+- **pen 合成提取**（`pen_extract_flows`，离线）：`.pen` 无原型交互数据时，屏幕命名取「Flow 标注 > 屏内首个文本 > 图层名」（默认名 `Frame NNNN` 不再冒充屏名）；状态变体按标签前缀归并为主屏 + `states`；跳转按画板序号/画布排布推断并统一标注 `INFERRED`；产出可直接进入同一闭环的 `flows.json` 与全局 `flow-map.md`；碎片度（默认名屏、状态归并、推断边、缺标签）进入 `warnings`，供人工复核。**可选视觉识别**（`vision`，默认 auto；ADR-0010/§13.91）：active LLM 具备视觉能力时渲染每屏 → 识别交互元素（受控类别/意图 + 归一化 bbox → nodeId grounding）→ 元素清单（`vision-inferred`/low）+ 未决目的地（`to:null`）探索边；不可用显式降级（`vision-unavailable`/`vision-render-unavailable`/`vision-call-failed`/`vision-screen-cap`/`vision-screen-no-geometry`/`vision-disabled-by-env`），不静默、不阻断门禁。
+- **pre-merge 静态闸**（`suite check`）：tests.json × flows.json 静态覆盖 + 生成物完整性 + 真实数据约束（复用 preflight 单一实现），不连设备；未硬覆盖/截断/缺 flows、**缺 tests.xlsx 或 xlsx 早于 tests.json**（三件套强制）、**用例 taskDesc 缺 `【真实数据】` 约束标记**（禁止伪造页面/假数据，须经真实请求链路）均 exit 2（`--strict` 追加弱断言门禁）；"测试引用但设计缺失"的路线漂移仅警告（设计偏差 ≠ 路线缺口）。
+- **对账闭环（导航级，§13.67/§13.68/§13.73/§13.74）**：`suite run` 把探索步骤的实际命中写入持久对账资产 `<项目>/.artemis/design/reconciliation.json`——iOS 经 trace `run.json` 的 `scriptHits`；Android 经 `data_engine.db` 的 OCR 标签匹配设计运行期文本/屏名（§13.73）。（幂等——同 trace 重放不重复计数；稳定排序；升级阈值 = 1 次观测；未命中的边登记 pending 差异）；**反向观测**（真机有设计无）以 `direction:"runtime-only"` 证据级条目记录（不生成、不升级）；审阅**决定历史**保留（改判追加，上限 10）。下一次 `figma_generate_tests` 自动把已升级边以 `runtime-observed` 生成硬断言（响应 `reconciliation.upgradedEdges`）。**人工审阅面**：`suite reconcile` 与 MCP `reconciliation` 工具（list/confirm/reject）——confirm → human-confirmed（硬断言）、reject → 边不进生成；未裁决不升权。
+- **元素级映射（导航级，§13.69）**：iOS 运行把观察标签与设计运行期文本做唯一精确归一匹配，写入 `screen-map.json` 的 `elements`（含 accessibilityIdentifier 建议）；`screen_map` 工具可人工补（manual 优先）；下一次 `figma_generate_tests` 在步骤元素注记追加 `a11y: <identifier>`。
+- **验收口径（oracle，§13.70）**：设计标注 `Flow/AC*` 分组或 `AC:`/`验收：` 前缀批注（或 `.artemis/design/acceptance.json` 人工确认覆盖）声明硬断言期望，assert 步骤携带 `hintsSource:"acceptance"`；无口径的屏沿用运行期文本（`hintsSource:"runtime-text"`，建议级）。Jira AC 留后续集成。
+- **差分校准**（`suite calibrate`）：确定性套件结果（`--report` 导出 JSON 或 **JUnit XML**——Android instrumentation 直读，或 `--xcresult`，Xcode 16+ `xcresulttool get test-results tests`）按 case_id（测试名内嵌）对齐 MCP 台账；漏报率 = 漏报/(一致失败+漏报)，误报率 = 误报/(一致通过+误报)；`--fail-on-miss` 可作门禁；报告落 `.artemis/design/reports/calibration-*.json`。
+- **追溯矩阵**（`suite report`）：xlsx 第二工作表输出 design 屏幕/跳转 ↔ case_id ↔ trace ↔ 证据存在性（未覆盖/无 trace/无证据标注）。
+- **设计版本锚点**：`figma_extract_flows` 将 Figma `version`/`lastModified` 写入 flows.json（`fileVersion`/`lastModified`），为设计冻结（baseline-lock）预留。
+- **flake 治理口径**（`suite run --retry N`，N≤3）：仅对未通过用例重跑做诊断，`retry {attempts, finalStatus, finalTraceId, flaky}` 如实写入报告/JSON；**首跑结果仍决定退出码**（重跑转绿不计首跑门禁），文本输出标注"重试转绿 N 例（flaky）"；quarantine 需 owner 签字（后续）。
+- **闭环编排**（`suite loop`）：一步产出静态检查＋执行＋反馈＋校准的闭环报告（`loop-<stamp>.{json,md}`）与确定性"下一步动作"；exit 码沿用检查/执行门禁结论（`--allow-uncovered` 可放宽覆盖门禁）。**边界**：MCP 只负责测试闭环，不深入项目实现细节；"测试→完善"路径=按下一步动作改进 tests/flows/数据/错误码规则后重跑（`--calibration` 合并 `suite calibrate` 产物）。
+- **flake 采样**（`suite flake --cases … --runs N`）：重复采样输出逐例通过率、翻转矩阵与 flaky 判定、轮次方差；落盘 `flake-<stamp>.{json,md}`；`--fail-on-flaky` 可作门禁。**测量口径**：翻转率决定 L2 投入强度（条数/是否入门禁），不决定"确定性校准器是否需要"（见 `.scratch/enterprise-ios-testing/analysis.md` §11.2 / 票据 10）。
+- **quarantine 口径**（`.artemis/design/quarantine.json`）：条目须 `caseId + owner + signedAt`（可选 `expiresAt`）；生效项仍执行、结果标注 `quarantined`，**失败不计门禁**（`suite run/loop` 退出码排除）；过期/无效条目如实提示并恢复门禁；`--no-quarantine` 用于严格审计运行。
+- **审计保留期（只读先行）**：`suite retention [--days 90] [--limit 20]` 扫描 reports/evidence/diffs/traces/crashes 五类产物，输出超期文件数/体积与最旧项；**不删除任何文件**（`src/figma/retention.ts` 纯函数扫描 + 报告）。自动清理动作待合规口径确认后另行实现（临时默认 90d）。
+
+---
+
+## 7. 切换机制（PG 中心）
+
+```
+llm_switch(name, force):
+  0) 串行化互斥
+  1) 定位条目（PG > config > env）；未知 → 返回可用列表
+  2) 校验可用性（key/base_url 完整）
+  3) 若条目来自 config/env 且 DB 可用 → 先 upsert 到 PG（动态化）
+  4) 计算 env 指纹差异；needsRestart = 子进程运行中 && 指纹变化
+  5) needsRestart 且非 force → mobile_diagnose 查 tasks；非空 → 拒绝（提示等待或 force）
+  6) PG 事务：清 active → 置 active；写 .artemis/artemis.jsonc（并清理遗留 override 文件）
+  7) needsRestart → 优雅停子进程（下次调用惰性重启）
+  8) 返回 { active, previous, effects, warnings }
+```
+
+- 生效时机：模型变更对**下一个**任务生效；运行中任务（detached）不受影响。
+- 无 DB 降级：active 指针写 `.artemis/state.json`（会话/本地兜底）。
+
+---
+
+## 8. 部署与 CLI 接入
+
+### 8.1 容器
+
+- 镜像（`Dockerfile`，多阶段）：Node 22 + Python 3.12（artemis venv）+ Android 工具链（adb/ffmpeg；scrcpy 在 Debian 13 已移除 → 尽力而为安装，缺失时仅录像降级）；
+- 挂载：共享工作区（`/workspace`）、Figma 桥端口（`127.0.0.1:3055:3055`）、Android 设备（USB 透传或网络 ADB，`ADB_HOST/ADB_PORT`）；
+- 环境：`MOBILE_TESTING_DATABASE_URL`（PG）、`AOS_WORKSPACE_ROOT`（可选）；
+- 客户端以 `docker exec -i -w /workspace/<project> <container> node /app/dist/index.js` 接入（`mobile-testing-mcp install --mode docker` 自动生成）。
+
+### 8.2 客户端配置（stdio）
+
+```jsonc
+{
+  "command": "docker",                      // 或容器内直接 node
+  "args": ["exec", "mobile-testing-mcp", "node", "/app/dist/index.js"],
+  "env": {
+    "AOS_PROJECT_DIR": "/workspace/<project>",
+    "MOBILE_TESTING_DATABASE_URL": "postgres://..."
+  }
+}
+```
+
+### 8.3 传输层
+
+- **stdio**（`mobile-testing-mcp serve`）：每项目一个进程，`AOS_PROJECT_DIR`/cwd 定位项目；
+- **streamable-HTTP**（`mobile-testing-mcp serve --http --port 8765 --workspace /workspace`，无状态模式）：端点 `POST /mcp/<project>`，每项目独立 Runtime（store 关联、artemis 子进程、LLM 条目）；`GET /healthz` 返回 workspace 与已注册项目；非 POST 返回 405（无状态模式不使用 SSE 会话）。项目名做白名单校验（`[A-Za-z0-9._-]`，拒绝 `..`）。
+- 工具与运行时层不感知传输，两个入口共用 `createServerForRuntime()`。
+
+### 8.4 `doctor` 更新
+
+检查：Node、项目定位、.env LLM 三元组（含旧名回退）、PG 连接（`SELECT 1`）、artemis venv 与**依赖版本标记**（`artemis/.venv/.aos-deps.json` 对比 `uv.lock` 哈希：ready/stale/unmanaged/missing）、ADB 设备、Figma token。输出 `ready|degraded|blocked` + `Run:`/`Guidance:` 指引。
+
+### 8.5 artemis 依赖包（首次安装与依赖更新）
+
+- **构建**：`node dist/cli.js deps build`（跨平台：Windows/macOS/Linux；macOS/Linux 亦可用 `scripts/artemis-deps.sh`）→ `dist-deps/artemis-deps-<os>-<arch>.tar.gz`（uv 专用缓存 + manifest：平台/Python/uv/lock 哈希/commit）。
+- **首次运行**：serve 或 `doctor --install-deps` 检测 venv 缺失 → 从 `AOS_ARTEMIS_DEPS_URL`（或 config `artemis.depsUrl`）下载 → sha256 校验 → 解压 → `uv sync --frozen --no-install-project --offline`（实测 190 包 <1s，总耗时以解压为主）。
+- **依赖更新**：stamp 的 lock 哈希 ≠ 当前 `uv.lock` → 自动更新：新依赖包命中则离线更新；旧包/缺失则回退在线 `uv sync` 并提示重建（`AOS_DEPS_NO_ONLINE=1` 禁止回退）。仅代码更新无需任何操作（venv 只装依赖）。
+- **无托管 venv**（无 stamp）：离线探测通过则"收养"并写入 stamp；失败进入更新流程。
+
+---
+
+## 9. 安全设计
+
+| 项              | 措施                                                                                                                                                                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 密钥存储        | 项目`.env`（gitignore）+ PostgreSQL（**按需求明文**）；工具响应仅 masked；日志不落 key                                                                                                                         |
+| PG 明文风险缓解 | 连接走内网 + TLS；独立 DB/role 最小权限；审计（last_seen/updated_at）；文档明示风险与轮换流程                                                                                                                          |
+| 多租户隔离      | 一切记录以项目`root_path` 为键；工具只读写当前项目条目；跨项目访问无路径可寻                                                                                                                                         |
+| dcb 桥（M2）    | 端口锁 3055；CORS 收紧；store 前缀命名空间化                                                                                                                                                                           |
+| 子进程          | 只杀 mcp_server 直接子进程；detached 任务进程不动；启动孤儿清理                                                                                                                                                        |
+| 降级            | DB 不可用不阻断；但`aos_status` 明确警告"条目仅会话内有效"                                                                                                                                                           |
+| 日志与审计      | `<project>/.artemis/logs/mobile-testing-mcp.log`（时间戳/级别/每次工具调用 name+ok+ms+错误摘要；`uncaughtException` 堆栈落盘）+ `artemis-child.log`（子进程 stderr 持久化）；`AOS_LOG_LEVEL/DIR/DISABLE_FILE/MAX_MB` 可配 |
+| 崩溃取证产物    | 仅落盘本地`<项目>/.artemis/crashes`（gitignore）；工具返回栈/摘录有上限；崩溃日志可能含敏感文本（URL token 等），属已知限制                                                                                          |
+
+---
+
+## 10. 测试策略
+
+| 层          | 内容                                                                                                                                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 单元        | .env 扫描（新名/旧名/缺项）、entry 合并与 active 决议、configure 写入 .env 的幂等、masked 输出                                                                                                                |
+| 存储        | `MemoryStore` 语义测试 + `pg-mem` 跑真实 SQL（schema/upsert/active 唯一/任务记录）                                                                                                                        |
+| 集成        | 假 artemis 子进程：透传/重启/stderr；`setup_required` → `aos_configure` → 切换 → 重启全链路                                                                                                            |
+| 契约        | mobile schema 透传逐字节一致                                                                                                                                                                                  |
+| 崩溃取证    | 解析 fixtures（Java/native/ANR、根因签名、年份边界、时窗与时钟偏差）、采集 fake exec（crash buffer/`-T` 回退/离线/超时分类）、文件索引（去重/淘汰/损坏隔离）、Runtime 集成（终态触发/串行/包过滤/关闭开关） |
+| E2E（手动） | 容器内真实项目：首扫导入 → 切 DeepSeek → 真机任务使用新模型                                                                                                                                                 |
+| E2E（手动） | `scripts/e2e-crash.mjs`：`am crash` 制造真实崩溃 → 采集→签名→写入 `.artemis/crashes` → `aos_crashes list`                                                                                         |
+| 设备命令    | `scripts/adb-safe.mjs`（跨项目复制的 adb 包装器）：硬超时到点杀整个进程组（无孤儿 adb）、默认 push 安装（`--no-streaming`）、`shell` 拦截 `pm install`（FD 假死）、设备解析与结构化退出码；`test/adb-safe.test.js` 以假 adb 覆盖超时/退出码/多设备/用法 |
+| CI          | lint + build + node:test（不依赖真实 PG/设备）                                                                                                                                                                |
+
+---
+
+## 11. 里程碑
+
+| 阶段           | 内容                                                                                               | 状态                                                                    |
+| -------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| M0             | 脚手架/配置加载/init/doctor                                                                        | ✅ 已完成（v0.2 基线）                                                  |
+| M1             | artemis 代理 + 透传/env 装配/重启 + llm 工具 + 退出钩子                                            | ✅ 已完成（v0.2 基线）                                                  |
+| **M1.5** | **v0.3 重构：PG 存储层 + .env 首扫导入 + aos_configure + 多条目 active 切换 + 任务统计记录** | ✅ 已完成（56 测试全绿）                                                |
+| M2             | Figma 20 工具内嵌（zod）+ 桥补丁 + REST token 引导                                                 | ✅ 已完成（63 测试全绿）                                                |
+| M3             | 容器化打包（Dockerfile）+ 客户端安装器 + 真机 E2E                                                  | ✅ 已完成（镜像构建 + docker exec 端到端验证：29 工具含容器内 artemis） |
+| M4             | HTTP 传输 + 任务状态同步 + 组合工具                                                                | ✅ 已完成（79 测试全绿；HTTP/stdio 双入口实测）                         |
+| M5             | 崩溃取证（M1 范围：终态采集 → 签名 → 文件索引 →`aos_crashes`）                                | ✅ 已完成（新增 35 用例全绿）                                           |
+| M6             | 设计资源唯一性与 i18n 闭环（颜色 tokens / 图片补强 / 文本 i18n）                                   | 🚧 代码完成（M6a/M6b/M6c；复数、iOS stringsdict、位图倍率集均已落地；真机验收记录待补，见 §13.9/§13.34/§13.35） |
+| M7             | 厂商模型目录定时刷新 + 模型下线自动修复 +`mobile_run_task` 预检（8 家国产预设、`llm_models`）    | ✅ 已完成（新增 19 用例）                                               |
+| D1             | 设计 vs 真机确定性差异（Figma/.pen × live/step/自动锚点；分类/严重度；screen_map 定位；真实基准） | ✅ 已完成（票据 01–07；307 用例；见 §13.13–13.19）                       |
+| D2             | 测试闭环深化（用例身份台账、状态复位、套件运行器、失败证据/分类、设备基线、运行报告、生成反馈、CLI 接线）   | ✅ 已完成（票据 01–14；389 用例；见 §13.20–13.33）                       |
+| U1             | 使用统计（客户端调用事件采集/存储/聚合 + `aos_usage` 工具 / `usage` CLI / Web 看板三消费面；ADR-0006）     | ✅ 已完成（票据 01–07；610 用例；见 §13.54）                             |
+| M8             | Jira Cloud 接入（产品级读取/证据回写 + 仓库 issue tracker 迁移 CLI；spec 与票据见 `.scratch/jira-integration/`） | ✅ 代码完成（M8a 读取、M8b 证据回写、M8c CLI/tracker 迁移；沙箱端到端验收待凭证，见 §6.8/§13.55/§13.111） |
+| M9             | iOS 真机后端（Appium+WDA：观测/动作/设计对比 + 执行器；日志/崩溃 M9c 与 .ipa 安装已接线；spec/票据见 `.scratch/ios-real-device/`） | ✅ 代码完成（M9a/M9b 经真机端到端验证；M9c 崩溃走 devicectl、日志走 idevicesyslog 尾采样，真机冒烟待人工执行；见 §13.56） |
+| M9.1           | iOS 执行器理解强化（感知档位/视觉融合/遮挡/no-op/终态验证/历史/失败日志/平台语义；spec 见 `.scratch/ios-understanding-parity/`） | ✅ 已完成（786 用例；见 §13.59） |
+
+---
+
+## 12. 风险与未决问题
+
+| 风险                                    | 影响                         | 缓解                                                                                                       |
+| --------------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| PG 不可用                               | 动态切换/持久化失效          | 项目文件台账（默认持久）；目录不可写才会话内存兜底 + 告警；恢复后下次启动重新导入                                    |
+| 明文密钥入库                            | DB 泄露面                    | 内网/TLS/最小权限/审计；文档提示轮换；后续可加列级加密                                                     |
+| 旧名解析歧义（OPENAI_API_KEY 指向别处） | 导入错误 key                 | 优先级：`AOS_LLM_API_KEY` > `DEEPSEEK_API_KEY` > `OPENAI_API_KEY`；`aos_status` 显示实际采用变量名 |
+| 多项目并发写 PG                         | active 竞态                  | 事务内先清后置 + 应用层互斥；后续可加行级锁                                                                |
+| 容器内 ADB 设备访问                     | 任务不可用                   | 镜像含工具链；USB 透传/网络 ADB；doctor 检查                                                               |
+| 设备生命周期（云真机任务结束即销毁）    | 终态后采集抓不到 crash       | v1 记入`device-offline` 跳过原因并在文档声明；根治=任务中采集（M4/上游）                                 |
+| 崩溃日志含敏感文本                      | 本地泄露面                   | 仅存`.artemis/crashes`（gitignore）+ 工具返回截断；后续可加脱敏                                          |
+| release 混淆栈                          | 签名可去重但难读、可能撞签名 | 签名固定基于原始栈；mapping.txt/retrace 后续增强                                                           |
+
+**未决**：① 是否引入列级加密（当前按需求明文）；② HTTP 已有可选静态令牌（`MOBILE_TESTING_HTTP_TOKEN`）/命名用户令牌（`AOS_HTTP_USERS`，§13.216）/用户文件生命周期（`AOS_HTTP_USERS_FILE` + `user` CLI，§13.217）与 CMS/runner 产物令牌，进程级 `AOS_PANEL_ROLE` 已落地（§13.196）；OAuth/OIDC/会话/PG 用户表仍待定。
+
+---
+
+## 13. 设计资源唯一性与 i18n（M6 已实施）
+
+> 状态：**M6a/M6b/M6c 已实施**（其余栈按需铺开），实施记录见 §13.9。目的：为"Figma 资源提交"（颜色/图片/文本）给出可审计的唯一性保证方案；文本必须遵守 i18n 规范（不得以字面量落代码）。
+>
+> 术语：§13.x 为历史实施记录；当前 UI/文档口径以 §13.184/§13.185 为准，DB/API/代码标识符不变。
+
+### 13.1 当前状态（2026-10-23）
+
+M6a/M6b/M6c 已落地：颜色 tokens（DTCG+modes）、五栈 token 写入、文案 key 冻结与五栈资源写入、复数/格式化、裸色/硬编码/未使用扫描；其余栈、倍率与真机验收按需铺开。下文 13.2–13.8 保留设计决策；实施记录见 §13.9。
+
+### 13.2 颜色（Design Tokens）
+
+- **归一化**：`#RRGGBB` + alpha 独立维度（canonical 采用 CSS 顺序 `#RRGGBBAA`），去重按归一化值；`rgbaToHex` 补 alpha（vendor 补丁需带 `PATCH (aos-mcp)` 标记）。各栈 alpha 顺序转换见 §13.8。
+- **语义命名**：`color.<surface|text|border|brand>.<role>[.state]`，从 Figma Variables/Styles 名 slug 化；同值多语义 → 一个基础值 + 多个语义别名；usageCount 仅作参考，不作命名依据。
+- **主题 / modes 预留**：tokens.json 颜色条目带 `modes`（如 `{ default, dark }`）；M6a 只支持单 mode，但 schema 与命名从第一天预留；映射 Android `values-night`、Flutter `ThemeMode`、RN `useColorScheme`、CSS `[data-theme]`（typography/spacing 不带 modes）。
+- **单一事实源**：生成 `<项目>/.artemis/design/tokens.json`，**canonical 采用 W3C DTCG 草案格式**（`$value`/`$type` + alias 引用，兼容 Style Dictionary v4；锁定版本并记录兼容边界），按栈写入 `colors.xml` / `ColorScheme` / `theme.ts` / CSS variables；写入幂等（同值 unchanged、异值 conflict、仅设计侧存在 missing、仅项目侧存在 unused warn）。
+- **闭环与强制**：gap analysis 增加反向检查；源码裸 hex 扫描（排除 token 文件）→ `hardcodedColors`；近似色（ΔE 阈值）只告警、不自动合并。
+- **范围显式**：纯色 only；**渐变 / 阴影 / P3 广色域 out-of-scope**，报告记 `skipped_nonSolid`（不是无声丢弃）。
+- **确定性输出**：token 排序、JSON 键序、换行固定（见 §13.8），否则幂等判定失效、diff 全是噪音。
+
+### 13.3 图片（已具备，补强）
+
+- 已有：sha256 内容寻址（同图全域唯一）、路径幂等、`duplicate_of`、栈命名规则。
+- 补强：
+  - 脏图层名（`Frame 427`）回退**身份种子**命名 `asset <sha1(源 id) 前 8 位>`（`src/figma/gaps.ts` `applyAssetNaming`/`fallbackAssetName`，并标 `needsRename`）；命名在 plan 阶段完成、与导出内容无关，内容 sha256 只用于写盘判定/去重（多倍率下同一资源恒同名）；现有幂等写入保证不静默覆盖（真实代价是混淆性 `skipped_exists`）。
+  - 导出规格（2026-10-02 已实施，§13.35）：**SVG 优先**；位图按栈倍率集（Android xhdpi(2x)/xxhdpi(3x)、Flutter 1x/2.0x/3.0x、iOS imageset 1x/2x/3x + Contents.json、RN base/@2x/@3x、Web 单 1x），不再统一 @2x；`densities:false` 回退旧行为。
+  - 同内容不同语义名 → 提示合并（不自动改名）。
+
+### 13.4 文本（i18n）
+
+原则：**Figma 原文只进字符串资源，永不落代码字面量**。唯一性拆成两个独立问题：
+
+1. **key 全局唯一 + 冻结映射（保稳定）**：key 由语义路径派生（`<screen|component>.<element>`，复用 `toCase`），**一经分配即冻结**——`nodeId → key` 映射持久化在 `strings.json`，图层改名/移动不改 key；另支持人工 key 锁定（override）。key 不由文案哈希派生（文案与翻译会变）。
+2. **迁移（只兜 node 身份变化）**：仅当 nodeId 变化（删除重建、复制粘贴）时，以"源文案近似 + 结构位置"产出 `suggested_migration` 报告，人工确认后 oldKey→newKey 搬翻译；nodeId 不可靠场景降级为文本相似匹配。
+3. **内容复用**：同默认文案（NFC 归一化后）+ 同上下文 → 复用同一 key；`common.*` 公共词（确定/取消）只给归并建议（人工确认，限制滥用以免丢上下文）；`(文案, 上下文) → key` 索引用于检测"应复用未复用"。
+4. **占位符规范化**：`{name}` / `%s` / `%d` 归一为 ICU，写入时按栈转换（§13.8）；复数/性别/日期等 Figma 推不出的标 `needs_context`；**混合富文本与设计稿实例值（"Welcome, John" 里的 John）同样归 `needs_context` 人工流**。
+5. **source_changed 检测**：`strings.json` 存源文案指纹（`sha256(NFC(sourceText)) + placeholders 集合`）；源文案变化 → `source_changed` 驱动重译；**语义变化 → 建议新 key**，禁止改义复用旧 key。
+6. **各栈资源写入**（幂等语义与图片一致：同 key 同值 unchanged、同 key 异值 conflict、异 key 同值 reuse 建议；转义/复数/locale 码见 §13.8）：Flutter `.arb`；Android `strings.xml`（复数用 `<plurals>`）；RN JSON；iOS `.strings` + `.stringsdict`（复数，2026-10-02 决议；不用 `.xcstrings`）；Web JSON。
+7. **防回归（双向）**：gap 扫描硬编码文案 → `hardcodedStrings`；Figma 删除文案 → `unusedStrings`（仅报告，可能有动态/服务端引用）；`figma_generate_tests` 定位改为"testID/资源 key 优先，原文仅默认 locale 兜底"。
+8. **脏名兜底**：通用图层名（`Text` / `Frame 427`）→ 派生 `nodeId` 短哈希 key（稳定可迁移）+ `needs_rename`，人工重命名后走正常派生；不用递增序号（不稳定）。
+9. **key 平台约束**：Android 资源名限 `[a-z0-9_]` 且有长度上限——超长截断 + 短哈希后缀，写入前校验。
+10. **产物**：`<项目>/.artemis/design/strings.json`（key / sourceText / sourceFingerprint / lang / screen / nodeId / placeholders / lifecycle / action）。
+
+### 13.5 接口与配置（已实施）
+
+- **工具拆分（独立变更工具）**：新增 `figma_import_strings`、`figma_import_tokens`；`figma_export_brief` 保持只读概览职责（概览 vs 变更的 dryRun/审计语义不同）。
+- `StackProfile` 增 `i18n` 段：资源文件路径模板、key 命名风格（canonical + 按栈转换）、source locale、复数策略（`src/projects/stack.ts`）。
+- **两级状态命名（避免混用）**：`action`（written / unchanged / skipped_exists / planned / error）是导入动作结果；`lifecycle`（new / reused / conflict / source_changed / needs_context / needs_rename / resolved）是 key 生命周期。
+- **conflict 闭环**：人工决策写入 `resolutions.json` 持久化，已解决项不再重复报；**overwrite 永不解决 conflict**，只作用于非冲突更新。
+- **enforcement 一等化**：`enforcement: report | warn | block`（项目配置 / 工具参数），存量项目以 report 渐进接入。
+- 落盘：`.artemis/design/strings.json`、`tokens.json`、`resolutions.json`；工具响应给 counts + 逐 key/逐 token 两级状态，便于 IDE agent 审计。
+
+### 13.6 里程碑拆分（M6，已实施）
+
+| 阶段 | 内容 | 验收 |
+|---|---|---|
+| M6a | 颜色：alpha 归一化（含 modes schema 预留）+ 语义命名 + `tokens.json`（DTCG）+ 按栈写入 + 裸色扫描 + 确定性输出 | ✅ 已实施（单测：alpha 顺序/别名/modes/幂等/冲突/排序稳定） |
+| M6b | 文本：**先做项目实际使用的 1–2 个栈**（按检测结果）→ 采集 + key 冻结映射 + `strings.json` + 资源写入 + 复用/冲突/占位符/转义；其余栈按需铺开 | ✅ 已实施（五栈写入；复数与 iOS `stringsdict` 已落地，见 §13.34） |
+| M6c | 强制与联动：硬编码扫描、unusedStrings、test-gen 定位改 key 优先、迁移/冲突闭环报告 | ✅ 已实施（联动范围同 M6b） |
+
+### 13.7 风险与未决
+
+| 风险/未决 | 说明 |
+|---|---|
+| source locale 与 key 语言 | 需产品定：source 以设计稿语言为准；key 建议用英文语义名 |
+| iOS 复数格式 | **已决**（2026-10-02）：`.stringsdict`（兼容全版本；不做 `.xcstrings`），见 §13.34 |
+| 复数/上下文确认 | **已实施**（2026-10-02）：`.artemis/design/string-context.json` 人工确认（`{entries:{key:{plural:{variable?,forms}}}}`），见 §13.34 |
+| 颜色别名语义化 | Variables/Styles 缺失（反向工程场景）时命名质量受限，需人工确认 |
+| 强推 i18n | 存量项目可能不用资源文件：`enforcement: report` 渐进接入，不阻断 |
+| 跨栈 key 风格 | 各栈大小写不同（snake/camel）；`strings.json` 存 canonical，写入时按栈转换 |
+| DTCG 草案演进 | 格式仍会变（色彩结构化提案）；锁定版本 + 兼容 Style Dictionary v4，记录迁移路径 |
+| 范围蔓延 | 渐变/阴影/P3/富文本显式 out-of-scope；报告可见（`skipped_nonSolid` / `needs_context`） |
+
+### 13.8 附录：跨栈转换矩阵与确定性要求（M6 落地细节）
+
+**颜色 alpha 顺序**（canonical = CSS 顺序 `#RRGGBBAA`）：
+
+| 栈 | 写入格式 | alpha 位置 |
+|---|---|---|
+| Android XML | `#AARRGGBB` | 前置 |
+| Flutter | `Color(0xAARRGGBB)` | 前置 |
+| iOS asset catalog | components（R/G/B/A 浮点字符串） | 分量 |
+| RN theme | `#RRGGBBAA` | 后置 |
+| Web CSS vars | `#RRGGBBAA` 或 `rgba()` | 后置 |
+
+**文本占位符**：
+
+| 栈 | 语法 | 备注 |
+|---|---|---|
+| canonical | ICU `{name}` | 中间层唯一格式 |
+| Android | `%1$s` / `%1$d` | 多参数必须位置式；`%` 字面量需 `%%` 或 `formatted="false"` |
+| Flutter arb | `{name}` + `@name` metadata | 复数走 ICU plural |
+| iOS | `%@` / `%1$@` / `%1$d` | 复数需 `.stringsdict` / `.xcstrings` |
+| RN / Web | `{name}`（i18next 等） | 按项目实际库探测 |
+
+**转义**：Android `'`、`&`、`%`；iOS 引号与 `\n`；ARB/JSON 走标准 JSON 转义 + ICU。
+
+**locale 码**：canonical 用 BCP-47；写入时转换 Android `values-zh-rCN` / iOS `zh-Hans` / Flutter-Web `zh`。
+
+**确定性输出（幂等前置条件）**：token/key 按名称排序；JSON 固定键序与缩进；行尾 `\n` 且文件尾单换行；生成内容 sha256 记入 manifest；验收要求"同一输入二次导入全部 unchanged"。
+
+### 13.9 实施记录（M6a/M6b/M6c，Android/Flutter 范围）
+
+> 实施于 2026-09-29；新增 `test/tokens.test.js`、`test/strings.test.js`、`test/import-tokens.test.js`、`test/import-strings.test.js` 及 test-gen 增补，共 31 用例全绿。
+
+**工具与产物**
+- 新增原生工具 `figma_import_tokens`（M6a）与 `figma_import_strings`（M6b）；`figma_export_brief` 保持只读（§13.5 决议）。
+- canonical：`.artemis/design/tokens.json`（DTCG：`$type`/`$value` + `$extensions.aos.{modes,usageCount,samples,needsReview,aliasOf}`，无时间戳、字节级确定）与 `.artemis/design/strings.json`（key/nodeId/sourceText/canonicalText/sourceFingerprint/placeholders/lifecycle）；人工输入：`token-names.json`（值→token 名覆盖）、`resolutions.json`（conflict 闭包，只读）。
+- 颜色：vendor `rgbaToHex` alpha 补丁（NOTICE 第 4 条，paint opacity 乘入颜色 alpha）；**值冻结**命名（同值复用旧名；同值多语义样本 → 基础 token + 别名）；`modes` 预留（当前仅 `default`）；栈写入 Android XML（`#AARRGGBB`）/ Flutter Dart（`0xAARRGGBB`）/ RN TS / Web CSS；目标文件带生成标记，无标记且未 `overwrite` → `skipped_unmanaged`；裸色扫描（`#hex` 与 `0xAARRGGBB`）；`enforcement: report|warn|block`。
+- 文本：Figma TEXT 采集（screen/component 上下文；混合样式与动态值 → `needs_context`；通用图层名 → `nodeId` 短哈希 key + `needs_rename`）；**key 冻结**（nodeId 映射，改名/移动不改 key）；node 身份变化时同 key 直接沿用并在 `migrations` 记录建议，key 冲突加后缀并给 `suggested_migration`；`source_changed`（指纹 `sha256(NFC(sourceText)+placeholders)`）；同文重复用建议；`unusedStrings`；写入 Android `values/aos_strings.xml`（专用生成文件；扫描全部 `values*/xml` 检测用户已有 key，异值报 conflict、同值让位用户）、Flutter `app_<locale>.arb`、RN `src/i18n/<locale>.json`、Web `src/locales/<locale>.json`（三者加性合并，不覆盖已有翻译）与 iOS `<locale>.lproj/Localizable.strings`（引号/换行/反斜杠转义；`%@`/位置式占位符）；`needs_context` 不写入、`needs_rename` 写入（hash key）；**overwrite 不解决 conflict**（需 `resolutions.json`）。
+- M6c 联动：`figma_generate_tests` 读取 strings.json，为命中文本的步骤附加 `i18n: <key>`（原文仅 source locale 兜底）；硬编码文案扫描（Android layout `android:text|hint|contentDescription`、Flutter `Text('…')`）；`unusedStrings` 报告。
+- 图片（§13.3 补强之一）：`applyAssetNaming` 对通用图层名（`Frame 427`）回退为确定性 `asset <figmaId hash8>`（按栈命名，如 `ic_asset_1a2b3c4d.svg`）并标 `needsRename`；位图倍率集（不再统一 @2x）已于 2026-10-02 落地（§13.35）。
+
+**与 §13 设计的差异（记录）**
+1. 文案写入已铺开至 Android/Flutter/RN/Web/iOS 五栈（原 M6b 计划先做 1–2 栈，随后补齐）；token 写入含 Android/Flutter/RN/Web/iOS（iOS 见 §13.53：`Colors.xcassets` colorsets + `AosTokens.swift`）。
+2. 反向工程场景（无 Variables/Styles）下颜色命名由样例图层名推导并 `needsReview` 标注，人工经 `token-names.json` 修正，不静默猜测。
+3. Android 文案写入专用生成文件（不改用户 `strings.xml`），冲突通过扫描既有资源检出。
+4. `needs_rename` 文本仍写入资源（nodeId hash key）保证可用性，重命名后走正常派生。
+5. 复数（`<plurals>` / ICU plural）与 iOS `.stringsdict` 已生成（2026-10-02，见 §13.34）：人工经 `.artemis/design/string-context.json` 确认 forms；iOS 决议用 `.stringsdict`（不做 `.xcstrings`），占位符按 §13.8 矩阵转换。
+6. 图片兜底名以 figmaId 哈希代替内容 sha256（命名发生在导出下载前），确定性与可迁移性一致；位图倍率集（Android xhdpi/xxhdpi、Flutter 2.0x/3.0x、iOS imageset、RN @2x/@3x）已于 2026-10-02 落地（§13.35）。
+
+### 13.10 实施记录（pen.dev 离线接入 P1 + Figma REST 限流加固）
+
+> 实施于 2026-09-29；新增 `test/pen-read.test.js`（4 例）、`test/figma-limits.test.js`（3 例）、`test/pen-export.test.js`（5 例）与 `test/pen-cli.test.js`（7 例），全量 251 用例通过。
+
+- **pen.dev 离线读取层**：`src/pen/read.ts`——JSONC 容忍解析（字符串感知的 `//` 与 `/* */` 剥离，不破坏 URL）、结构校验（id 唯一且不含 `/`、`ref` 可解析、`$变量` 可解析、变量名禁 `:`）、摘要（屏幕/组件/实例/文案样本/变量与主题/图片资产）。对应原生工具 `pen_inspect`（`src/pen/inspect.ts`）；path 缺省由 `src/pen/paths.ts` 统一解析（`.artemis/design` 下最新 `*.pen`），`save:true` 落盘 `.artemis/design/pen/summary.json`；**纯离线，无账号/网络需求**，测试可全离线（假 `.pen` fixture）。
+- **pen 侧导出（tokens/strings/brief）**——产物路径与 Figma 版对齐：`src/pen/tokens.ts`（`pen_import_tokens`）颜色变量 → token：**变量名即 token 名**，主题取值写 `modes`（键 `axis=value`），支持 `$别名` 链（`aliasOf`）；usage/samples 来自节点 `fill`/`stroke` 的 `$引用` 计数与裸 hex 值匹配；与既有 `tokens.json` 按名合并——同值 `unchanged`、异值 `updated`（名称冻结）、消失 `unused`（值冻结语义与 Figma 反向工程版不同，因 pen 变量名本身语义化）；`src/pen/strings.ts`（`pen_import_strings`）由 `collectPenTexts` 采集文本记录（`reusable` 组件自成屏幕上下文、`ref` 不展开），复用 `runStringsImport` 全流水线（冻结 key/冲突闭环/五栈写入/硬编码扫描）；`src/pen/brief.ts`（`pen_export_brief`）复用 `renderBriefMarkdown`/`scaffoldComponentSkeleton`/`writeAssetFile`，颜色/字阶/间距/圆角/阴影聚合自 `.pen`。
+- **共享抽取（Figma 侧行为不变）**：`writeStackTokenFile`（`figma/color.ts`，栈文件幂等写入）、`runStringsImport`/`renderStringsForStack`/`IMPLEMENTED_STRING_STACKS`（`figma/import-strings.ts`，采集后的公共流水线）。
+- **旁路原型**：`scripts/figma-to-pen.mjs`（非服务工具）——Figma REST → `.pen`（version 2.19，官方公开 schema）：frame/group/rect/ellipse/polygon/path/text、填充（颜色/渐变/图片下载）、描边/效果/混合、组件 `reusable` + `ref` 实例、变量（从 Figma 样式生成颜色变量）、页面排布与坐标换算；带响应缓存与 429 退避（尊重 `retry-after`，>15min 不再等待）。
+- **Figma 限流加固**：见 §6.2（bounded Retry-After、按 token 冷却记忆 fail-fast、缓存 TTL 10min 可配）。
+- **pen CLI 写回（headless，P1）**：`src/pen/cli.ts`——`pen` 定位（`AOS_PEN_CLI_PATH` → 托管目录 → PATH，Windows 走 `pen.cmd`；托管与全自动安装见 §13.11）、`pen status` 登录态解析（email/workspace）、`interactive -i/-o` + stdin 命令管道（自动 `save()`/`exit()`）、ANSI 剥离、超时（`AOS_PEN_TIMEOUT_MS` 默认 120s）与失败分类（未安装/未登录/agent 凭证/模型不支持/execute 回滚/超时）；`pen_export`（`--export`，PNG/JPEG/WEBP/PDF；已验证 1.8s/张）；`pen_apply_tokens`（tokens.json → `SetVariables`，modes → `{value, theme}` 数组）与 `pen_apply_strings`（strings.json → `Update(content)`）默认**原位更新**：写临时文件 → 回读 .pen 校验（变量默认值/文本内容）→ 原子替换，校验失败保持原文件不变（测试覆盖回滚路径）。真实 CLI 端到端验证：inspect → import_tokens/strings → apply_tokens/strings → export 全通。
+- **pen agent（headless，P1）**：`src/pen/agent.ts`（`pen_agent`）——prompt → `.pen`，凭证**复用 AOS active LLM 条目**（只进子进程 env，不落日志/响应）。CLI 的 Claude Agent SDK 走 Anthropic 协议，故按 provider 桥接（`anthropicBridgeFor`）：
+  - **DeepSeek**：`api.deepseek.com` → `ANTHROPIC_BASE_URL=/anthropic`，auth=apiKey（`PEN_AGENT_API_KEY`）——**已实测**（含 `--custom` 自动开启，30.6s/14.1s 两次端到端）；
+  - **Kimi/Moonshot、Z.AI/智谱、阿里云百炼 Qwen**：按官方 Claude Code 文档映射端点（`api.moonshot.cn/anthropic`、`api.z.ai/api/anthropic`｜`open.bigmodel.cn/api/anthropic`、`dashscope.aliyuncs.com/apps/anthropic`），auth=authToken（`ANTHROPIC_AUTH_TOKEN`，规避 pen 强制的 `ANTHROPIC_API_KEY`；Node 丢弃 undefined env 值），并注入 `ANTHROPIC_MODEL`/`DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`=该条目 model——**待真实 key 冒烟**（工具会在 warnings 标注"未验证"）；
+  - 其他 provider：仅注入 `PEN_AGENT_API_KEY` 并告警，可用 `anthropicBaseUrl`/`AOS_PEN_ANTHROPIC_BASE_URL` 指定端点。
+  默认原位更新（临时文件→`parsePenText` 结构校验→原子替换），`out` 新建/另存，`dryRun` 返回命令；失败分类覆盖 agent 凭证缺失/模型不支持。CLI agent 模型白名单仅 claude/codex/gemini，pen.dev 应用内连接的其他 provider（OpenRouter/xAI/OpenCode 等）暂不能被 CLI 选择。
+- **未完成（规划）**：pen.dev MCP 代理接入（应用在环 stdio 桥，AOS 侧未代跑 pen MCP，客户端可自行挂载）；pen.dev 应用内连接的其他 agent provider（DeepSeek/Kimi/OpenRouter 等，见应用 Agents 面板）暂无法被 CLI 选择。
+
+### 13.11 实施记录（pen CLI 依赖全自动托管）
+
+> 实施于 2026-09-30；新增 `test/pen-install.test.js`（4 例）并扩充 `test/pen-cli.test.js`（路径解析/透传/Windows `pen.cmd` 断言修复），全量 255 用例通过。
+
+- **决策**：`@pen.dev/cli` 解包约 51MB（sharp / claude·codex agent SDK 等），不纳入服务 npm 依赖；改为**缺失即自动安装到用户级托管目录**，客户端零感知。
+- **解析链**：`AOS_PEN_CLI_PATH` → 托管目录（`AOS_PEN_CLI_DIR`，默认 `~/.aos/pen-cli`）的 `node_modules/.bin/pen(.cmd)` → PATH（`resolvePenCliPath`，`src/pen/cli.ts`）。
+- **自动安装（`ensurePenCli`，`src/pen/install.ts`）**：先解析与探测（`pen version`）；缺失且允许时 `npm install @pen.dev/cli[@AOS_PEN_VERSION] --prefix <托管目录> --no-save`。约束：Node ≥ 22.19（不满足直接拒绝安装并提示）；`AOS_PEN_NO_INSTALL=1` / `AOS_DEPS_NO_ONLINE=1` 关闭自动安装；安装超时 `AOS_PEN_INSTALL_TIMEOUT_MS`（默认 600s）；失败 5 分钟冷却 + 同目录并发去重；`dryRun` 不触发。`pen_export`/`pen_apply_tokens`/`pen_apply_strings`/`pen_agent` 与 doctor 均接入。
+- **`.env` 透传（`penEnvFrom`）**：白名单 `PEN_CLI_KEY` / `PEN_AGENT_API_KEY` / `ANTHROPIC_*` / `AOS_PEN_*`，进程 env 优先、active LLM 派生凭证最后覆盖；此前 `PEN_CLI_KEY` 只读进程 env，现在项目 `.env` 写入即可直达 CLI 子进程（不落日志/响应）。
+- **doctor**：新增 pen CLI 状态检查（未安装/未登录为 WARN 计入 degraded，可选不阻塞；含 Node 版本提示），`doctor --install-deps` 联动预装；`aos_status` 语义不变。
+- **边界**：pen.dev 登录态（`pen login`）或 Developer Key 仍需人工一次性提供，MCP 无法自我注册账号；首次自动安装需网络；HTTP/Docker 部署同样走该机制（容器内 home 可写即可）。
+
+### 13.12 实施记录（MCP 服务名更名 android-testing + 旧键迁移）
+
+> 实施于 2026-09-30；新增 `test/install.test.js` 旧键迁移用例、冲突用例改用新键，全量 256 用例通过。
+
+- **决策**：服务名 `aos` 无语义（客户端 MCP 列表与工具名前缀都只显示它），更名为 **`android-testing`**——当前仅支持 Android 真机测试，不溢出到 iOS/泛移动。ASCII 为硬约束：客户端把服务名净化后作为工具名前缀（opencode：非 `[a-zA-Z0-9_-]` → `_`），且模型 API 的工具名同样只接受该字符集，故中文名不可行。
+- **范围**：`install` 生成的四个客户端配置键（`mcpServers.android-testing` / `servers.android-testing` / `mcp.android-testing`）与 Codex 手动片段同步；工具名本身不变（`mobile_run_task` 等照旧）。
+- **旧键迁移（`removeJsoncPath`，`src/install.ts`）**：install 写入前先移除同一父路径下的历史键 `aos`，避免同一客户端同时加载新旧两个 server；仅移除该历史键，不动其他 server 与注释。
+- **部署备注（客户端零配置发现）**：opencode 以工作区目录为 cwd 启动本地 MCP（`connectLocal` 取 `InstanceState.directory`），因此用户级全局配置挂载不带 `AOS_PROJECT_DIR` 的 `android-testing` 条目即可被所有项目发现（AOS 项目识别链回退 cwd）；`install` 仍为按项目精确挂载（写入 `AOS_PROJECT_DIR`）。
+
+### 13.13 实施记录（design_device_diff v1：设计 vs 真机确定性差异）
+
+> 实施于 2026-10-01，对应 spec `.scratch/design-device-diff/spec.md` 与票据 01；新增 `test/diff-engine.test.js`（10 例）与 `test/design-device-diff.test.js`（7 例），全量 272 用例通过。
+
+- **范围（v1 最小闭环）**：Figma 节点 × 实时截图；差异分类与严重度、步骤截图、`.pen` 设计源、`screen_map` 定位按票据 02–07 后续实施。
+- **差异引擎（纯函数，ADR-0002）**：`src/diff/engine.ts`——PNG/JPEG 解码（pngjs/jpeg-js）、设计宽度缩放 + 顶部对齐、insets 裁剪、`ignoreRegions` 判定前屏蔽、默认降采样最长边 1440px（区域坐标按比例还原）、pixelmatch `diffMask` 提取差异像素（默认阈值 0.1、抗锯齿剔除）、扫描线组件合并（聚类间距 8px）、最小面积 0.5% 与区域数上限 20、确定性排序（严重度→面积→坐标；同输入两次运行引擎输出逐字节一致）；`src/diff/annotate.ts` 生成标注图（严重度色框 + 点阵序号）。
+- **工具**：`design_device_diff`（`src/diff/tool.ts`）——设计渲染经 `src/figma/render.ts`（Figma REST；diff 路径取 1× 以对齐 1× 节点几何，§13.17；`compare_design_and_device` 复用同一抽取但保持 2×，行为不变）；真机截图经既有代理通路 `mobile_get_device_state`；默认落盘 `<项目>/.artemis/design/diffs/<node>-<时间戳>/`（`report.json` schemaVersion=1 / `annotated.png` / `design.png` / `device.png`，device 重编码为真 PNG），响应=摘要 JSON + 标注图 image block + 路径；`dryRun` 不取图不写盘；写盘失败清理半成品；判定不依赖 LLM（ADR-0001）。
+- **测试**：合成 golden（JPEG 有损无差异零误报、注入差异区域与容差、确定性、insets、ignoreRegions、降采样坐标还原、最小面积）+ 工具层（temp project + StubProxy + fetch stub、dryRun、错误与清理）；不依赖设备/网络/Python。
+- **评审修订（Standards/Spec 双轴）**：dryRun 预览改用 URL 解析 nodeId（与落盘目录一致）；聚类改扫描线并去掉组件数上限；`device.png` 重编码为真 PNG；补「写盘失败清理」用例；标注拆模块；测试图像工具收进 `test/helpers.js`。
+- **后续（frontier）**：票据 02（步骤截图）与 03（分类与严重度）解锁；04 依赖 02；05 依赖 01；06 依赖 01/03；07 依赖 03。
+
+### 13.14 实施记录（design_device_diff 票据 02：显式步骤截图）
+
+> 实施于 2026-10-01；新增 `test/diff-step-capture.test.js`（6 例），全量 278 用例通过。
+
+- **设备源抽取**：`src/diff/device-source.ts`——`captureLiveScreenshot`（原 tool 内逻辑外移）与 `captureStepScreenshot`：经 `runtime.proxy.callTool("mobile_inspect_trace", {action:"view_step_screenshots", trace_id, step_number})` 取 `before_screenshot`/`after_screenshot`（`file://` 路径解码后读文件），不直读上游数据库（ADR-0003）。
+- **工具语义**：`device.mode="step"` 需 `traceId` + `stepNumber`（缺失即结构化报错），`image` 选 `post`（默认，行动后）或 `pre`（行动前）；报告 `unit.device={mode,traceId,stepNumber,image,serial?}`；`live` 行为不变（unit 省略 image）。
+- **错误分类**：上游 `{error,message}`（如 Step not found）、返回不可解析、对应截图为空、文件缺失，均返回带提示的结构化错误；校验发生在取图之前。
+- **测试**：post/pre 选择（pre 与设计一致 → 0 区域，post 有改动 → 1 区域，证明选图正确）、缺参校验、上游错误、文件缺失；复用既有 StubProxy/fetch stub seam。
+
+### 13.15 实施记录（design_device_diff 票据 03：差异分类与严重度）
+
+> 实施于 2026-10-01；`test/diff-engine.test.js` 新增 9 例分类/严重度用例，全量 287 用例通过。
+
+- **设计侧几何进引擎**：`diffScreens` 新增 `designNodes`（`{id,name,type,x,y,width,height,text?,parentFill?}`，设计坐标）与 `nodeProximity`/`colorTolerance`/`systemBandRatio` 阈值，输出 `thresholds`（实际生效的 8 项阈值，工具参数已全部暴露）——无节点几何时类别回退 `pixel`。
+- **分类规则（确定性，不依赖真机结构）**：区域按与设计节点的最大交集判定——交集占区域 ≥60% 时：文本节点 → `text`；image/vector/path/ellipse/polygon/star → `asset`；节点被覆盖 ≥60% 时比较设备区域均色与节点 `parentFill`（容差 24）：相同 → `missing`（元素缺失露出父级背景），不同 → `color`；部分覆盖 → `position-size`。无交集：与最近节点距离 ≤ `nodeProximity`(24px) → `position-size`，否则 `extra`。区域携带 `designNode{id,name}`。
+- **严重度**：比例阈值（0.1/0.03/0.005）与类别下限取更严者——`missing`/`extra`/`text` 至少 `major`；无设计节点且落在上下边缘条带（默认高度的 5%）的区域标 `suspected:"system-area"` 并压为 `info`。
+- **Figma 几何**：`src/figma/render.ts` 新增 `fetchFigmaDesignNodes`（REST `/nodes`，绝对包围盒归一化到目标节点原点，SOLID 填充 hex、最近祖先填充作 `parentFill`，上限 500 节点）；获取失败仅告警并把分类降级为 `pixel`，不阻断对比。
+- **报告/响应**：新增 `designNodes` 数、`thresholds`、`warnings`，区域含 `category`/`designNode`。
+- **测试**：引擎合成用例覆盖 missing（父级填充匹配）、color、text、asset（含 `BOOLEAN_OPERATION`）、position-size（位移双条带）、extra、system-area、blocker/minor 严重度与阈值记录；工具层默认 Figma 节点树端到端断言 `missing` + `designNode.id`。
+- **评审修订（Standards/Spec 双轴）**：`asset` 覆盖补 `line`/`boolean_operation`；近邻命中的 `position-size` 保留节点引用（避免贴边误降级 system-area）；半透明 `parentFill`（alpha<250）不做 missing 判定；`systemBandRatio` 进工具参数；阈值项数与文档对齐；`FigmaDesignNode` 复用引擎 `DesignNode` 类型、颜色转换复用 vendor `rgbaToHex`、响应共享字段去重。
+
+### 13.16 实施记录（design_device_diff 票据 04：失败证据自动锚点）
+
+> 实施于 2026-10-01；新增 `test/diff-auto-anchor.test.js`（4 例），全量 291 用例通过。
+
+- **锚点解析（best-effort，ADR-0003）**：`device.mode=step` 仅给 `traceId` 时，`resolveTraceStepAnchor` 先经上游 `mobile_manage_task(action:"status")` 取 `test_summary.failed_items`（evidence 优先、item_text 兜底，截断 160 字符），再经 `mobile_inspect_trace(action:"search")` 检索并按 `[Step N ...]` 解析候选（去重、按检索排序取首个）；不直读 SQLite/ledger。
+- **报告与响应**：`unit.device` 增 `anchor`（`explicit`/`search`）；响应 `anchor{source,query,candidates[≤5],ambiguous}`；多命中取首个并在 `warnings` 提示可用显式 `stepNumber`。
+- **错误路径**：无失败证据（任务通过或 Flash 无 `run_outcome`）、检索零命中、上游错误均结构化报错并附「显式传 stepNumber」提示；设备采集先于 Figma 渲染，锚点失败不产生设计侧网络请求。
+- **测试**：命中（含调用顺序 manage_task→search→view_step_screenshots、query/max_results、anchor 字段）、唯一命中不标歧义、无证据（仅一次上游调用）、零命中（不取图）。
+
+### 13.17 实施记录（design_device_diff 票据 05：`.pen` 设计源）
+
+> 实施于 2026-10-01；新增 `test/diff-pen-source.test.js`（5 例），全量 296 用例通过。
+
+- **节点几何（离线）**：`penDesignNodes`（`src/diff/pen-source.ts`）将 `.pen` 解析为引擎 `DesignNode[]`：父级坐标累加得到绝对坐标；`fill` 支持 hex 与 `$变量`（经 `penVariableDefaultHex` 解析）、最近祖先填充作 `parentFill`；`layout` 非 none 的容器下、无 `layoutPosition:absolute` 的子节点无确定几何时跳过（避免误分类）；无宽高的中间容器只收敛自身、不剪掉子树（子节点用其 `x/y` 继续累加）。`depth` 记录层级，报告输出 `designScreens`（顶层节点名称/几何，≤10）。
+- **渲染复用 CLI 通路**：`renderPenDesign` 与 `pen_export` 同构——`penEnvFrom`（项目 .env 白名单 + 进程 env）→ `ensurePenCli`（缺 CLI 自动托管安装；测试可注入 `deps.ensure`）→ `runPenExport`（PNG、**scale 1**：与 `.pen` 1× 节点几何对齐；失败分类与「未产出即清理」沿用 pen 工具语义），默认输出 `.artemis/design/pen/<name>.png`，`design.renderOut` 可覆盖；产物复用为 `design.png`。Figma 路径的 diff 渲染同步改为 1×（节点几何同为 1×）。
+- **错误提示**：缺 `.pen` 文件返回 `PEN_HINT`（获取文件指引），CLI 未装/未登录/超时返回 `PEN_CLI_HINT`。
+- **工具接口**：`design:{source?:"figma"|"pen", figmaUrl?, penPath?, nodeId?, renderOut?}`（省略 source 时按 figmaUrl/penPath 推断；`source:"pen"` 时 `penPath` 缺省取最新）；`timeoutMs` 透传渲染；报告 `unit.design={source:"pen",name}`；dryRun 仅解析路径不调用 CLI。
+- **分类改进**：dominant 节点选择在交集面积相同时取更小节点（容器不再压过子元素；对 Figma 路径同样生效）。
+- **测试**：离线 fixture `.pen`（嵌套坐标/`$变量`/flex 子节点）+ 假 pen exec/ensure（写 PNG、失败/未登录分支）+ StubProxy 设备截图，覆盖分类 `missing`、`--export-scale 1`、产物字节一致、`designScreens`、默认最新文件、参数校验与 dryRun。评审修订另含：设备/锚点采集先于设计渲染（失败不触发渲染与 CLI 安装），移除超出票据的 `timeoutMs` 入参。
+
+### 13.18 实施记录（design_device_diff 票据 06：screen_map 定位）
+
+> 实施于 2026-10-01；新增 `test/diff-screen-map.test.js`（5 例），全量 301 用例通过。
+
+- **持久映射**：`src/diff/screen-map.ts`——`screen-map.json`（version=1；条目 `{design:{screen?,nodeId?,component?}, code:{route?,component?,file?}, source?, confidence?}`：屏幕或组件至少一项），确定性序列化（按 design key 排序、固定键序），`save` 幂等（同内容 `unchanged`）、`merge:true` 按 design key 增量合并；`list` 缺文件返回空表与提示；非法条目逐条报索引（ADR-0004）。
+- **候选生成**：`propose` 读 `build-brief.json`（screens/components）+ 栈约定（`formatComponentFileName`/`toCase`/组件目录），屏幕→route/组件/文件候选（confidence 0.6）、组件→文件候选（0.5）；泛化名称进 `unmatched` 不猜测；缺 build-brief 时结构化报错并引导 `figma_export_brief`/`pen_export_brief`。
+- **报告定位**：`design_device_diff` 为每个差异区域写 `localized`——按 `design.nodeId` → `design.component` → 所在屏幕（`design.screen`）顺序命中为 `mapped`（附 `mapEntry`）；否则用 build-brief 候选（按所在屏幕/组件过滤，≤3）标 `unmapped`；无候选标 `no-candidates` 并带 `reason`（区分「无 build-brief」与「条目未覆盖」）。候选在首个未映射区域出现时才惰性生成（已全映射不读 build-brief）；`screen-map.json` 损坏时 `list` 标记 `corrupt` 并提示，差异流程只读不改写。
+- **几何来源补充**：Figma `fetchFigmaDesignNodes` 现输出目标节点自身为 depth=0 屏幕节点（子节点 depth+1），与 `.pen` 顶层屏幕语义一致；`designScreens` 取 depth=0。
+- **测试**：propose（候选/confidence/unmatched/缺 brief 报错）、save/list（幂等/merge/非法/空）、diff 集成（mapped/unmapped/no-candidates 三态）。
+
+### 13.19 实施记录（design_device_diff 票据 07：真实基准 fixture 与验收指标）
+
+> 实施于 2026-10-01；新增 `test/diff-benchmark.test.js`（2 例）与 `test/fixtures/diff-bench/`（real Pixel 采集 2026-09-28 的 `device.jpg` 1080×2400、由其裁剪降采样再注入两处已知差异的 `design.png` 390×789、`ground-truth.json` 记录来源/insets/期望差异），全量 303 用例通过。
+
+- **基准指标**：区域召回（差异中心落入期望 bbox±16px）与类别命中（`missing`/`color`）必须均为 1，且不得出现额外区域（噪声）；失败输出「实际区域 + 期望用例」明细。另含三个真实图场景：设备 JPEG 低质量重编码（q60）零误报（抗噪/阈值校准证据）、`ignoreRegions` 在真实图上屏蔽且 `ignoredRegions` 回显、不裁剪 insets 时系统条带被标 `suspected:system-area` 且降为 `info`。
+- **schema 快照**：引擎结果顶层键、`thresholds`（8 项）、区域键（`bbox/category/designNode/pixelDiffRatio/severity`）与 `alignment/summary` 键集合被快照锁定；工具层 `report.json` 顶层键顺序在 `test/design-device-diff.test.js` 中按原顺序断言。fixture 可由 `scripts/make-diff-benchmark.mjs <device.jpg>` 复现（来源、insets、重绘颜色/尺寸记录在 `ground-truth.json`）。
+- **顺带修复（引擎，行为变更）**：`maxEdge` 原先把设备图（1080×2400）计入最长边，导致设计先被降采样、设备再经「factor 缩放 + 对齐缩放」两次重采样，小块差异被最小面积误滤；现改为**只按设计图最长边**决定是否降采样（`downsampledTo` 仅在设计图超限时出现），设备图直接一次缩放到设计宽度。`alignment.scale` 语义为**设备像素 → 工作（设计）坐标系的比例**（设计降采样时含 factor；旧实现恒为 1× 比例）；区域 `bbox` 仍按 factor 还原到原设计坐标。回归测试锁定：大设备 + 小差异不被误滤、`downsampledTo` 不因设备超长出现、`scale` 含设计降采样因子。
+- **离线约束**：测试只读仓库内 fixture 解码比对，不依赖设备/网络/Python。
+
+### 13.20 实施记录（测试闭环票据 04：用例间状态复位）
+
+> 实施于 2026-10-01；新增 `src/device/adb.ts`（从崩溃采集抽出 adb 解析/执行/失败分类，`src/crash/collect.ts` 导出面不变）与 `src/device/reset.ts`（`resetApp`）；`test/reset.test.js` 9 例；全量 330 例通过。
+
+- **上游语义（代码 + 真机核实）**：`_handle_initial_app_launch` 在锁定应用已在前台时直接返回成功、不重新启动（`artemis/artemis/utils/app_launch_utils.py:369-378`）；`monkey -c LAUNCHER 1` 仅在非前台或重试时调用（`artemis/artemis/drivers/android/adb_driver.py:385-392`），`am force-stop` 仅在启动重试失败时出现（`app_launch_utils.py:299-305`）。emulator-5554 实测：深层页下单独 monkey 可回主 Activity，`force-stop + monkey` 产生全新 task——确认残留状态会被带入下一用例，复位必须显式做。
+- **复位能力**：`resetApp({packageName, serial?})` 顺序执行 `adb [-s serial] shell am force-stop <pkg>` 与 `adb [-s serial] shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1`，包名先按 Android applicationId 规则校验（防注入）；返回 `{ok, reason?, message?, serial, adb:{path,source}, commands}`；失败分类 `invalid-package / adb-not-found / device-offline / timeout / force-stop-failed / launch-failed`，环境类失败降级不抛错（由运行器决定继续或停止）；`AOS_RESET_TIMEOUT_MS` 默认 15s（1s–120s），adb 路径沿用 `AOS_ADB_PATH` / SDK / PATH 解析链。
+- **待消费**：票据 08（最小套件运行器）在每例前调用；云真机/无 adb 部署按 `reason` 降级并在运行报告标注。
+
+### 13.21 实施记录（测试闭环票据 05：用例身份与运行台账）
+
+> 实施于 2026-10-01；`tests.json` 用例新增稳定 `id`（`generateTestCases` 按 name/screens/steps 的 sha256 前 12 位，同输入稳定）；`task_stats` 增 `case_id`（存量库 init 时 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 兼容）；新增 `src/figma/case-index.ts`（精确 `taskDesc` → caseId 查询）；`Runtime.recordTaskResult` 统一提交记录（成功/即时报错/无 trace）。测试 `test/case-ledger.test.js` 4 例 + `test/db.test.js` 台账往返；全量 335 例通过。
+
+- **身份**：生成器冻结 `case-<sha256(name,screens,steps)[0:12]>`；id 不进入 taskDesc（避免污染 LLM 上下文）。
+- **台账语义修复**：即时报错也记录且终态 `failed`；无有效 trace 用 `local-<uuid>` 占位并直接终态（不再有永不收敛的 `unknown` pending）；`profile` 与 `model` 分离（不再同值）；终态行写 `finished_at`。
+- **工具面**：`aos_tasks` 返回 `case_id`，可按用例关联 trace 与后续证据（票据 09/11/12 消费）。
+
+### 13.22 实施记录（测试闭环票据 06：任务结果 codec）
+
+> 实施于 2026-10-01；新增 `src/artemis/task-result.ts`；测试 `test/task-result.test.js` 6 例；全量 341 例通过。
+
+- **一个 module 拥有 MCP 字符串边界**：`resultText`（文本拼接）、`parseJsonObject`（对象 JSON，非法返回 null）、`resultPayload`（structuredContent 优先 → 文本 JSON）、`traceIdOf`（structured/文本字段 + 文本正则回退）、`taskStatusOf`（类型化 `TaskStatus`：trace/status/device/error/message/testSummary.failedItems/notes/stderr/stdout/时间窗秒→毫秒）、`taskStatusFromFile`（status.json 同 codec）。
+- **删除的重复实现**：`Runtime.extractJson`、`server.extractTraceId`、`diff/device-source.parsePayload`+`textContent`、`composite` 内联 `JSON.parse`；`crash/scanner.readTraceStatusInfo` 改由 `taskStatusFromFile` 驱动（状态文件与上游状态响应语义一致）。
+- **约束**：mobile 工具 schema 逐字节透传不变（`test/proxy.test.js` 锁定）；失败步骤自动锚点行为与报错语义保持（`test/diff-auto-anchor.test.js` 锁定）；`test_summary/error` 首次可结构化消费（票据 09/10 使用）。
+
+### 13.23 实施记录（测试闭环票据 07：可执行性预检与覆盖视图）
+
+> 实施于 2026-10-01；新增 `src/figma/preflight.ts`、`linearizeFlowsWithStats`；测试 `test/test-preflight.test.js` 3 例。
+
+- **生成统计不再沉默**：`linearizeFlowsWithStats` 输出 `{maxFlows,maxDepth,entryFallback,exploredPaths,keptPaths,droppedPaths,depthSplits,truncated}`；`figma_generate_tests` 经 `onStats` 回调把 `generation` 写入响应与 tests.json（入口回退、截断、丢弃路径数可见）。
+- **静态预检**（`preflightGeneratedTests(configDirAbs)`，纯读）：弱用例（步骤缺「应」类断言）逐条给出步骤索引与原因；覆盖视图列出未覆盖屏幕与未覆盖边（边以用例 `screens` 的连续对判定）；透传 `generation`；缺 flows.json 时覆盖退化为已生成屏幕；tests.json 缺失/损坏返回 null。
+
+### 13.24 实施记录（测试闭环票据 08：最小套件运行器）
+
+> 实施于 2026-10-01；新增 `src/figma/suite-runner.ts` 与 `Runtime.traceStatus`；测试 `test/suite-runner.test.js` 6 例。
+
+- **运行循环**（`runGeneratedTests(runtime, options)`）：读 tests.json（可 `maxCases`）→ 逐例：可注入复位（默认 04 的 `resetApp`，降级不阻塞）→ 提交 `mobile_run_task`（透传 model/device_serial/locked_app_package，不改 schema）→ 轮询终态（`Runtime.traceStatus`：status.json 优先、代理回退；超时/间隔可配）→ `syncTaskStatuses()` 写回台账并触发崩溃采集。
+- **报告**：逐例 `{caseId,name,status(passed/failed/timeout/submit-error),traceId,error,testSummary,evidence{notesDir,stderrLog,stdoutLog},reset}` + `passed/failed/skipped/total` + `preflight` 摘要；`stopOnFailure` 遇错即停；仅当 0 例提交成功时 `ok:false` 并给出明确 error（无设备/无 adb 场景）。
+- **入口**：当前为模块级入口；MCP 工具 vs CLI 脚本（开放问题 3）待决策后接线（已由 §13.33 决议：CLI）。
+
+### 13.25 实施记录（测试闭环票据 09：失败证据包）
+
+> 实施于 2026-10-01；新增 `src/artemis/evidence.ts` 与 `Runtime.traceDir`；测试 `test/evidence.test.js` 5 例；全量 355 例通过。
+
+- **一次调用聚合**（`traceEvidence(runtime, {traceId, fullTrace?, save?, outputDir?, design?, diffRunner?})`）：任务状态 + 全部 `failed_items` + 崩溃签名（`crashStore` 按 `traceIds` 过滤）+ 锚定失败步骤与截图 + 可选设计差异引用（`design_device_diff` step 模式，`diffRunner` 可注入）。产物默认落 `<项目>/.artemis/design/evidence/<traceId>/`：复制锚定步骤 pre/post（`fullTrace` 复制全部锚点候选步骤，上限 10），`manifest.json` 记录其余 stderr/stdout/notes/status/crash 记录/差异报告为路径引用（不复制）。
+- **降级而非报错**：`trace-status-missing / no-run-outcome（Flash）/ anchor-skipped / anchor-unavailable / design-diff-failed / screenshot-unavailable / evidence-write-failed`；无任何证据时不建目录（`dir:null`、`ok:false`）。
+- **顺带修复（行为变更）**：`resolveTraceStepAnchor` 原先把任务态的 `error` 字段误判为工具调用错误（失败任务带 error 时自动锚点必然失败），现仅在无 `status` 字段时按工具错误处理；由证据用例与既有 anchor 用例共同锁定。
+- **入口**：模块级；MCP 工具 vs CLI 同票据 08 待开放问题 3（已由 §13.33 决议：CLI）。
+
+### 13.26 实施记录（测试闭环票据 10：前置数据假设与失败域分类）
+
+> 实施于 2026-10-02；新增 `src/figma/preconditions.ts`、`src/artemis/failure-taxonomy.ts`；测试 `test/failure-taxonomy.test.js` 7 例 + testgen/suite-runner 增补；全量 370 例通过。
+
+- **生成物显式前置假设**：`deriveCasePreconditions(screens,{entryFallback?})` 确定性产出：应用已安装 → 开始停留入口页（入口推断时附「入口屏未声明」）→ 屏幕名启发式（登录/账号 → 可登录；profile/我的 → 已登录；列表/list/消息/订单/商品/购物车 → 数据非空）；去重保序。每条用例 `preconditions` 进入 `tests.json`、`tests.md`（`- 前置假设：…`）、`tests.xlsx`（默认表新增「前置假设」列；模版占位符新增 `{{case.preconditions}}`）与 taskDesc 行（`前置假设：…；若数据不满足，请停止并报告数据不满足`）；case id 不变（仍哈希 name/screens/steps）。
+- **失败域确定性分类**（`classifyFailure`，纯函数）：优先级 应用缺陷（与 trace 关联的崩溃签名，high）→ 环境（复位 `adb-not-found/device-offline/timeout` 或失败文案含 adb/device/no devices/设备离线 等，high）→ 数据环境（失败文案含登录/账号/数据/列表/网络 等信号；命中前置假设 high，否则 medium）→ 设计推断（纯探索脚本失败 high；断言有凭据全命中且探索未全达成 medium，见 §13.66）→ 行为或设计差异（有 `failed_items` 且无其它证据，high）→ 用例缺陷（轮询超时 / 提交被拒且文案含参数/格式/task_desc，medium）→ unclassified low 并给出原因；规则固定顺序、固定样本可回归（同输入输出 deepEqual）。
+- **ADR-0001 边界**：分类是解释层，输入不含设计差异结果、输出不参与也不改写 diff 判定；`design_device_diff` 契约未动。
+- **运行器接入**：`SuiteCaseResult.failure`（passed 为 null）；失败终态先 `flushCrashScans()` 再按 trace 过滤 `crashStore` 取崩溃签名，复位降级/提交失败/超时分别入参分类；运行报告即含逐例分类与判定依据（票据 12 导出消费）。
+
+### 13.27 实施记录（测试闭环票据 11：真机基线视觉回归）
+
+> 实施于 2026-10-02；新增 `src/diff/baseline.ts`；测试 `test/baseline.test.js` 6 例；全量 370 例通过。
+
+- **基线与分桶**：`saveBaseline` 从任务步骤截图（`captureStepScreenshot`，pro 步骤证据）复制 `image.png` 并写 `meta.json`（schemaVersion/serial/caseId/stepNumber/image/width/height/dpi/ignoreRegions/traceId/capturedAt）；目录 `<项目>/.artemis/design/baselines/<serial>/<caseId>/step-<N>-<pre|post>/`（段名净化），显式 serial 优先、回退截图设备、再回退 `default`。
+- **设备对设备比较**：`compareBaseline` 用同一 `diffScreens` 引擎（`maxEdge` 4096，基线/当前同分辨率不缩放；`ignoreRegions` 取基线元数据与本次入参并集）；分辨率不同 → `unmapped:resolution-mismatch`，DPI 双方均已知且不同 → `unmapped:dpi-mismatch`（不比对）；无基线 → `no-baseline` 而非报错。
+- **三类判定**：`last-diff.json` 保存上次区域；本次区域按类别 + 中心距 ≤24px 配对 → `new`/`persisting`，未被配对的旧区域 → `fixed`；`summary {regions,new,persisting,fixed}`；同输入判定确定性由 新→持续→修复 生命周期用例锁定。
+- **边界**：与设计 vs 真机 `design_device_diff` 并存、互不替代（复用 `diffScreens` 但不改其契约，diff 用例全量回归）；模块级入口，票据 13 消费（已由 §13.33 接线为 CLI）。
+
+### 13.28 实施记录（测试闭环票据 12：运行报告导出）
+
+> 实施于 2026-10-02；新增 `src/figma/run-report.ts`；测试 `test/run-report.test.js` 3 例；全量 373 例通过。
+
+- **从台账生成**（`buildRunReport(runtime, {limit?,caseIds?,outputDir?,save?,stamp?})`）：读 `store.listTasks`（按 submittedAt 升序、traceId 次序稳定；`caseIds` 过滤），逐行映射 `outcome`（completed→passed / submitted→pending / 其余→failed）；`durationMs` 优先状态文件 `start_time/end_time`，回退台账 submittedAt/finishedAt；证据取 `traceStatus` 的 notes/stderr/stdout + 恒有 `traceDir`；用例名与前置假设按 caseId（回退 taskDesc 精确匹配）关联 `tests.json`；失败行复用票据 10 的 `classifyFailure`（台账无复位/提交错误，依据状态 + trace 崩溃 + 前置假设）。
+- **产物**：xlsx 结果页 `<项目>/.artemis/design/reports/run-<stamp>.xlsx`（#/用例/用例ID/结果/台账状态/耗时(秒)/traceId/失败域/置信度/判定依据/证据路径，冻结表头）与 JUnit XML `run-<stamp>.xml`（`testsuites/testsuite aos-run` 计数与总耗时、`testcase` name/classname/time、failed → `failure type=失败域 message=判定依据`、pending → `skipped`；XML 转义）；不触碰既有 `tests.xlsx` 生成契约与模版语义（testgen 用例全量回归）；`save:false` 不写盘。
+
+### 13.29 实施记录（测试闭环票据 13：执行反馈回生成器）
+
+> 实施于 2026-10-02；新增 `src/figma/generation-feedback.ts`（`RunReportCase` 增 `failedItems` 透出 failed_items）；测试 `test/generation-feedback.test.js` 3 例；全量 376 例通过。
+
+- **只读聚合**（`buildGenerationFeedback(runtime, {limit?,minFailures?})`，minFailures 默认 2）：复用 `buildRunReport(save:false)` 的台账映射 + 票据 10 分类，叠加 `preflightGeneratedTests` 的弱断言与设备基线扫描（`baselines/<serial>/<caseId>/step-*/last-diff.json` 有区域即未消除热点）。输出 `issues`：`screens`（失败用例涉及屏幕计数）、`assertions`（failed_items 的 itemText/evidence 归并）、`data`（分类证据里的 `precondition:*`）、`weakAssertions`（无「应」步骤）、`visualHotspots`（区域数/类别/目录）。
+- **建议与可追踪**：`suggestions[]` 四种 kind——`prompt`（屏幕反复失败加定位/等待/断言）、`data`（前置数据假设总不满足）、`hint`（断言反复失败或基线差异未消除）、`assertion`（弱步骤补断言）；每条带 `targets`（caseId/screen/stepIndex/precondition）与 `caseIds`/`traceIds` 历史回溯；排序计数降序 + 码点次序，同输入确定性。
+- **默认不改写**：不写任何文件、不修改生成物；是否应用由调用方决定（数据/断言标注、提示词调整）。
+
+### 13.30 实施记录（测试闭环票据 01：生成器拆分）
+
+> 实施于 2026-10-02；新增 `src/figma/test-xlsx.ts` 与 `src/figma/gaps.ts`；全量 376 例通过，产物与工具行为不变。
+
+- **xlsx 引擎独立**：`WorkbookMeta`、默认表、模版占位符/样式/行复制、错误语义全部移至 `test-xlsx.ts`（`renderTestsWorkbook` 原样搬移）；`test-gen.ts` 仅保留生成/线性化/markdown 并引用引擎；测试改从 `dist/figma/test-xlsx.js` 导入引擎，断言不变。
+- **缺口分析独立**：`flows.ts` 的项目扫描/命名/缺口工具段（`globToRegExp`、`walkProjectFiles`、`readTokenContents`、`normalizeAssetName`、`isGenericLayerName`、`GapInput/GapResult`、`analyzeGapData`、`applyAssetNaming`、`figmaGapAnalysis`）整体移至 `gaps.ts`；`color.ts`/`strings.ts`/`import.ts`/`server.ts` 改从新 module 导入；`flows.ts` 只留流程图抽取（`buildFlowGraph`/`figmaExtractFlows`）。
+
+### 13.31 实施记录（测试闭环票据 02：契约补全与 Runtime 专项测试）
+
+> 实施于 2026-10-02；新增 `test/runtime.test.js`（6 例）、假子进程工具定义抽到 `test/fixtures/fake-artemis-tools.mjs`；全量 382 例通过。
+
+- **5/5 透传契约**：`test/proxy.test.js` 从假子进程共享的 `UPSTREAM_TOOLS` 逐工具 deepEqual `{name,description,inputSchema}`（含 required/additionalProperties），不再只验 `mobile_diagnose` 一个。
+- **Runtime 专项**：`test/runtime.test.js` 直接断言四条清扫分支——无记录 no-op、死 pid 清 state、owner 存活不动、cmdline 不匹配不杀、`bash exec -a "python -m mcp_server"` 真进程孤儿被终止并回报（跳过 win32）；另断言默认装配（store/state/crashStore/traceDir/惰性代理）与 `dispose`。删除 `sweepStaleChild` 实现或任一分支都会使其变红；不依赖真实 PG/设备/外网。
+
+### 13.32 实施记录（测试闭环票据 03：测试反馈提速）
+
+> 实施于 2026-10-02；全量 382 例通过，语义/断言不变。
+
+- **夹具去重**：`helpers.makeTempDir(prefix)` 收敛全仓 25+ 处 `fs.mkdtempSync(path.join(os.tmpdir(), …))`；`test/fixtures/logcat.mjs`（`logcatTime`/`logcatLine`）收敛 crash-parse/crash-collect/crash-tools 三份时间戳格式化；`test/fixtures/figma-flow-doc.mjs`（`syntheticFlowDocument({extraEntry})`）收敛 figma-flows/figma-testgen 两份合成文档（保留 transition 与入口变体，断言全绿）。
+- **聚焦运行**：`npm run test:file -- <files>`（先构建再跑，不会跑旧 dist）、`npm run test:name -- "<pattern>"`（`sh -c` 包装保证 pattern 位于文件参数之前；恒带 `test/*.test.js`，避免 Node 无参发现扫入 submodule）。
+- **覆盖率**：`npm run test:coverage` = 先构建 + `node --test --experimental-test-coverage test/*.test.js`（Node 内置，无第三方依赖）；当前 lines 91.65%。
+
+### 13.33 实施记录（开放问题 3 决议：测试闭环 CLI 接线）
+
+> 实施于 2026-10-02；新增 `src/suite-command.ts` 与 `mobile-testing-mcp suite` 子命令；测试 `test/suite-command.test.js` 7 例；全量 389 例通过。
+
+- **决议**：测试闭环（票据 08/09/11/12/13 的模块）接线为 **CLI 子命令**，不新增 MCP 工具、不动 mobile 透传契约。理由：suite 轮询单次可达数分钟，MCP 同步调用易触发客户端超时；CLI 天然支持长任务、退出码与 CI 门禁，且 `suite run` 失败仍可回到 agent 用 `mobile_run_task`/`suite evidence` 细查。
+- **命令面**（`node dist/cli.js suite …`，公共 `--project <dir>`/`--json`）：`run`（tests.json，`--tests/--max/--stop-on-failure/--device/--app/--model/--poll-timeout`，输出预检摘要 + 逐例 PASS/FAIL + 失败域 + 证据命令）、`evidence <traceId>`（`--full-trace/--out/--no-save/--design-figma|--design-pen/--node`）、`baseline save|compare`（`--case/--step/--trace/--image/--serial/--dpi/--ignore`；compare 支持 `--fail-on new|persisting|any`）、`report`（`--limit/--case/--out/--stamp/--no-save/--no-sync`，默认先同步台账再导出）、`feedback`（`--limit/--min-failures`）。
+- **退出码**：0 成功/全通过；1 用例失败或证据缺失；2 参数/执行错误、tests.json 不可读或 `--fail-on` 命中回归。`help` 子命令输出完整用法。
+- **装配**：默认 `loadProject({env: AOS_PROJECT_DIR 覆盖}) → createProjectStore（PG 失败降级内存）→ Runtime.initialize()`，结束 `disposeSync` 子进程并关闭 store；`buildRuntime` 可注入，测试用假 proxy/内存 store 跑 7 条路径（run 全通过/失败分类/缺文件、evidence 聚合与离线降级、baseline 生命周期与门禁、report/feedback 产物与建议、help/未知子命令）。
+- **历史入口指针**：§13.24/§13.25/§13.27 的"模块级入口"已由本节接线。
+
+### 13.34 实施记录（M6 收尾：复数与 iOS stringsdict）
+
+> 实施于 2026-10-02；`src/figma/strings.ts` + `src/figma/import-strings.ts`；测试 `test/strings-plural.test.js` 5 例；全量 394 例通过。决议：iOS 用 `.stringsdict`（兼容全版本，不做 `.xcstrings`）。
+
+- **人工确认流**：`.artemis/design/string-context.json`（`{version,entries:{"<canonical key>":{plural:{variable?="count",forms:{zero|one|two|few|many|other}}}}}`，`other` 必填、forms 仅允许 `{variable}` 占位符）。`loadStringContext` 逐条校验：缺 `other`/非法 quantity/多余占位符/格式错误 → 记入 `stringContext.errors` 并忽略该条；未命中任何 key → `stringContext.unmatched`；报告 `stringContext.pluralKeys`、`counts.pluralized`，`counts.needsContext` 只统计未确认项；hint 给出文件契约。`needs_context` 条目被确认后即写入（`isWritable`），无需改 lifecycle。
+- **各栈写入**：Android 同文件 `<plurals name><item quantity>`（quantity 按 zero/one/two/few/many/other 固定序，`{count}`→`%1$d`，字面 `%`→`%%`、`'`/XML 转义）；Flutter arb/RN/Web JSON 写 ICU `{count, plural, …}`，Flutter `@key.placeholders.count.type="int"`；iOS `.strings` 跳过复数 key，另生成同目录 `Localizable.stringsdict`（`NSStringLocalizedFormatKey=%#@count@`、`NSStringFormatSpecTypeKey=NSStringPluralRuleType`、`NSStringFormatValueTypeKey=d`、`{count}`→`%d`，同 marker；无复数时不建文件）。
+- **幂等与冲突**：复用各栈既有语义（生成文件二次导入 `unchanged`；用户已有同名普通 string/JSON key → 维持 conflict 流程，复数转换不静默覆盖）。
+- **pen 侧自动复用**：`pen_import_strings` 走同一 `runStringsImport`，无需改动。
+
+### 13.35 实施记录（M6 收尾：位图倍率集）
+
+> 实施于 2026-10-02；`src/figma/import.ts` + `figma_import_assets` schema；测试 `test/import-assets.test.js` +3 例（含 Android/iOS 集成）；全量 397 例通过。决议：全栈倍率默认开启。
+
+- **plan 展开**：`planImports(..., {format:"png", densities:true})` 按栈把 1 个资源展开为倍率变体（`scale`/`variant`/`role`）：Android 仅当目录匹配 `…/drawable|mipmap`（含既有 dpi 后缀归一）→ `drawable-xhdpi`(2x)/`drawable-xxhdpi`(3x)；Flutter 基目录 1x + `2.0x`/`3.0x`；iOS `<name>.imageset/` 1x/2x/3x + 生成 `Contents.json`（`role:"contents"`）；RN 同名 `@2x`/`@3x`；Web 单 1x。文件名先剥离既有 `@2x/@3x` 再派生，SVG 始终单文件；`densities:false` 或未知栈回退单文件 @2x（旧行为，兼容）。
+- **导出与写入**：按 plan 中的 scale 集合去重调用 Figma `/images`（每 scale 一次），PNG 每倍率独立渲染（内容不同 → sha256 各自校验）；Contents.json 由 `renderIosContents` 生成并 `writeAssetFile(overwrite)`（幂等）；`dryRun` 只计划；报告新增 `densities`、`counts.assets`/`files` 与逐条 `scale/role/variant`，hint 说明回退开关。
+- **工具面**：`figma_import_assets` 新增 `densities?: boolean`（默认 true）；内容去重、`duplicate_of`、冲突与 `import-report.json` 语义不变。
+
+
+
+
+
+
+
+
+
+
+### 13.36 实施记录（API 错误 → 错误码匹配 → 通用处理判定 → 反馈）
+
+> 实施于 2026-10-02；spec `.scratch/api-error-feedback/spec.md`（票据 01–05）；新增 `src/artemis/api-errors.ts`、`src/device/logcat.ts`，改造 `suite-runner`/`failure-taxonomy`/`run-report`/`generation-feedback`/`suite-command`；全量 412 例通过。
+
+- **错误码注册表（人工先行）**：`.artemis/design/error-codes.json`（`{version,codes:{"<code>":{match,handler?,expect?,handledPattern?}}}`）；`loadApiErrorCatalog` 逐条校验（match 必填且正则合法、handledPattern 可编译），非法条目计入 `errors[]` 并忽略；未配置 → 空表（不阻塞）。
+- **确定性采集**：`AdbLogcatCollector`（`src/device/logcat.ts`）按 trace 时间窗 `logcat -v threadtime -d -T <start-5s>` 拉取主缓冲；设备时钟探测失败按 0 偏差并回传 `clockWarning`；无 adb/无设备/日志为空 → 结构化 `skipped`（`adb-not-found|no-serial|device-offline|log-empty`），不抛错；`formatLogcatTime`/设备列表/时钟探测与崩溃采集共用（`src/crash/collect.ts` 去除重复实现）。
+- **判定**：`matchApiErrors` 逐行匹配并计数、取首个样例与时间；`handledPattern` 命中 → `handled`，声明但未命中 → `unhandled`，未声明 → `observed`。失败域新增 **`api-error`**（仅 `unhandled` 触发）：优先级 崩溃 > 环境 > api-error > 数据环境 > 设计推断 > 行为或设计 > 用例缺陷 > 未分类；`handled/observed` 只作证据不改域。
+- **runner 集成**：每例终态（默认开启）采集并匹配，产物 `.artemis/traces/<traceId>/api-errors.json`（含 window/serial/source/degraded/errors）；`SuiteCaseResult.apiErrors + apiErrorsDegraded`；`suite run --no-api-errors` 关闭、`--fail-on api-error` 可让未处理错误使用例 FAIL（默认仅证据，不阻断）；报告 `apiErrorCatalog` 显示规则数与无效条目。
+- **报告/反馈**：`suite report` xlsx 追加「API 错误 / 处理判定」两列（`CODE(verdict ×n)`、`CODE=handler|expect`），JUnit failure 内容追加 `api_error: CODE verdict=... handler=...`；`suite feedback` 对重复未处理错误输出 `kind:"api"` 建议（可追踪 case/trace）。
+- **手动复算**：`node dist/cli.js suite api-errors <traceId> [--serial <s>] [--no-save] [--json]`（注册表缺失 → 退出 2；无状态/采集失败 → 1；成功 → 0）。
+- **非目标**：抓包/代理/HAR、响应体断言、非 Android 栈、按代码自动扫描错误码（后续）。
+
+### 13.37 实施记录（install CLI 参数校验）
+
+> 实施于 2026-10-02；`src/install.ts`；测试 `test/install.test.js` +2（全量 414 例通过）。
+
+- `install --help/-h` → 打印 `installUsage()` 并退出 0，**不写任何文件**；未知 `--flag`、非法 `--targets`（未知 target 名）、非法 `--mode`、缺值参数（`--project/--targets/--container/--url/--service`）→ `参数错误: …` 并退出 1。
+- 修复背景：此前未知参数被 `default: break` 静默忽略，`install --help` 会按默认 `targets=全部` 执行一次完整安装（写四份客户端配置）。
+
+### 13.38 实施记录（构建新鲜度提示与生成物三件套强制）
+
+> 实施于 2026-10-04；`src/util.ts`（`isBuildStale`）、`src/runtime.ts`（`Runtime.build` + 启动 WARN）、`src/tools/llm.ts`（`aos_status.build`）、工具描述与 AGENTS 硬性约定；测试 `test/build-stale.test.js` 2 例。
+
+- **强制三件套（复核结论，无需改代码）**：`figma_generate_tests` 在 `save !== false` 时先渲染 xlsx Buffer、再一次性写 `tests.json`+`tests.md`+`tests.xlsx`（任一渲染失败则三份都不写，`savedTo` 恒含三个路径），由 `test/figma-testgen.test.js` 的默认工作表/默认落盘用例锁定；工具描述已明确"仅 `save:false` 才不写任何文件"。
+- **构建新鲜度**：ESM 在进程启动时加载代码，`dist/` 重建后旧进程不会热更新。`Runtime` 记录 `startedAt` 并用 `isBuildStale`（模块 mtime > 进程启动 + 2s 容差）判定；陈旧时启动日志 WARN、`aos_status.build = { module, startedAt, stale, note? }` 提示重启客户端；改造后可用该字段自证（旧进程没有 `build` 字段即说明仍是旧构建）。
+
+### 13.39 实施记录（无损设备截图：`device.lossless`）
+
+> 实施于 2026-10-06；`src/device/adb.ts`（二进制安全 `ExecBufferFn`/`defaultExecBuffer`）、`src/device/screenshot.ts`（`captureAdbPng`）、`src/diff/device-source.ts`（`LiveCaptureOptions` + 回退）、`src/diff/tool.ts`（`device.lossless`，与 `mode=step` 冲突报错）、`src/tools/composite.ts`（`compare_design_and_device` 同参；截图抽取移至 `src/tools/device-image.ts` 消除循环依赖）、`src/server.ts` schema；测试 `test/device-screenshot.test.js` 8 例。
+
+- **动机**：`mobile_get_device_state` 的 `live_screenshot_*.jpg` 是给 LLM 感知用的有损 JPEG；像素级 diff 直接使用会产生压缩伪影（文字振铃、色度抽样），在阈值边缘出现假差异/漏检。
+- **行为**：`device.lossless: true`（仅 `mode=live`；默认 false）时 AOS 直接经 adb `exec-out screencap -p` 抓 PNG（自动解析 serial；adb 缺失/离线/超时/非 PNG 均回退 live JPEG，note 附回退原因）；`compare_design_and_device` 透传同参。`mobile_get_device_state` 保持 JPEG 不变（token 经济）。
+- **边界**：屏幕截图无有效 alpha（已合成不透明帧），本项解决的是 JPEG 有损压缩而非 alpha；设计侧（Figma/pen 渲染）与 diff 产物本就走 PNG。
+
+### 13.40 实施记录（修复 build 新鲜度缓存缺陷）
+
+> 实施于 2026-10-06；`src/runtime.ts`（`build` 改为每次读取动态计算的 getter；新增 `RuntimeOptions.buildModuleUrl` 供测试注入）、`test/build-stale.test.js`（新增"同进程内重建后 stale=true"用例，共 3 例）。
+
+- **缺陷**：`stale` 原在构造函数中计算一次并缓存；进程启动时 dist 必然"不更新"，此后重建 dist 也不会刷新 → `aos_status.build.stale` 永远为 false，§13.38 的重启提示实际不可达。
+- **修复**：`runtime.build` 改为 getter，每次读取用 `isBuildStale(moduleUrl, startedAtMs)` 重算；启动 WARN 保留（覆盖"启动后立刻重建"的竞态）。`aos_status` 字段与语义不变，现在能真实反映"进程早于构建"。
+
+### 13.41 实施记录（iOS 设备后端 slice 1：模拟器截图接入 design diff / compare）
+
+> 实施于 2026-10-06；来源 `docs/iOS-适配方案.md`（P0 实测与 P1 项目侧 DeviceBackend 已完成，本项是其 P2 的首个 AOS 侧切片）。新增 `src/device/ios.ts`、`test/ios-screenshot.test.js`（14 例）；改造 `src/diff/device-source.ts`、`src/diff/tool.ts`、`src/tools/composite.ts`、`src/server.ts`。
+
+- **范围（slice 1）**：iOS 模拟器截图源接入两个设计对比工具——`design_device_diff`（`device.platform:"ios"`，与 `device.mode` 冲突校验、`dryRun`/报告透出 platform）与 `compare_design_and_device`（`platform:"ios"`）；后端 idb → `xcrun simctl io` 兜底（与项目侧 `tools/device-backend.mjs` 同一优先级）。ARTEMIS 为 Android-only，因此 iOS 路径无 live JPEG 回退，失败返回带指引的结构化错误。
+- **目标选择**：显式 `device.serial`（UDID）优先；否则解析 `xcrun simctl list devices booted --json` 取唯一已启动模拟器，0 台 → `no-device`、多台 → `no-serial`（提示指定 UDID）；仅 macOS（`darwin`）可用，其他平台 `ios-unsupported`。
+- **产物语义**：idb/simctl 截图恒为无损 PNG（模拟器 scale 常为 3，像素尺寸），diff 引擎按设计宽度缩放，与 Android `lossless` 路径同语义；平台差异的 logical/scale 显式约定（方案 §2.6）留待任务执行层接入时补齐。
+- **测试**：假 exec 注入（无真机/无网络）：路径解析、booted 列表解析、显式/自动目标、no-device/no-serial、idb 回退 simctl、双侧缺失、not-png、timeout、非 macOS、工具层 platform 透传与 mode=step 冲突。
+- **未含（后续 P2 余项）**：iOS 层级与动作（idb ui describe-all/tap/text）、`mobile_run_task` 平台路由（artemis drivers/ios 或 AOS 侧连接器）、崩溃/日志取证——见 `docs/iOS-适配方案.md` §3。
+
+### 13.42 实施记录（iOS 设备后端 slice 2：`mobile_get_device_state` 观察路由）
+
+> 实施于 2026-10-06；`src/device/ios.ts`（`listIosSimulators`/`describeIosUi`/`isSimulatorUdid`）、新增 `src/tools/ios-state.ts`、`src/server.ts` 拦截；`test/ios-device-state.test.js`（10 例）。
+
+- **路由判据（唯一且显式）**：仅当 `device_serial` 为规范 UUID（模拟器 UDID）时由 AOS 接管；省略 serial 或非 UUID（如 `emulator-5554`）仍走 ARTEMIS/adb。首次访问会做一次 `simctl list devices --json` 校验：未知 UDID、未启动（提示 `simctl boot`）、非 macOS 均返回 `Error:` 文本（形态与 artemis 的失败文本一致）。
+- **响应契约与 Android 对齐**：`screenshot` → 写 `<项目>/.artemis/traces/live_screenshots/live_screenshot_<udid>.png` 并返回 `file://<abs>`（上游 Android 为 artemis 仓库根 `.jpg` + AOS 镜像；iOS 直写项目目录，镜像步骤自动跳过同路径）；`hierarchy` → `idb ui describe-all --json` → 简化列表 `[i] Text: '…' | Bounds: [n…]`（0-1000 归一化，`Value:` 行、300 行截断标记），与 artemis 的 minimal list 同构；`view_type` 非法时返回同文案 `Error: Invalid view_type …`。
+- **边界**：本切片只读（观察），不含动作/恢复/任务执行；模拟器层级来自 idb，真机 UDID（非规范 UUID 格式）不接管；iOS 失败不回落 Android（UDID 不会命中 adb 设备）。
+- **测试**：UUID 判据、模拟器列表解析、idb JSON 解析、层级格式化（坐标/Value/截断）、路由 null（Android 透传）、未知/未启动/非 macOS、截图落盘与错误分支、层级成功/失败。
+
+### 13.43 实施记录（iOS 动作层：idb 动作 + simctl 生命周期回退）
+
+> 实施于 2026-10-06；`src/device/ios-actions.ts`（`makeIosDevice` 门面：tap/swipe/inputText/launch/terminate/openUrl/nodes/size/screenshot/handleAlerts）、`test/ios-actions.test.js`（11 例）。
+
+- **动作语义**：坐标统一 logical point 且取整（idb 只接受整数）；swipe 时长为秒（下限 0.1）；`inputText` ASCII 走 `idb ui text`（键码），非 ASCII 必须带目标坐标走 `idb ui set-value --api ax`（替换语义，返回 `mode=type|set`）——P0 实测结论（CJK 无键码、set-value 可用）。
+- **生命周期/深链**：launch/terminate/openUrl 首选 idb，失败回退 `xcrun simctl`；`terminate` 为 best-effort（布尔返回不抛）；`handleAlerts({accept,dismiss,mode})` 按方案 §2.4 策略化清理：默认 accept 中文文案表，最多 3 轮，`mode:"keep"` 直接跳过。
+- **边界**：`capabilities.back="none"`（iOS 无系统返回键，返回由用例/代理编排）；`size()` 取自 Application 节点逻辑尺寸（iPhone 17 Pro 实测 402×874 pt）；本层暂无 MCP 暴露，供后续 `mobile_run_task` iOS 执行器（P2 余项）消费。
+- **验证**：单测（参数取整/时长换算、回退链路、错误传播、弹窗计数、非法平台）；模拟器冒烟——tap「轻App」发生页面切换、terminate+launch 复位成功、handleAlerts 空跑安全。
+
+### 13.44 实施记录（iOS 设备后端 slice 4：`mobile_run_task` 路由 + AOS 最小执行器）
+
+> 实施于 2026-10-06；`src/llm/chat.ts`（OpenAI 兼容对话客户端）、`src/ios/task-runner.ts`（观察-决策-动作循环 + 内存任务表）、`src/server.ts` 拦截（`mobile_run_task`/`mobile_manage_task`）、`src/runtime.ts`（`ios-` trace 跳过 Android 崩溃扫描）；`test/ios-task-runner.test.js`（7 例）、`test/llm-chat.test.js`（3 例）。
+
+- **路由判据**：`mobile_run_task` 的 `device_serial` 为模拟器 UDID（规范 UUID）时由 AOS 执行器接管；`mobile_manage_task` 按内存任务表命中 `trace_id` 接管（status/stop/inject_instruction）；其余（Android serial/省略 serial/未知 trace）原样透传 ARTEMIS。setup/模型预检门禁沿用（active LLM 缺失或模型下线时同样拦截）。
+- **执行器（v0，Flash 式反应循环）**：每步观察 idb 层级（元素 Center 为逻辑点坐标，供模型直接点击）→ 截屏存证 → active LLM 输出单个 JSON 动作（tap/swipe/text/launch/terminate/openUrl/alerts/wait/done/fail）→ 校验并执行；`AOS_IOS_MAX_STEPS` 默认 30（1–200）；连续无进展由模型自行 fail；`text` 含非 ASCII 必须带输入框坐标（沿用 P0 结论）。
+- **异步契约**：立即返回 `{trace_id: ios-<uuid>, status: "running", device_serial, model, run_dir, status_file}`；**无主动唤醒**（响应消息提示轮询）；`mobile_manage_task(action=status)` 返回 `status/progress/recent_steps/result/run_dir`（字段对齐 artemis 同名工具）；stop 置位后下一轮退出为 `cancelled`。
+- **产物与台账**：`<项目>/.artemis/traces/ios-<uuid>/`（run.json / status.json（runtime 直接可读，`aos_tasks` sync 自动完结）/ shots/step-N.png）；`recordTaskResult` 写 task_stats（model=active entry.model）；`ios-` 前缀跳过 Android 崩溃扫描。
+- **边界（v0 未含）**：无 wakeup/conversation 通知；层级为唯一感知（图片仅落盘证据，不送模型；纯文本 LLM 可直接用）；`mobile_inspect_trace` 未拦截（iOS trace 上该工具仍走 artemis 会报错）；无 plan/checker/notes 等 Pro 能力；失败分类沿用简单文本（无 §13.26 分域）。
+- **验收（真实链路）**：`mobile_run_task(task='观察并报告设置页标题', device_serial=<iPhone 17 Pro UDID>)` → 真 DeepSeek Flash 一步 done（summary=页面标题=设置）；`mobile_manage_task(status)` 轮询到 completed；run.json/shots 落盘。
+
+### 13.45 实施记录（iOS 执行器视觉 fallback：视觉模型解析 + 降级记录）
+
+> 实施于 2026-10-06；`src/ios/vision.ts`（视觉目标解析/多模态命名启发/PNG IHDR 尺寸）、`src/llm/chat.ts`（多模态 content 分片）、`src/ios/task-runner.ts`（按需附图 + 失败降级）；`test/ios-vision.test.js`（6 例）、`test/ios-task-runner.test.js` 增 2 例。
+
+- **视觉目标解析（优先级）**：`AOS_IOS_VISION_LLM=<条目名>`（registry 条目，要求完整）→ `AOS_IOS_VISION_MODEL`（可配 `AOS_IOS_VISION_BASE_URL/API_KEY`，缺省继承 active）→ active 模型名多模态启发（vision/vl/gpt-4o/gemini/claude-3|4 等）→ 无（纯文本模式）。启动响应与 run.json 记录 `vision: {model, source}`。（2026-10-19 修订：启发式名单已收口——iOS 与设计侧共用 `isVisionCapableModel` 单源，并增补 `deepseek-flash`；见 §13.127）
+- **按需附图**：可见文本元素 <3 个（层级质量差）或 `AOS_IOS_VISION_ALWAYS=1` 时，该步 user 消息带 `image_url`（`data:image/png;base64,`）分片；文本分片同时给出截图 px 与逻辑 pt/scale（§2.6 约定：坐标输出逻辑点，从截图估计需 ÷scale）；其余步骤纯文本（`perception:"text"`）。
+- **降级**：视觉调用失败（模型不支持图片/鉴权/网络）→ 记录 `vision_degraded`（run.json + status 响应）并当场回退纯文本调用该步（`perception:"text-degraded"`），后续步骤保持可用；不因视觉失败中断任务。
+- **边界**：不做 OCR、不做像素级脱敏；图片不做降采样（v0 直传模拟器原始 PNG，注意 token 成本）；多模态启发可能误判（显式 env 可覆盖）。（§13.59 已换代：默认档位 `AOS_IOS_VISION_MODE=auto` 每步视觉输入，附图为感知/决策分流，`AOS_IOS_VISION_ALWAYS=1` 并入 auto 语义。）
+- **验收**：单测覆盖解析优先级/命名启发/IHDR 尺寸/附图与降级链路；真实验收用 `AOS_IOS_VISION_ALWAYS=1` + 不存在的视觉模型驱动降级（DeepSeek 不支持图片 → 400 → 回退文本完成）。（2026-10-19 修订：DeepSeek V4.1 Flash 已原生多模态，`deepseek-flash` 现走视觉通道；见 §13.127）
+
+### 13.46 实施记录（iOS trace 检查器 + 路由下沉：`mobile_inspect_trace` / 设计步骤对比闭环）
+
+> 实施于 2026-10-06；新增 `src/ios/inspect.ts`；`src/ios/task-runner.ts`（failed 状态补 `test_summary.failed_items`）；`src/runtime.ts`（只读 mobile 工具路由下沉到代理包装层，内部调用同样生效）；`src/server.ts` 移除重复分支；`test/ios-inspect.test.js`（6 例）。
+
+- **检查器动作**：`view_summary`（步骤/结果/vision 摘要）、`view_step_details`（单步 thought/action/params/outcome/perception + 截图路径）、`view_step_screenshots`（`before_screenshot`=本步观察图，`after_screenshot`=下一步观察图（后置状态），overlay 恒 null）、`search`（全文子串优先、按标点/空白分词兜底、支持 step_range/max_results，结果行 `[Step N] …` 供设计工具锚点解析）。
+- **路由下沉（关键）**：`mobile_manage_task`/`mobile_get_device_state`/`mobile_inspect_trace` 的 iOS 路由从 server 处理器下沉到 `Runtime` 的代理包装层（`maybeIosCall`），因此**服务内部调用**（`design_device_diff` 的 status/search/截图链路）同样命中 iOS 后端；`mobile_run_task` 仍留在 server（需要 setup/模型预检门禁与任务记录语义）。
+- **设计步骤对比闭环**：失败任务的状态响应携带 `test_summary.failed_items`（evidence=失败原因）→ `design_device_diff(device:{mode:"step",traceId,image:"pre"})` 可自动锚定失败步骤并读取该步观察截图，完成"设计 vs iOS 失败步骤"确定性对比。
+- **边界**：`after` 语义为"下一步的观察图"（末步为 null，需 `image:"pre"`）；无 overlay 图；search 不做模糊/拼音。
+- **测试**：检查器四动作 + 非 iOS 透传；集成用真实运行时（StubProxy）跑失败任务 → 自动锚定（anchor.source=search）→ 像素差异 1 区域，且证明内部调用未落到 ARTEMIS 桩。
+
+### 13.47 实施记录（iOS 设备后端 slice 7：suite 用例闭环接入 iOS）
+
+> 实施于 2026-10-06；新增 `src/device/ios-reset.ts`；`src/runtime.ts`（`mobile_run_task` 路由下沉到代理包装层）、`src/server.ts`（去除重复分支 + iOS trace 防重复记账）、`src/device/reset.ts`（`APP_PACKAGE_PATTERN` 导出 + `ios-unsupported` 原因）、`src/figma/suite-runner.ts`（`suiteResetFor` + iOS 日志降级）、`src/artemis/failure-taxonomy.ts`（`ios-unsupported` 归环境域）；`test/ios-reset.test.js`（3 例）、`test/suite-ios.test.js`（3 例）、`test/ios-task-runner.test.js` 增 2 例。
+
+- **路由统一下沉**：`mobile_run_task` 的 iOS 路由与其余只读工具一致，移入 Runtime 代理包装层——`suite run` 等**服务内部调用**由此命中 iOS 执行器；server 仅保留 setup/模型预检门禁，并对 `traceId` 以 `ios-` 开头的结果跳过二次记账（iOS 执行器已按 active entry.model 记录）。
+- **iOS 复位**：`resetIosApp`——校验包名/macOS/UDID → idb terminate（best-effort）→ idb launch（失败即 `launch-failed`）；`AppResetOutcome` 兼容（`adb: {path:null,source:"missing"}`，命令留痕）；`suiteResetFor(serial)` 按 UDID 自动选择；复位失败仍按既有分类（`ios-unsupported` 计入环境域）。
+- **日志/取证降级**：iOS trace 不跑 adb logcat，`apiErrorsDegraded="ios-log-unsupported"`（API 错误注册表匹配暂缺，行为显式标注而非静默）；崩溃扫描此前已跳过 `ios-` trace。
+- **任务启停**：`--app <package>` 同时作为 `locked_app_package` 传入执行器 → 循环前 idb launch 该应用（失败即任务 failed）。
+- **验收（真实链路）**：`node dist/cli.js suite run --device <UDID> [--app com.apple.Preferences]` 两次真实运行 PASS（无复位 / idb 复位 ok），`apiErrorsDegraded=ios-log-unsupported`，trace 落 `.artemis/traces/ios-*`。
+
+### 13.48 实施记录（iOS 崩溃取证 + suite evidence iOS 链路）
+
+> 实施于 2026-10-06；新增 `src/crash/ios.ts`（.ips 解析/窗口采集）；`src/crash/types.ts`（`kind:"ios"`、`attribution:"ips-header"`、`source:"diagnostic-reports"`）、`src/runtime.ts`（`captureIosCrashes` 入同一崩溃索引）、`src/ios/task-runner.ts`（终态触发 + `test_summary` 落盘）、`src/server.ts`（`aos_crashes` kind 过滤加 `ios`）；`test/ios-crash.test.js`（4 例）、`test/ios-inspect.test.js` 增 evidence 用例。
+
+- **采集**：iOS trace 终态后（`AOS_CRASH_CAPTURE` 开启时）扫描宿主机 `~/Library/Logs/DiagnosticReports/*.ips`，按 mtime 落在任务窗口（前后 2s/5s 容差）筛选，解析 header/body（app_name、exception.type、termination.reason、thread0 帧），签名=`包名|异常类|首帧`，与 Android 崩溃共用 `CrashIndexStore`（去重计数、trace 关联、`aos_crashes list/get` 可见，kind=`ios`）。
+- **联动**：`suite evidence` 的失败项/锚点/崩溃引用对 iOS 全部可用；`test_summary` 现同时写入 `status.json`（此前仅存在于内存状态响应，导致落盘读取路径拿不到失败项）。
+- **边界**：仅宿主机 DiagnosticReports（模拟器与 macOS 上运行的模拟器进程崩溃）；真机崩溃（idevicecrashreport/MetricKit）未接；`.ips` 文本格式（旧 `.crash`）不支持；窗口内其他进程崩溃若未传 `--app` 也会被收录（processName 过滤按需生效）。
+
+### 13.49 实施记录（真机 UDID 识别：classifyIosSerial，best-effort）
+
+> 实施于 2026-10-06；`src/device/ios.ts`（`classifyIosSerial`：模拟器规范 UUID / 真机现代 `8-16` / 旧 `40-hex`）、`src/tools/ios-state.ts`、`src/ios/task-runner.ts`、`src/device/ios-reset.ts`、`src/figma/suite-runner.ts` 改用统一判据；测试覆盖分类与"真机跳过 simctl 校验"路径。
+
+- **语义**：模拟器走 simctl 列表/Booted 校验不变；真机 UDID 跳过 simctl 校验（无 boot 概念），直接交给 idb 后端，连接失败由 idb 报错并带指引；`reset`/`suiteResetFor`/logcat 降级同样识别真机。
+- **未验证**：本机无 iPhone，真机链路（idb 连接、配对隧道、真机截图/动作）为 best-effort，未实测；方案 §3 P3 的签名/配对自动化仍是前置。
+- **风险**：40-hex 与个别 Android 序列号形态可能碰撞（概率低）；如遇误判可用非 UDID 形态 serial 或先 `lldb`/`idb list-targets` 核对。
+
+### 13.50 实施记录（MCP 服务名更名 mobile-testing + 旧键迁移扩展）
+
+> 实施于 2026-10-06；`src/install.ts`（`MCP_SERVER_NAME` + `LEGACY_SERVER_NAMES`）、`test/install.test.js`（旧键迁移用例覆盖 `android-testing`），文档同步 README / 接入指南。
+
+- **决策**：iOS 设备后端（§13.41–§13.49）落地后，服务名 `android-testing`（§13.12 因当时仅支持 Android 而定）不再成立，更名为 **`mobile-testing`**——覆盖 Android + iOS 双端真机/模拟器测试。ASCII 硬约束不变（客户端 MCP 列表与工具名前缀只显示该名，工具名本身不变）。
+- **范围**：`install` 生成的四个客户端配置键（`mcpServers.mobile-testing` / `servers.mobile-testing` / `mcp.mobile-testing`）与 Codex 手动片段同步；协议层 Server name（`mobile-testing-mcp`）与 CLI/包名不变（沿用 §13.12 先例）。
+- **旧键迁移**：`LEGACY_SERVER_NAMES = ["aos", "android-testing"]`，install 写入前移除同一父路径下的两个历史键，避免同一客户端同时加载新旧 server；仅移除历史键，不动其他 server 与注释。已挂载客户端执行一次 `install --force`（或手动改键）后重启即生效。
+
+### 13.51 实施记录（iOS trace 跨进程持久化与中断归因）
+
+> 实施于 2026-10-06；新增 `src/ios/trace-store.ts`（磁盘视图 + 归因 + orphan 落盘）；`src/ios/task-runner.ts`（原子写、`status.json` 补 `platform`/`pid`/`process_started_at`、`maybeIosManageTask` 两级查找）；`src/ios/inspect.ts`（签名对齐 `maybeIosDeviceState(runtime,args,deps)`，磁盘 fallback 渲染复用同一视图）；`src/runtime.ts`（`traceStatus` 读路径归因收尾）；`test/ios-trace-store.test.js`（6 例）、`test/ios-task-runner.test.js`/`test/ios-inspect.test.js` 签名适配与落盘字段用例。
+
+- **持久化**：`run.json`/`status.json` 改 `writeFileAtomic`（原子替换，此前为普通写）；两者记录 `platform:"ios"`、`pid`（owner 进程）、`process_started_at`（`now - process.uptime()`，备查 pid 复用）。
+- **两级查找**：`mobile_manage_task`/`mobile_inspect_trace` 先查进程内任务表，未命中再读 trace 目录；平台判据以持久化 `platform` 字段优先，`ios-` 前缀仅作旧 trace fallback（平台字段为其他值或无字段且非 `ios-` 前缀 → ARTEMIS 透传，行为不变）。
+- **归因（orphaned）**：磁盘视图对 `running` 做存活校验——pid 存活保持 `running` 并给 note（超过阈值加 `stale`）；pid 已退出、或无 pid 且 `status.json` 最后写入超过阈值（心跳语义，`AOS_IOS_STALE_MS` 默认 30 分钟）→ 归 `orphaned`（复用既有终态词，`TERMINAL_TASK_STATUSES` 内含）并回写 `status.json`/`run.json`，30s `syncTaskStatuses` 随即把 `aos_tasks` 收尾；磁盘态跨进程 stop/inject 明确返回「无法跨进程操作」，不伪造成功。
+- **边界**：升级前产生的纯内存 iOS trace（无磁盘产物）查不到，属预期行为；pid 复用未做进一步指纹校验（仅记录 `process_started_at` 备查）；`traceStatus` 在读路径上做幂等归因回写。
+- **测试**：磁盘存活/死亡两分支（注入 liveness）、无 pid 超时与未超时（注入 clock）、platform 字段优先/前缀 fallback/android 不接管、inspect 磁盘步骤检索、`runtime.traceStatus` 收尾、运行中任务落盘 `platform`/`pid` 字段。
+
+### 13.52 实施记录（iOS 平台对等 M1：执行与证据链，票据 02–07）
+
+> 实施于 2026-10-06；`src/ios/task-runner.ts`（参数 warnings / app_path 拒绝 / app 锁定 / post 截图 / 屏幕文本 / settle / scale）、`src/ios/overlay.ts`（动作标注）、`src/ios/inspect.ts`、`src/ios/trace-store.ts`、`src/device/ios-log.ts`、`src/figma/suite-runner.ts`、`src/suite-command.ts`、`src/runtime.ts`、`src/diff/tool.ts`；测试新增 `test/ios-overlay.test.js`、`test/ios-log.test.js` 并扩充 ios/suite 系列。
+
+- **参数语义与锁定（票据 03）**：iOS 启动/失败响应恒含机器可读 `warnings[]`（`{code:"param_ignored", field, actual}`；`model` 落实际模型、`conversation_id`=poll-only，其余=unsupported-on-ios）；AOS 代理层对 Android `mobile_run_task` 响应补空 `warnings`（双端同构，纯增量）；`app_path` 结构化拒绝（`code:app_path_unsupported`，启动失败同样写入任务行）；`locked_app_package` 限制 `launch`/`terminate` 仅目标 bundle、禁用 `openUrl`；前台逃逸为已知限制（文档+backlog）。
+- **套件契约（票据 04）**：iOS trace 由执行器单点记账（套件按持久化 `platform` 字段跳过，`ios-` 前缀 fallback）；iOS 复位异常 reason=`launch-failed`（failure-taxonomy 归 environment）；合成 `test_summary` 带 `synthesized:true`（`TaskTestSummary` 同步解析）。
+- **iOS 日志（票据 05）**：`src/device/ios-log.ts`——`xcrun simctl spawn <udid> log show --predicate 'process == "名"'`，超时 15s、行数上限 2000（超限即放弃并降级 `log-over-limit`；`AOS_IOS_LOG_TIMEOUT_MS`/`AOS_IOS_LOG_MAX_LINES`）；非 darwin/no-process/log-empty/log-show-failed 显式降级；套件注入式采集（`iosLogCollector`）与 `suite api-errors --app <bundle>` 接入，成功时 `source:"simctl-log"`。
+- **崩溃路由（票据 06）**：`aos_crashes scan`（显式与批量）按 `platform`/前缀路由 iOS 采集（`processName` 取 lockedPackages、窗口取 status.json/任务台账），`empty` 时有界重试（默认 3 次 × 2s，可注入），结果记入 scan 索引；进程死亡由 `syncTaskStatuses` 对 iOS 终态同样触发该路径（不再按前缀跳过），`captureIosCrashes` 不写 scan 索引、统一由扫描路径收口。
+- **inspect 增强（票据 02）**：每步持久化屏幕文本摘要并纳入 search；动作后（含 done/fail 终态步）经可配置 settle（默认 200ms，0–2000，`AOS_IOS_SETTLE_MS`）补真实 post 截图；动作标注 overlay 按需生成（tap/swipe/text，坐标 point×scale，pngjs 画环，失败显式 `action_overlay_error`）；`view_step_details` 补 `device_serial`；`view_step_screenshots` 的 after 改为同一步 post（与 Android 语义对齐，不再用下一步观察图）。
+- **diff step（票据 07）**：移除 `platform="ios"` 仅 live 的限制；iOS trace 步骤截图可作设备源（跨进程依赖 §13.51 磁盘 fallback）。
+
+### 13.53 实施记录（iOS 平台对等 M2：设计代码化，票据 08–12）
+
+> 实施于 2026-10-06；`src/figma/color.ts`、`src/projects/stack.ts`、`src/figma/import-tokens.ts` / `src/pen/tokens.ts`、`src/figma/gaps.ts`、`src/figma/import.ts`、`src/figma/strings.ts`、`src/figma/import-strings.ts`、`src/figma/brief.ts` / `src/pen/brief.ts`、`src/diff/screen-map.ts`；测试扩充 tokens/import-assets/figma-flows/strings/strings-plural/stack。
+
+- **iOS token 产物（票据 08）**：`ios-native` 的 `i18n.tokenFile`=`ios/AosTokens.swift`；生成 Swift 枚举（`static let colorBrandPrimary = Color("color.brand.primary")`，marker 注释）+ `Resources/Colors.xcassets/<token>.colorset/Contents.json`（sRGB 浮点组件、marker 写入 info.author）；`StackTokenWrite.extraFiles` 与主文件同一幂等/覆盖语义；figma/pen 两路径同行为。
+- **缺口分析（票据 09）**：颜色提取支持 colorset JSON（浮点→hex）与 Swift `Color(red:green:blue:)`（`Color("assetName")` 由同名 colorset 覆盖）；其余形式声明不识别；资产 basename 规范化剥离 `@2x/@3x`，仅 @2x/@3x 的 imageset 不再误报。
+- **资产导入（票据 10）**：iOS 默认 SVG 落 `<dir>/<name>.imageset/` + vector `Contents.json`（`preserves-vector-representation`）；`Contents.json` 仅在图片成功写入后写（error/duplicate 跳过并标注），统一走 hash/`duplicate_of` 幂等；单倍率位图同样收敛进 imageset。
+- **strings（票据 11）**：locale 映射 `iosLocaleDirectory`（zh→zh-Hans、zh-TW→zh-Hant-TW、zh-Hant-HK/pt-BR 保真）与 `androidLocaleDir`（`values-zh-rHK` 旧式，不切 `b+`）；iOS 跨 `.lproj` 冲突检测（用户文件优先，冲突经 resolutions 闭环）；`.stringsdict` 解析/合并/冲突（保留人工条目，冲突时不覆盖、不产生空文件）；Swift 硬编码文案白名单扫描（Text/Label/navigationTitle；排除 URL/数字/符号/NSLocalizedString）。
+- **栈检测与多栈警告（票据 12）**：iOS 检测放宽为限深 ≤2 层搜索 `xcodeproj/xcworkspace`（忽略 node_modules/dist/build/Pods 等）；tokens/assets/brief/gap/screen-map 在跳过非主栈时响应带 `warnings`（列出被跳过栈；全栈分别产出为 backlog）。
+
+### 13.54 实施记录（使用统计：客户端调用事件采集与三消费面，票据 01–07）
+
+> 实施于 2026-10-06；新增 `src/db/usage-event.ts`、`src/usage/capture.ts`、`src/usage/aggregate.ts`、`src/usage/web.ts`、`src/tools/usage.ts`、`src/usage-command.ts`；改 `src/db/types.ts` / `src/db/memory.ts` / `src/db/postgres.ts` / `src/runtime.ts` / `src/server.ts` / `src/http-server.ts` / `src/cli.ts`；测试新增 `test/usage-store.test.js`（6）/ `test/usage-capture.test.js`（10）/ `test/usage-server.test.js`（10）/ `test/usage-aggregate.test.js`（11）/ `test/usage-tool.test.js`（9）/ `test/usage-web.test.js`（9）/ `test/usage-command.test.js`（10）/ `test/usage-e2e.test.js`（1），`test/http-server.test.js` 增 2 例。
+
+- **采集面（ADR-0006）**：只在 `createServerForRuntime()` 的 `CallTool` 包装层记录客户端经 stdio/HTTP 发起的调用；服务内部编排（suite/design_device_diff 等直接走 `runtime.proxy.callTool`）不经过该层，不产生事件。成功、工具报错、参数校验失败与未知工具名都记录；`aos_usage` 自身按名排除；记录/落库异常只写 warn，绝不影响调用结果。
+- **事件模型与隐私**：`id / projectId / at(ISO) / tool / family(native|figma|pen|mobile|unknown) / ok / durationMs / errorClass(validation|figma|artemis|timeout|internal|unknown) / errorSummary(≤300，PG 读回白名单) / signals / argKeys / traceId`；参数只记键名集合、不记录参数值本身（errorSummary 为服务端回显片段，≤300，不含凭据）；连续调用时间戳严格递增（同毫秒内 +1ms，保证排序稳定）；查询/聚合的取数上限跟随 `AOS_USAGE_MAX_EVENTS`（0=不清理时按默认 50000 有界采样）。
+- **存储**：PG 新表 `usage_events`（append-only，signals/arg_keys 以 TEXT JSON 存以兼容 pg-mem）与内存实现语义一致；写入时顺带清理（`AOS_USAGE_RETENTION_DAYS` 默认 90，0 不清理；`AOS_USAGE_MAX_EVENTS` 每项目上限默认 50000，超出丢最旧；未注册项目的孤儿桶同样纳入清理）。
+- **聚合（纯模块，零 IO）**：`summary`（total / 成功率 / p50 / p95（精确最近秩）/ 按工具/族/天分布 / 零调用目录）、`signals`（错误类分布、unknown 与无类失败的归一化模板聚类（引号内容/路径/UUID/hex/长 token/数字→占位符）、warnings 码+field、降级标记（8 码）、每工具参数键频次）、`events`（最新在前，limit ≤ `USAGE_EVENT_LIST_MAX=200`）；排序全部确定。
+- **工具 `aos_usage`**：原生 zod（`action=summary|signals|events`，`tool/status/days/limit`），返回 JSON 文本（中文标注），含 `usage{enabled,storage,note?}`、`store{kind,degraded}`、`filters` 与对应聚合；零调用目录 = 进程内工具目录（动态 import `inProcessToolCatalog()`，剔除自身）∪ 代理在线时的 `mobile_*`（Web/CLI 仅覆盖进程内目录，mobile 工具在首次调用后出现）；`AOS_USAGE=0` 只停采集，查询照常并附 `USAGE_DISABLED_NOTE`。
+- **CLI `usage`**：`node dist/cli.js usage [--json|--all|--project <名|根路径>|--host <id|主机名>|--days <n>]`（默认当前项目、7 天；文本摘要 + JSON 稳定字段；项目视图带 `hostId`）；`--host` 在文本/JSON/`--all` 下过滤该主机的项目（id 精确优先、主机名需唯一，歧义 exit 2 并列候选 id；未归属 legacy 行与主机行同路径时 exit 2 指引 `--host`/`adopt-legacy`）；`usage --web [--port 8766] [--host 127.0.0.1]` 内嵌只读看板（此模式下 `--host` 仍是监听地址），复用同一 `handleUsageRequest`，端口占用 exit 2，SIGINT/SIGTERM 清理监听；内存降级时提示「独立 CLI 进程无法读取其他进程的内存事件」。
+- **Web 看板**：`GET /usage`（服务端渲染 HTML：概览/存储徽标/工具表含零调用行/信号面板/事件流水分页与筛选；内联 CSS，无 JS 框架）与 `GET /usage.json`（同源 JSON）；HTTP 模式跟随服务器绑定，`AOS_USAGE_WEB=0` 时两路由 404（CLI `--web` 同样受该开关约束）；只读、无鉴权（与内网无鉴权口径一致）、无处置标记。项目已按 `hostId` 作用域读事件；未归属 legacy 行与主机行同路径时返回 409（`{error, candidates:[{hostId,rootPath,name}]}`，与面板同形），不再 500。
+- **日志追踪**：审计行扩展为 `tool=<name> ok=<bool> ms=<n> usage=<id>`（失败时保留 `error=` 摘要），`usage=<id>` 与事件 id 双向可查；`aos_status.usage` 显示 `{enabled, storage}`。
+- **验收（离线）**：`test/usage-e2e.test.js` 用同一 `MemoryStore` 走真实 MCP 服务器（InMemoryTransport）记录一条客户端事件，再断言 `aos_usage` 工具、`usage` CLI（文本+JSON）、`/usage`+`/usage.json` 与审计日志 `usage=<id>` 对同一条事件互相印证；全链路不依赖真实 PG/设备/外网。全量 610 用例、lint 干净；Out of Scope 核对：无内部编排记录、无会话序列挖掘、无看板鉴权/处置、无外部遥测/HAR、`task_stats` 未改、无前端框架与构建。
+
+### 13.55 实施记录（Jira 接入 M8a：凭证配置与读取，票据 01–02）
+
+> 实施于 2026-10-07；新增 `src/jira/config.ts`、`src/jira/client.ts`、`src/jira/adf.ts`、`src/jira/context.ts`、`src/tools/jira.ts`；改 `src/runtime.ts`（`jiraConfig()`）、`src/server.ts`（`jira_issue_get`/`jira_issue_search`）、`src/tools/configure.ts`（jira 三件套）、`src/tools/llm.ts`（`aos_status.jira`）、`src/usage/capture.ts` + `src/db/types.ts`（family `jira`）、`src/commands.ts`（.env 模板）；测试新增 `test/jira-context.test.js`（6）/ `test/jira-client.test.js`（5）/ `test/jira-tools.test.js`（9），全量 631 用例、lint 干净。spec/票据见 `.scratch/jira-integration/`。
+
+- **凭证与配置**：`aos_configure` 新增 `jiraSite/jiraEmail/jiraApiToken`（三者同时提供；站点仅 `https://*.atlassian.net` 并去尾斜杠），写入项目 `.env` 的 `JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN`；响应与 `aos_status.jira` 只回 masked 预览，token 不落 PG/日志；凭证由 resolver 解析（进程 env 优先；启动与 `aos_configure` 后刷新，手动编辑 `.env` 需重启会话）。
+- **客户端**：`JiraClient`（Basic auth、`AbortSignal.timeout`、429 有界等待 + 按凭证指纹冷却 fail-fast、`JiraApiError` 带 status/hint、无缓存）；测试注入 `fetchImpl`/`sleep`/`env` 覆盖冷却、重试与错误映射，不联网。
+- **读取**：`jira_issue_get`（key/browse URL → 规范化上下文；ADF→文本覆盖 doc/段落/标题/列表/代码块/引用/表格/提及等；AC 启发式标题段 + `AC:` 行，raw ADF 保留）与 `jira_issue_search`（`/rest/api/3/search/jql` POST、显式字段、limit 1–100、游标 `nextPageToken` 透传）。
+- **usage**：family 增加 `jira`（`jira_` 前缀），工具目录自动纳入 `aos_usage` 零调用统计；`aos_status` 增 `jira` 小节。
+- **边界**：M8a 只读；Server/DC、OAuth、建单、状态同步与证据回写（M8b/M8c）为票据 03–06；真实沙箱冒烟为人工验收（自动测试全 mock、不联网）。
+
+### 13.56 实施记录（iOS 真机 M9a：WDA 后端与真机验证，票据 00–03）
+
+> 实施于 2026-10-08；新增 `src/ios/appium/{client,session,facade,xml,capabilities,server,detect,service}.ts`；改 `runtime.ts`（`iosWda()`/`disposeIosWda()`/`appiumDetector`）、`tools/ios-state.ts`、`diff/device-source.ts`、`ios/task-runner.ts`、`server.ts`/`http-server.ts`（关停回收）、`tools/llm.ts`（`aos_status.ios`）、`commands.ts`（doctor）；依赖新增 `fast-xml-parser`；测试 `test/ios-appium-*.test.js`、`test/ios-wda-service.test.js` 共 25 例；全量 665 绿、lint 干净。spec/票据见 `.scratch/ios-real-device/`。
+
+- **spike 事实（票 00，真机 iPhone 12/iOS 26.6.2）**：隧道 registry `127.0.0.1:42314` 常驻；签名团队取证书 OU（本机 `Z35S33J39R`）+ `allowProvisioningDeviceRegistration`；`useNewWDA=false` 复用会话 ~1s；`mobile: typeText` 已移除 → `POST /keys`；键盘输入须先聚焦。
+- **真机端到端（票 03）**：`mobile_get_device_state` 经全新 MCP 进程（自动托管 Appium）——截图 10.2s（5.6MB PNG → `.artemis/traces/live_screenshots/`）/层级 7.2s（4549 字符真实主屏）✅；design diff / compare 真机受益于同一截图源。
+- **边界与待续**：M9b 套件真机复位已接线（注入 WDA façade）、`.ipa` 安装（票 05）完成；真机崩溃取证（票 06）已接入 `devicectl systemCrashLogs`（来源标识 `devicectl-systemCrashLogs`）；真机日志已接入 `idevicesyslog` 实时尾采样（窗口近似 + `clockWarning`；缺工具/窗口已过降级 `ios-log-tool-missing`/`window-elapsed-live-tail`；`AOS_IDEVICESYSLOG_PATH`/`AOS_IOS_LOG_TIMEOUT_MS` 可配；人工冒烟待执行）；Appium 异常退出仍可能遗留孤儿进程（关停路径已回收，崩溃路径后续加固）。
+
+### 13.57 实施记录（iOS 签名/Appium 配置分层：项目 .env 打底）
+
+> 实施于 2026-10-08；改 `runtime.ts`（新增 `iosEnv = { ...project.dotenvValues, ...baseEnv }`，默认 `detectAppium` 与 `IosWdaService` 改用之）与 `commands.ts`（doctor 检测同规则）；测试 `test/runtime.test.js` 增 1 例（打桩 fetch 断言会话 capabilities：dotenv 值生效、进程 env 覆盖）；全量 670 绿、lint 干净。README §iOS 真机与 `.scratch/ios-real-device/spec.md` 同步。
+
+- **动机**：`AOS_IOS_XCODE_ORG_ID` 等此前只读宿主级进程 env，多项目团队 ID 各异时同一实例无法各用各的（HTTP 单实例尤甚）；现与 LLM/Figma/Jira 的 per-project 配置一致，团队 ID 写入项目 `.env` 即可。
+- **优先级**：进程 env（客户端配置）仍覆盖项目 `.env`，全局限定语义不变；`aos_status.ios` / doctor 与真实会话读取同一分层 env。
+- **边界**：`ios/task-runner` 执行器调参（`AOS_IOS_MAX_STEPS` / `AOS_IOS_SETTLE_MS` / 视觉开关）仍读进程 env，未纳入本次分层。（§13.59 已收口：新增 `runtime.iosEnvironment()`，执行器开关统一走项目 `.env` 打底、进程 env 覆盖。）
+
+### 13.58 实施记录（pen 资源导入：`pen_import_assets`，v1 ids-only 位图）
+
+> 实施于 2026-10-09；新增 `src/pen/assets.ts`；改 `src/figma/import.ts`（`ImportPlanEntry`/`ImportResultEntry.figmaId` → `sourceId`、导出 `renderIosContents`、`RASTER_FORMATS` 加 `webp`、figma 报告加 `schemaVersion:2`）、`src/figma/gaps.ts`（`fallbackAssetName` 导出、参数泛化为源 id）、`src/server.ts`（工具注册）；测试新增 `test/pen-assets.test.js`（11 例）；人工冒烟 `scripts/e2e-pen-assets.mjs`（真实 CLI 0.3.10 实测：2x PNG 750×1710、报告 schema 正确、临时目录清理）。spec/两轮评审记录见 `.scratch/pen-assets/spec.md`。
+
+- **能力核实（修正旧结论）**：`pen interactive` 的 `execute` 提供 `Export(nodeIds, format, outputPath, options?)`（png/jpeg/webp/pdf/html；每节点独立文件 `<nodeId>.<ext>`、默认 2x、响应逐行 `Exported <绝对路径>`；无 `svg`）；此前"pen CLI 只能整档渲染"不成立——`pen_export` 只包了非交互 `--export`，本工具接 interactive 管道（复用 `runPenInteractive`）补齐按节点导出。
+- **批量与会话**：单次 interactive 会话、**命令数 = 倍率数、单命令携带全部 ids**（进程数与资源数解耦）；超时为**会话级**（`penExec` 每 spawn 一个硬超时），默认 `max(AOS_PEN_TIMEOUT_MS, 60s + ids×倍率×5s)`、`AOS_PEN_IMPORT_TIMEOUT_MS` 可覆盖、上下限 5s–30min（`resolveImportTimeoutMs`）。
+- **对账与缺产物判定**：ids 离线预校验（不存在即参数错误、不启 CLI）；产物 = 响应 `Exported` 路径 ∪ 临时目录扫描；缺产物逐项 `status:"error", error:"export-no-output"` + 批次告警（全缺=CLI/登录/格式问题，部分缺=节点可能零尺寸/不可见）；全缺时硬错误附日志尾。
+- **命名与幂等（身份/内容解耦）**：命名在 plan 阶段由身份决定（`formatAssetFilename`；脏名如 `Frame 427` 回退 `asset <sha1(源 id) 前 8 位>`），与导出内容无关（多倍率恒同名）；内容 sha256 只用于 `unchanged/skipped_exists/duplicate`；写盘/去重/栈规则全部复用 `src/figma/import.ts` 纯函数；iOS `Contents.json` 与 figma 产物一致（非矢量不写 `properties`）。
+- **报告与 schema**：`.artemis/design/import-report.pen.json`（独立于 figma 报告），payload 含 `source:"pen"`/`schemaVersion:2`/`penCliVersion`/`penPath`/`vector:"unsupported"`/`session{timeoutMs,scales,commands,exportedFiles}`/`counts`/`uniqueness`/`results`；字段更名（`figmaId`→`sourceId`）为内部类型级 breaking（测试只消费 `relativePath/status/role`，仓库内无报告字段消费方），figma 报告同批加 `schemaVersion:2`。
+- **边界与后续**：`dryRun` 仍执行渲染（去重结果依赖内容，语义同 `figma_import_assets`）；无 SVG 输出（P1 离线合成或等 CLI 支持）；候选启发式（v1.5）未实施；写盘纯函数下沉 shared 层为后续项（pen→figma 依赖为既有惯性）。
+
+### 13.59 实施记录（iOS 执行器理解强化：感知 / 循环 / 平台语义）
+
+> 实施于 2026-10-10；spec 与两轮评审见 `.scratch/ios-understanding-parity/spec.md`。新增 `src/ios/{occlusion,perception,noop}.ts`、`IosDeviceLogTail`（`src/device/ios-log.ts`）；改 `src/ios/task-runner.ts`（模型分流/终态验证/历史压缩/失败日志/开关）、`src/ios/vision.ts`（`resolveVisionMode`）、`src/tools/ios-state.ts`（遮挡告警）、`src/ios/appium/service.ts` 与 `src/device/ios-actions.ts`（观测重试）、`src/ios/{trace-store,inspect}.ts`（verification/failure_logs 透出与 search）、`src/runtime.ts`（`iosEnvironment()`）；README 同步。测试新增 `test/ios-{occlusion,perception,noop}.test.js` 与 iOS 执行器/日志/服务增量用例；全量 784 绿、lint 干净。
+
+- **感知档位（票 01/02）**：`AOS_IOS_VISION_MODE=auto|sparse|off`（默认 auto；`AOS_IOS_VISION_ALWAYS=1` 映射为 auto）。auto = 每步视觉输入：多模态主模型（`looksVisionCapable`）直附截图并由主模型决策；文本主模型（有 visionTarget）每步调视觉感知——模型只输出 `[{text,bounds_px}]`（截图像素坐标、不做算术），执行器按 `scale=像素宽/逻辑宽` 换算逻辑 pt、计算 Center，以 `[V#] (模型视觉，可能有误) OCR Text: … | Center: (x,y) | Bounds: …` 融合进元素列表（独立配额 30 行、不挤占 200 行元素预算；与可访问性文本规范化相等/包含去重；非法/越界丢弃）。`perception` 扩为 `text|image|vision-text|text-degraded`；丢弃计数写 run.json `vision_dropped`。多模态路径历史不保留旧截图（对齐 Android 中间截图裁剪）。`sparse` 保留旧阈值（可见文本 <3），`off` 纯文本。
+- **遮挡告警（票 03）**：移植 Android 互相遮挡算法（≥50% 重叠、排除同心父子包含），新增 iOS 合并规则：主导遮挡层（覆盖 ≥3 个文本元素且面积占屏 40–90%）输出单条全局告警并抑制相关逐元素告警，其余按重叠比取前 5 对。应用于执行器 prompt 与 `mobile_get_device_state` 的 `formatIosHierarchy`（输出契约变更，既有断言同步更新）。
+- **no-op 检测（票 04）**：元素签名（排除系统状态栏与顶带节点）与截图哈希（裁上下 5% 系统带）双不变判定；`wait` 不参与；连续 1/3 步注入策略提示、连续相同 action+params 注入换策略提示；step 记 `noop`、record 记 `noopStreak`。
+- **终态验证（票 05）**：`AOS_IOS_VERIFY=final|off`（默认 final）；`done(success=true)` 后补采一次 observation（失败标 `hierarchy:"stale"`），调用验证模型（默认主模型；`AOS_IOS_VERIFY_LLM` 可指定独立条目；非多模态模型不加截图）。fail 必须带非空 `failed_items`，否则 unavailable；`stale` 且验证模型非多模态直接 unavailable（不基于陈旧层级硬判）。pass → completed + 真实 `test_summary`（`synthesized:false`、`verification:"model-final"`、`verification_model`）；fail → failed，summary「验证未通过：…」，`failed_items` 入台账；unavailable 保持 completed 并显式标记。
+- **历史压缩（票 06）**：`AOS_IOS_HISTORY_STEPS`（默认 8，范围 4–20）；更早步骤输出动作链摘要（thought 首句 ≤40 字 + action + outcome，跳屏步带屏幕摘要），≤800 字符、超限首尾保留 + 省略标记；digest 写 run.json。
+- **失败日志（票 08）**：`AOS_IOS_LOG_FEEDBACK=0` 可关；失败终态前采集——模拟器用 `IosLogCollector` 时间窗过滤；真机用任务启动即挂的 `idevicesyslog` 环形缓冲（上限 200 行内存，失败终态落盘）；写 `logs/device.log`（来源/时间近似标注），摘要追加「设备日志已采集（N 行，来源 X）」；`mobile_inspect_trace` 的 view_summary 透出 `failure_logs`、search 可检索日志内容。不自动重试、不喂回循环（backlog）。
+- **观测重试（票 09）**：`AOS_IOS_OBSERVE_RETRY`（默认 1，范围 0–5）；真机 WDA `nodes()` 解析失败与模拟器 idb `describe-all` 失败各重试一次（300ms 间隔），仍失败保持既有 `parse_failed`/错误语义。
+- **平台语义（票 07）**：`tests.json`/`tests.md`/`tests.xlsx` 保持平台中立、零改动；`IOS_SYSTEM_PROMPT` 增规则：系统弹窗优先用 `alerts` 处理、视觉补充行与可访问性元素冲突时以可访问性元素为准。
+- **env 分层收口**：`runtime.iosEnvironment()` 暴露 `{ ...项目 .env, ...进程 env }`；执行器开关（步数/视觉/验证/历史/日志/重试）统一经此读取（§13.57 边界收口；项目 `.env` 现在也生效、进程 env 仍优先，向后兼容）。
+- **边界**：视觉感知走模型而非 macOS Vision framework OCR（backlog）；验证失败即终态、不自动修复重试；真机日志缓冲为长驻进程、可用开关关闭；`.scratch` 票 00（失败归因 + 零代码 A/B）为人工 spike，需设备执行、未随本批自动完成。
+- **脚本断言核对（增补 2026-10-10：长用例执行约束力闭环）**：生成侧 `linearizeFlowsWithStats` 返回与 `paths` 对齐的 `prefixes`（入口→切点导航前缀，非续段为空），`generateTestCases` 据此产出 `continuation/startScreen/prelude/expectations` 字段与 `【AOS-EXPECT】` 块（`src/figma/test-gen.ts`）；tests.md 增加接续段标注与前导清单，tests.xlsx 新增 `{{case.prelude}}`/`{{case.startScreen}}`/`{{case.continuation}}` 占位符（默认表"步骤"列续段前置 `P#)` 行）。执行侧 `src/ios/task-runner.ts` 导出 `parseScriptPlan`（解析 `start` + `steps`）；每轮观测与 done 后补采各做一次命中匹配（`matchScriptExpectations`），`buildScriptAdherence` 汇总；验证提示词新增"脚本断言核对"段（未出现项→ failed_items 候选）；无验证时摘要追加 `⚠` 行。**起始屏 preflight（同批）**：生成侧 `GeneratedTest.preflight`（入口屏 + hints）随 `start` 下发；执行侧 `IosScriptPreflight`（`pending/matched/unmatched/unchecked`）首步核对、未命中每步注入导航提示、`test_summary.preflight` 与 run.json `preflight` 留痕、验证提示词"起始屏核对（确定性）"段 + 摘要 `⚠` 行；建议级不硬失败。新增测试：`test/figma-testgen.test.js`（续段 prelude/字段/AOS-EXPECT 解析/preflight/覆盖率不回退）、`test/ios-task-runner.test.js`（`parseScriptPlan` 解析边界、命中/未命中核对、`test_summary.adherence`、preflight matched/unmatched、run.json）。全量 786 绿。
+
+### 13.60 实施记录（票 01：无交互数据检测与结构化告警）
+
+> 实施于 2026-10-10；CR 交互理解主线首票（spec `.scratch/cr-interaction-understanding/`，根决策 ADR-0007/0008）。改 `src/figma/flows.ts`、`src/pen/flows.ts`、`src/server.ts`（工具描述）；测试 +6；全量 792 绿。
+
+- **Figma**：`buildFlowGraph` 记录范围内携带原型交互的节点数（`interactionNodes`，随 flows.json 与工具 `counts.interactionNodes` 透出）；`flowGraphWarnings` 在「屏幕数 > 1 且 0 条边」时输出新码 `no-interactions`（文案区分「0 交互」与「有交互但未提取到可执行跳转」两态；details 列屏名；单屏文件不告警，避免噪声），与 no-entry/unreachable/unresolved 并列。
+- **pen**：`.pen` v2.20 经 schema 核实无原型交互字段（唯一链接性字段为 text `href`）；新增确定性检测 `detectPenInteractionSignals`（`href` + 交互类节点键 interactions/prototype/reactions/onTap/onClick/onPress/hotspot + `metadata.type` 交互线索；空值 false/0/空串/空数组/空对象不计数）。告警由恒定 `pen-no-interactions` 改为条件二选一：无线索保持（文案注明格式依据）；有线索改为新码 `pen-interactions-present`（显式标注「未解析、仍按画板推断」，不静默合成）；`synthesis.interactionSignals`、工具 `counts.interactionSignals`、flow-map 说明行随状态切换。
+- **边界**：本票仅检测与告警；线索解析与来源置标（provenance）属票 02+。
+- **测试**：`test/figma-flows.test.js`（无交互告警/单屏不告警/有交互不告警/有交互无跳转告警）、`test/pen-flows.test.js`（线索翻转/空值不计数/确定性/工具级响应与落盘产物）。
+
+### 13.61 实施记录（票 02：来源模型置标 provenance / confidence / 文本类别）
+
+> 实施于 2026-10-10；CR 交互理解主线第二票（ADR-0008）。新增 `src/provenance.ts`；改 `src/figma/flows.ts`（置标 + 类别 + `normalizeFlowGraph`）、`src/pen/flows.ts`、`src/figma/test-gen.ts`；测试 +7；全量 799 绿。
+
+- **词表**（CONTEXT.md）：`provenance ∈ {explicit, inferred, runtime-observed, human-confirmed, legacy-unknown}`（首个值从 ADR-0008 的「显式交互」放宽为「显式」，以覆盖显式设计对象/文本）；`confidence ∈ {high, low}`（explicit/observed/confirmed=high，inferred/legacy=low）；`textClass ∈ {runtime-text, annotation, layer-name}`（`Flow/*` 祖先层下的文本 = annotation）。
+- **产物**：flows.json 升 `schemaVersion: 2`——screens/edges 携带 provenance/confidence，`textHints` 从 `string[]` 变为 `{text, textClass}[]`（Figma=explicit/high；pen 合成=inferred/low）；tests.json 的 expectations 每步携带 provenance/confidence，`【AOS-EXPECT】` steps 同步带 provenance。
+- **兼容（保守消费）**：`normalizeFlowGraph`/`normalizeFlowHints` 读取旧 flows.json（缺字段/字符串 hints）→ legacy-unknown/low + runtime-text，不静默升权；未知 `textClass` 降级 `annotation`（只展示、不进断言）；畸形边引用校验（`to` 无名 → null）；**读取时 confidence 由 provenance 派生**（持久值仅供展示，自相矛盾字段不生效）。`figma_generate_tests` 读盘路径统一走 normalize；iOS 执行器解析 AOS-EXPECT 忽略未知字段（无回归）；原有内嵌 legacy 图（如手工夹具）经 `generateTestCases` 的容错读取同样可用。回填 = 重跑解析（解析器升级后产物自带）。
+- **边界**：本票只置标与透传；类别消费（批注不进断言）、推断边降级探索、门禁分级属票 03+。结构分类规则（`Flow/*` → annotation）已随字段落地，票 03 收敛为「消费过滤 + note 类细化 + starbucks 回归」。
+- **测试**：`test/provenance.test.js`（枚举归一含原型链键、confidence 映射、`Flow/*` 判定）、`test/figma-flows.test.js`（explicit/high 置标、Flow/* 批注分类、normalize 兼容两态 + 未知类别降级）、`test/pen-flows.test.js`（inferred/low、类别、schemaVersion=2）、`test/figma-testgen.test.js`（expectations/AOS-EXPECT provenance+confidence、legacy flows 端到端保守归一）。
+
+### 13.62 实施记录（票 03：批注/图层名消费过滤 + starbucks 回归）
+
+> 实施于 2026-10-10；CR 交互理解主线第三票。改 `src/figma/flows.ts`、`src/pen/flows.ts`（采集端分类限流）、`src/figma/test-gen.ts`（断言消费白名单）；测试 +4；全量 803 绿。
+
+- **消费过滤**：`runtimeHintTexts`（`textClass=runtime-text`）成为 expectations / 起始屏 preflight / 元素定位 label 的**唯一**断言候选来源（§13.70 起验收口径 `acceptance` 为其外另一硬断言来源）；批注文本与 childNames 图层名不再进入断言、`【AOS-EXPECT】` 与 taskDesc 断言文案（类别证据仍留在 flows.json 供展示/对账）；无运行期文本时元素定位回退到元素图层名（定位用途，非断言）。
+- **采集端分类限流（评审修复）**：hints 采集从"混合类别先截断"改为**按类别分别限流**且深搜索不因配额停止——批注洪水不再挤掉运行期文本（此前 3 条 `Flow/*` 批注在前即会让「早安, Amy」进不了 flows.json，消费过滤后断言为空）。
+- **note 类守门**：pen 侧 note/context/prompt 节点内容按类型门天然不进 hints（负向回归固化）；`Flow/*` 命名规则沿用 `isAnnotationLayerName` 单实现（票 02 已落；Figma 无独立 note 类型，判定即命名约定）。
+- **starbucks 回归**：合成含「刊頭廣告 - 活動跑馬燈」（批注）与图层名 childNames 的夹具 → expectations/起始屏/步骤 label/AOS-EXPECT 四层均只含运行期文本（「內用點餐」「早安, Amy☀️」「選擇門市」），批注文本全程不出现在 taskDesc。
+- **边界**：批注的「提示级展示」未新增渲染面（flows.json 已带类别）；弱断言告警在新口径下部分步骤增多（back/AFTER_TIMEOUT 文案自带「应」除外），留给票 05 的门禁分级。
+- **测试**：`test/figma-testgen.test.js`（starbucks 回归：四层过滤）、`test/figma-flows.test.js` / `test/pen-flows.test.js`（批注洪水回归：运行期文本存活 + 类别配额独立）、`test/pen-flows.test.js`（note/context/prompt 不进 hints）。
+
+### 13.63 实施记录（票 04：推断边 → 探索步骤，生成语义）
+
+> 实施于 2026-10-10；CR 交互理解主线第四票。改 `src/figma/test-gen.ts`（来源分流）、`src/figma/preflight.ts`（探索步骤不计弱断言、索引对齐）、`src/provenance.ts`（`isUnconfirmedProvenance` / `StepKind` / `isExploreKind`）；测试 +4；全量 807 绿。
+
+- **生成分流**：`isUnconfirmedProvenance`（inferred / legacy-unknown）的边生成**探索步骤**——通用文案「探索到达「X」（来源未确认）：自行尝试触发通往该页的交互，记录实际路径与页面变化；不参与断言判定」；`AFTER_TIMEOUT`（等待 N 秒后确认到达）、`back`（探索返回上一屏）、无目标（探索未知跳转）各有专用措辞，不覆盖 trigger 语义；explicit / observed / confirmed 走现行硬断言路径。
+- **结构化标记**：`StepExpectation.kind ∈ {assert, explore}`（tests.json 与 `【AOS-EXPECT】` steps 同步；`StepKind`/`isExploreKind` 归 `src/provenance.ts` 单点，preflight 不再字面量解码）；探索步骤 `hints=[]`（不断言，`screen` 保留为探索目标）；taskDesc 在含探索步骤时加「本用例含 N 步探索（来源未确认）…不参与 PASS/FAIL」行（**N 含续段前导探索步骤**）；tests.md/xlsx 经同一步骤文本自然呈现（三件套落盘有端到端断言）。
+- **kind = deferred 语义**：`kind=explore` 即「不参与 PASS/FAIL 的 deferred 步骤」；执行器的 deferred 运行语义（不硬失败、adherence 只核 hard）属票 06。
+- **门禁口径（承接）**：`suite check` 弱断言统计按**原始索引**对齐 `expectations[index].kind` 豁免 explore（字符串步骤过滤不再错位；legacy tests.json 无 expectations 时回退原「应」字口径）；覆盖口径的硬/探索分离属票 05。
+- **兼容**：旧 flows（legacy-unknown）在**断言/步骤**语义按保守 = 探索；**覆盖门禁**分类见 §6.10/§13.64（legacy 仍属硬目标——失败响亮，不静默弱化旧项目门禁）；旧 tests.json 无 kind 在 preflight 回退旧口径；iOS 执行器解析 AOS-EXPECT 忽略未知 `kind`（回归测试锁定）。
+- **测试**：`test/figma-testgen.test.js`（显式+推断混合分流、legacy 保守、trigger 语义专用措辞、AOS-EXPECT kind、md 渲染、三件套落盘含探索）、`test/pen-flows.test.js`（pen 合成全探索端到端）、`test/test-preflight.test.js`（explore 不计弱断言）、`test/ios-task-runner.test.js`（parser 对 kind/provenance 未知字段容错）。
+
+### 13.64 实施记录（票 05：覆盖口径硬/探索分离 + `--strict`）
+
+> 实施于 2026-10-10；CR 交互理解主线第五票。改 `src/figma/coverage.ts`（分类覆盖单一实现）、`src/figma/test-gen.ts`、`src/figma/preflight.ts`、`src/suite-command.ts`、`src/provenance.ts`（`isHardCoverageTarget`）；测试 +3；全量 810 绿。
+
+- **分类口径**：`computeClassifiedCoverage` 复用 `computeScreenCoverage` 实现硬/探索两分区——**硬类 = 非 `inferred`**（explicit/observed/confirmed 及 legacy-unknown：旧产物保持门禁强度，失败响亮）；**探索类 = `inferred`**（pen 合成等；不参与门禁，仅报告）。
+- **生成闸**：`FlowCoverage.complete/uncoveredScreens/uncoveredEdges` 转为硬覆盖语义，新增 `explore: {uncoveredScreens/uncoveredEdges/complete}`；`requireFullCoverage` 按硬覆盖判定（inferred 不虚高门禁），报错文案并列探索缺口；响应 hint 与工具描述同步口径。
+- **执行预检**：`PreflightCoverage` 读 flows.json provenance 拆分（`screens` 仍为全量覆盖并集，供路线漂移检测）；`suite check`/`suite run --fail-on-uncovered` 门禁只看硬覆盖；输出行标注「未硬覆盖 … · 探索缺口 …（不阻断）」，JSON 输出含 `coverage.explore`。
+- **`--strict`**：`check` 与 `run --fail-on-uncovered` 支持；开启时非探索弱断言（preflight weakCases，explore 已豁免）计入门禁 exit 2；默认行为与退出码语义不变（0/1/2）；`run --strict` 未带 `--fail-on-uncovered` 时输出提示（不静默失效）。
+- **留白与同步**：纯推断图（无硬目标）生成闸为空真通过——探索缺口在 `coverage.explore` 可见，不视为已验证；`suite loop` 报告并列探索缺口计数（json/md）；`computeClassifiedCoverage` 复用单一实现，legacy=硬 的决策有单测锁定。
+- **测试**：`test/figma-testgen.test.js`（硬闸不被 inferred 虚高、探索缺口仅报告、legacy 仍门禁）、`test/test-preflight.test.js`（provenance 拆分）、`test/suite-command.test.js`（check 默认 0 / `--strict` exit 2 / 探索步豁免）、`test/suite-loop.test.js`（探索缺口计数）。
+
+### 13.65 实施记录（票 06：iOS 探索步骤执行语义）
+
+> 实施于 2026-10-10；CR 交互理解主线第六票。改 `src/ios/task-runner.ts`；测试 +2；全量 812 绿。
+
+- **解析**：`parseScriptPlan` 读取 `【AOS-EXPECT】` steps 的 `kind`（`isExploreKind`；缺省 = assert，兼容旧产物），`IosScriptExpectation.kind` 复用 `StepKind`（provenance.ts 单点定义）。
+- **adherence 分区**：`buildScriptAdherence` 只统计 assert 类（checkable/satisfied/unchecked/unresolved）；新增 `deferred: {total, reached}`——探索步骤不进 unresolved 口径；`reached` 口径为**目标屏名作为完整可见标签出现**（按 ` | ` 拆分的标签集合精确匹配，杜绝短屏名子串误命中）；步骤级 `scriptHits` 继续记录命中。
+- **执行语义与保障等级**：系统提示词新增规则 9（探索步骤不参与 PASS/FAIL，**显式覆盖规则 5**：找不到入口记录实际路径后继续或 done，不要用 fail 中止）；验证提示词新增「另有 N 步探索（deferred）不参与本次判定，请勿因此写入 failed_items」；完成摘要的 `⚠ 脚本断言未出现` 只为 assert 未命中出现。**保障等级为提示级 + 验证豁免**：模型若仍对探索未达成输出 `fail` 会中止任务（无法把 fail 机械归因到具体步骤），真实失败（崩溃等）也应如实失败——不做机械拦截，已在本文档明示。
+- **透出**：run.json `script_adherence` 全量（含 deferred）；`test_summary.adherence` 在 `deferred.total>0` 时携带 deferred（adherence 分区后，纯探索用例不会被整体省略）。
+- **不回归**：hard 断言命中/未命中、preflight、终态验证通路不变。
+- **测试**：`test/ios-task-runner.test.js`（parser kind、deferred 分区与 reached、验证提示词豁免、test_summary deferred、探索未达成仍 completed、旧用例 deferred=0）。
+
+### 13.66 实施记录（票 07：`design-inference` 失败域 + 报告来源显示）
+
+> 实施于 2026-10-10；CR 交互理解主线第七票。改 `src/artemis/failure-taxonomy.ts`、`src/artemis/task-result.ts`、`src/figma/suite-runner.ts`、`src/figma/run-report.ts`、`src/suite-command.ts`、`src/figma/suite-loop.ts`、`src/provenance.ts`（`summarizeScriptProvenance`）；测试 +2；全量 814 绿。
+
+- **失败域**：新增 `design-inference`，归类规则插在 data-environment 之后、behavior-or-design 之前（崩溃/环境/API/数据等强信号优先，不冲突）：用例失败且 failedItems 非空时——脚本**纯探索**（asserts=0、explores>0）→ confidence high；**混合脚本**需**双证据**才判 medium：`unresolvedAsserts===0`（iOS adherence 显式回传断言全命中）且 `exploresReached < explores`（探索未全达成）；无 adherence（Android/计划解析失败）或探索全达成或断言未出现 → 回落 `behavior-or-design`。**优先级取舍**：数据/登录类文案启发式先于 design-inference（纯探索用例的真实数据问题仍归 data-environment），已在测试锁定。
+- **输入信号**：`FailureInput.scriptProvenance {asserts, explores, unresolvedAsserts?, exploresReached?}`；tests.json `expectations.kind` 经 `summarizeScriptProvenance`（provenance.ts 单点）汇总；iOS `test_summary.adherence`（unresolved/deferred reached）解析进 `TaskTestSummary.adherence`（`task-result.ts`）；组装由 `scriptProvenanceSignal` 单点（suite-runner / run-report 共用）。
+- **报告来源显示**：`SuiteCaseResult.scriptProvenance` 入套件 JSON 与控制台（`[FAIL] … · 脚本 断言N/探索M`）；run-report xlsx 增「脚本来源」列（`断言 N / 探索 M`）；JUnit failure message 含归类理由（含探索计数）；`suite loop` 失败域动作文案列全域名；移动任务摘要在 `test_summary.adherence` 透出 assert/explore（来源）计数与归类置信度（套件侧）。
+- **边界与延后**：①「设计↔观测冲突 → design-inference」的冲突信号依赖对账资产（票 08/09），本票只覆盖推断来源失败；②`jira_evidence_post` 归域未接 `scriptProvenance`（无 tests.json 上下文），与套件报告在纯探索场景可能不一致——按需后续接线；③轮询超时且中途有 failedItems 的路径沿用既有优先级（failedItems 分支先于 timedOut），不在本票调整。
+- **测试**：`test/failure-taxonomy.test.js`（纯探索 high / 双证据 medium / 断言未出现回落 / adherence 缺失回落 behavior-or-design / 探索全达成回落 / 数据信号优先 / 崩溃优先）、`test/suite-runner.test.js`（端到端归类 + scriptProvenance 透出）、`test/run-report.test.js`（xlsx 列头与值）。
+
+### 13.67 实施记录（票 08：对账资产核心——证据记录 + 导航级自动升级）
+
+> 实施于 2026-10-10；CR 交互理解主线第八票（ADR-0004 资产模式，ADR-0007 升级规则）。新增 `src/figma/reconciliation.ts`；改 `src/figma/suite-runner.ts`（摄取接线）、`src/figma/test-gen.ts`（生成消费）；测试 +9；全量 823 绿。
+
+- **资产 schema（v1，`.artemis/design/reconciliation.json`）**：逐边条目 `{from, to, designProvenance, provenance, status: pending|upgraded, traces[]（完整审计轨迹，不截断——保证任意 trace 重放幂等）, hits, lastSeenAt}`；纯函数 `parse/serialize/applyObservations/applyReconciliationToGraph/hitsFromRunSteps`，读写薄 IO（load/save，原子写、缺省空资产、损坏容错、保留已有 version），稳定排序（edge key `"From → To"`）。
+- **摄取（执行 → 资产）**：`suite run` 每例终态且为 iOS trace 时，读 trace `run.json` 的 `steps[].scriptHits`，把探索步骤（tests.json expectations kind=explore，含屏幕名与来源）映射为边（screens 序列中目标屏的**最后一次**出现的前一屏 → 目标屏，回访屏不错配）：命中的边计数并升级；**未命中的边登记为 pending 差异条目**（套件钩子不再以"有命中"为前提；设计与真机观测未对上，待审阅/复跑）。同 trace 重放幂等。best-effort：失败 `logWarn` 不阻断套件。
+- **升级规则（导航级）**：阈值 = 1 次观测命中即升级（`designProvenance` 为 inferred/legacy 时才升级；explicit 记录但不改写）；pending → upgraded 生命周期有测试锁定；硬断言级升级不在自动范围（留票 09 人工/验收口径）。
+- **生成消费（资产 → 生成）**：`figma_generate_tests` 读盘/现场提取后都叠加资产——已升级边把 inferred/legacy 置为 `runtime-observed`/high，下一次生成直接产出硬断言（不再探索），响应带 `reconciliation.upgradedEdges`；无资产文件时输出与旧行为一致（显式测试）。
+- **边界**：Android/无 run.json 的 trace 不摄取（记录计数不可得）；冲突仲裁与人工确认属票 09；资产不参与 diff 判定（ADR-0001）；屏幕名即边身份的局限（跨屏同名/改名）留待审核面按 nodeId 强化。
+- **测试**：`test/reconciliation.test.js`（观测计数/幂等/pending 生命周期/explicit 不改写/稳定排序/损坏容错/图叠加/hits 解析/ingest 落盘含差异登记）、`test/figma-testgen.test.js`（升级边生成硬断言 + 响应计数 + 无资产零变化）、`test/suite-ios.test.js`（iOS 运行→升级+差异双条目端到端）。
+
+### 13.68 实施记录（票 09：对账审阅面——CLI/MCP 人工确认）
+
+> 实施于 2026-10-10；CR 交互理解主线第九票。改 `src/figma/reconciliation.ts`（审阅纯函数 + 工具 handler + 共享 listing）、`src/suite-command.ts`（`suite reconcile`）、`src/server.ts`（`reconciliation` 工具注册）；测试 +6；全量 829 绿。
+
+- **资产 schema 扩展**：entry 增 `review {decision: confirmed|rejected, reviewer, at, note?}`；`status ∈ {pending, upgraded, confirmed, rejected}`；确认 → provenance `human-confirmed`（硬断言级），驳回 → 回落 `designProvenance`；观察升级逻辑不变（已确认/驳回条目不再被观测改写，命中仍记录为审计轨迹）。解析时 **review 决定优先于陈旧 status**；重复决定未传 reviewer 时保留上次记录。
+- **纯函数**：`reviewEdge(asset, {from,to,decision,reviewer?,note?,at})` 幂等（重复同一决定仅刷新 reviewer/时间、不追加历史；改判覆盖为最新决定并把被取代项追加进 `history`，上限 10——见 §13.74）；未知边返回可行动错误（提示先跑套件或核对屏幕名）。
+- **共享输出面**：`reconciliationListing(configDirAbs)` 单点构造（counts/edges/`toTextHints` 目标屏运行期文本上下文/一次读取 flows.json 建屏名 Map），MCP 工具与 CLI（文本与 `--json`）同形输出。
+- **MCP 工具 `reconciliation`**（screen-map 先例：模块内导出 handler、错误边界 try/catch）：list / confirm / reject（可选 reviewer/note）。
+- **CLI `suite reconcile list|confirm|reject [--from --to --reviewer --note --json]`**：confirm/reject 缺参 exit 2、未知边 exit 1、成功 exit 0，并提示后续生成行为（human-confirmed 硬断言 / rejected 不生成）。
+- **生成消费**：`applyReconciliationToGraph` 扩展——confirmed → `human-confirmed`/high（硬断言路径）；rejected → 从流程图**移除**（不再生成，覆盖口径随图）；响应带 `reconciliation.{upgradedEdges,confirmedEdges,rejectedEdges}`（零值省略）；**未裁决（pending）不升权**有生成侧测试。
+- **corrupt 判定修正**：仅 JSON 不可解析记 corrupt（合法的空 `{"version":1,"edges":[]}` 不再误报）；部分坏条目静默丢弃（记录为已知边界）。
+- **边界**：观测摄取只产生探索边条目，explicit 边通常不入资产（人工确认/驳回按边名仍可作用于 explicit——人工权威）；审阅只针对资产已有条目；屏幕名即身份（改名/同名需 list 核对）；rejected 移除边不单独报告可达性影响（覆盖分母随图缩小，记录为已知边界）。
+- **测试**：`test/reconciliation.test.js`（决定幂等/改判/未知边/reviewer 保留/图叠加 confirmed+rejected/工具 handler 列表含文本上下文与可行动错误）、`test/figma-testgen.test.js`（观测→审阅→生成单链：确认边硬断言 + 驳回边移除 + 响应计数 + 未裁决不升权 + 无资产零变化）、`test/suite-command.test.js`（reconcile list/confirm/reject 退出码 0/1/2 与资产落盘）。
+
+### 13.69 实施记录（票 10：元素级映射自动发现 + accessibilityIdentifier 建议）
+
+> 实施于 2026-10-10；CR 交互理解主线第十票。改 `src/diff/screen-map.ts`（elements 资产 + 匹配/建议/合并纯函数）、`src/figma/suite-runner.ts`（iOS 摄取接线）、`src/figma/test-gen.ts`（生成消费 a11y 建议）、`src/server.ts`（screen_map 工具 elements 参数/输出）；测试 +6；全量 835 绿。
+
+- **资产扩展（screen-map.json，与屏幕级共存）**：新增 `elements: ElementMapEntry[]`（`{screen, text, observedLabel, identifier, confidence, source, hits, traces, lastSeenAt}`）；空数组不落盘（向后兼容——既有文件序列化字节不变）；稳定排序（screen+text）；`loadScreenMap` 的 corrupt 判定修正为「entries 与 elements 皆空」（elements-only 文件不再误报损坏）。
+- **匹配规则（确定性）**：设计运行期文本（tests.json expectations hints，trim 后为身份）↔ 观察标签（iOS `run.json` 各步 `screen` 文本摘要按 ` | ` 拆分）**唯一精确归一匹配**（去空白 + 小写，`normalizeElementLabel` 单点共享）；设计文本归一后冲突或未出现 → 跳过（不猜）；重复观察标签折叠；命中 confidence=1。**同 trace 幂等**（entry `traces` 去重，重放不膨胀）。
+- **identifier 建议**：latin 词 → camelCase（小写字母开头，单字母合法）；纯非 ASCII → `element_<sha1 前 8>`（稳定幂等）。
+- **人工补（关键路径）**：`screen_map(action:"save", elements:[…])`（source 强制 manual；与自动条目按 screen+text 合并，**manual 的 identifier 不被观察覆盖**）；**工具 schema 已暴露 `elements`（server-smoke 锁定，防止 zod strip 断链）**；list 输出 `elements`。
+- **生成消费**：`figma_generate_tests` 载入 elements（按 hits 优选，键为归一文本——同文案跨屏建议同一 identifier，属约定行为）→ 步骤元素注记追加 `；a11y: <identifier>`（tests.md/xlsx/taskDesc 同步）；无建议时行为不变。
+- **口径与边界（明示）**：本票实现为「运行期文本 ↔ 观察标签」映射，**不含 design nodeId 与几何维度**（backlog §13.72 已补：hints/screen 携带 nodeId+bounds、条目归一 bounds、tap 几何消歧）；自动发现双端可用（iOS trace `run.json`；Android `data_engine.db`，§13.73）；简报已接线（§13.71）；`screenTextSummary` 截断（60 元素/4000 字符）可能漏配尾部标签；纯探索边 hints=[] 不参与元素发现（其目标屏文本可经 assert 边进入）。
+- **测试**：`test/diff-screen-map.test.js`（建议确定性含单字母/唯一匹配/歧义跳过/合并与 manual 优先/trace 幂等/序列化兼容/落盘幂等）、`test/suite-ios.test.js`（运行 → elements 落盘）、`test/figma-testgen.test.js`（步骤 a11y 注记）、`test/server-smoke.test.js`（screen_map schema 暴露 elements + reconciliation required 锁定）。
+
+### 13.70 实施记录（票 11：验收口径入生成——设计标注先行）
+
+> 实施于 2026-10-10；CR 交互理解主线第十一票（spec Q8；收尾票）。改 `src/figma/flows.ts`（验收采集 + 共享判定）、`src/pen/flows.ts`、`src/figma/test-gen.ts`（硬断言来源 + `acceptance.json` 覆盖）；测试 +5；全量 840 绿。
+
+- **识别规则（设计标注先行，确定性）**：`Flow/AC*` 命名分组内的文本（整条为口径）或 `Flow/*` 批注中 `AC:` / `验收(标准|条件|要求)：` / `驗收(標準|條件|要求)：` 前缀文本（**大小写不敏感**、**支持多行**；词表与 Jira 验收启发式对齐）；**空体/仅有前缀 → 忽略**（模糊口径保守留在展示级批注，不进断言）；每屏上限 5 条；随 flows.json screens 的 `acceptance` 字段落盘（无口径不写字段；normalize 去重、过滤空项与非法类型、空数组不落字段）。
+- **硬断言来源绑定**：assert 步骤的期望 hints 优先取目标屏 `acceptance`（`hintsSource:"acceptance"`，上限 5 与存储一致），否则取运行期文本（`hintsSource:"runtime-text"`）；探索步骤仍 `hints=[]`（导航未确认前不硬断言，**口径在观测/人工升级后生效**——有端到端回归）；`【AOS-EXPECT】` steps 携带 `hintsSource`（执行器忽略未知字段，无回归）。
+- **人工确认覆盖**：`.artemis/design/acceptance.json`（`{screens:{"<屏名>":["条目"]}}`；可附加 `data`/`questions`/`section`，见 §13.135）在生成时覆盖同名屏的注释口径（**人工确认优先**；来源可视为文件作者，无 reviewer 字段；口径侧冲突由覆盖语义解决，**不经 09 审阅面**——导航级冲突仍走 08/09；文件非法 → 忽略并回退注释，§13.135 起对非法 data/questions/section 条目出可见警告）；Jira AC 摄取留后续集成。
+- **冲突与提示级口径**：验收条目优于运行期文本（确定性优先）；「无口径的屏保持提示级」——运行期文本断言为建议级（执行器不断言硬失败），起始屏 preflight 仍只取运行期文本（边界）。
+- **测试**：`test/figma-flows.test.js`（Flow/AC 组 + `AC:` 行 + 大小写/多行 + 空体忽略 + 无口径缺省 + normalize 容错）、`test/pen-flows.test.js`（同规则）、`test/figma-testgen.test.js`（hintsSource 双源 + AOS-EXPECT 字段 + acceptance.json 覆盖 + 升级后口径生效端到端）。
+
+### 13.71 实施记录（backlog：build-brief 接线 a11y 标识建议）
+
+> 实施于 2026-10-10；CR 交互理解主线 backlog 首项（闭合 §13.69「简报未接线」边界）。改 `src/figma/brief.ts`（`BriefData.accessibility` + `briefAccessibility` + md 第 7 节）、`src/pen/brief.ts`；测试 +2；全量 842 绿。
+
+- **接线**：`figma_export_brief` / `pen_export_brief` 读取 `.artemis/design/screen-map.json` 的 elements（稳定排序 screen+text），写入 build-brief.json 的 `accessibility: [{screen,text,identifier,source,hits}]`；build-brief.md 在元素非空时新增「## 7. 无障碍标识建议（a11y）」表（下一节顺延为 8；元素为空时编号回退、既有输出不变）。
+- **用途**：代码侧实现组件时直接采用建议 identifier（与测试侧步骤 `a11y:` 注记同源），闭合「设计 → 代码」锚点一致。
+- **边界**：建议来源于观测/人工映射（无 elements 即不出章）；Jira AC 仍 backlog。
+- **测试**：`test/figma-brief.test.js`（md 第 7/8 节与回退编号、`briefAccessibility` 排序与缺省空）。
+
+### 13.72 实施记录（backlog：几何 / design nodeId 元素映射）
+
+> 实施于 2026-10-10；backlog 第二项（承接 §13.69 边界）。改 `src/figma/flows.ts`、`src/pen/flows.ts`（hints/screen 携带 nodeId + design-px bounds）、`src/diff/screen-map.ts`（条目 nodeId/归一 bounds、按屏作用域匹配、tap 几何消歧、`observedTapsFromRunSteps`）、`src/figma/suite-runner.ts`（flows 元数据富化 + taps 摄取）；测试 +3；全量 845 绿。
+
+- **设计侧富化**：`FlowHint` 增 `nodeId`/`bounds`（design px 绝对坐标；Figma `absoluteBoundingBox`、pen x/y/w/h），`FlowScreen` 增 `bounds`；随 flows.json 落盘（additive，schemaVersion 仍 2；normalize 校验、legacy 缺省）。
+- **元素条目**：`ElementMapEntry` 增 `designNodeId`/`bounds`（**归一 0..1 per screen**：`(rect − screen) / screen`）；条目身份键 = `(screen, nodeId, text)`（同屏同名不同节点各自独立；无 nodeId 时行为不变）。
+- **匹配升级（按屏作用域）**：跨屏同名文本不再互斥（各屏独立条目，修正 §13.69 的全局去重）；同屏同名按 nodeId 去重；同屏多候选时用 **trace 级 tap 几何消歧**——tap 归一坐标（截图像素 ÷ step.scale ÷ 启动截图逻辑尺寸，PNG 头解析）落在恰一个候选矩形内 → 命中（confidence 0.8），命中 0 或多个 → 跳过（不猜）。
+- **摄取接线**：`suite run`（iOS）元素发现时读 flows.json 富化 hint 元数据（屏 bounds + 节点 nodeId/bounds），并从 run.json tap 步骤（shot+scale+PNG 尺寸）计算归一 taps；flows 缺失/截图不可读 → 退回纯文本匹配（行为同 §13.69）。
+- **边界**：tap 为 trace 级证据（不按步归屏）；几何消歧仅用包含判定（无距离阈值参数）；Android 自动发现由 §13.73 接线；identifier 建议规则不变。
+- **测试**：`test/figma-flows.test.js` / `test/pen-flows.test.js`（nodeId+bounds 采集）、`test/diff-screen-map.test.js`（按屏作用域、几何消歧含双命中与无几何跳过、taps 归一化与缺截图退化、归一 round-trip）、`test/suite-ios.test.js`（flows 元数据富化端到端）。
+
+### 13.73 实施记录（backlog：Android 侧自动发现）
+
+> 实施于 2026-10-10；backlog 第三项（接 §13.69/§13.72 的 Android 边界）。新增 `src/artemis/android-trace.ts`（`node:sqlite` 只读）；改 `src/figma/suite-runner.ts`（非 iOS trace 摄取分支；`buildElementDesigns` 抽公共）；测试 +2（`node:sqlite` 缺失自动 skip）；全量 847 绿。
+
+- **数据源（离线可核，artemis 子模块为事实源）**：`<tracesDir>/data_engine.db`（SQLite；子进程以 `session_id == trace_id` 记账）；`steps.action_taken` JSON（`{action, coordinates, coordinate_space:"normalized"}`，Flash 记录模型 0–1000 归一坐标）+ `images.ocr_result` JSON（`[{text, position}]`）。tap 归一：`relX/relY = x/1000`。
+- **对账摄取**：探索步骤「到达」判定为确定性 OCR 匹配——目标屏设计运行期文本（flows.json 归一化）或屏名出现在 OCR 标签集即命中（→ `hitIndexes` → 既有 `ingestExplorationObservations`）；未命中不记 hit（pending 差异照常登记）。
+- **元素映射**：OCR 文本作 `observedLabels`、归一 tap 作 `observedTaps`；设计侧富化与 iOS 共用（`buildElementDesigns`）；同屏重名同样走几何消歧。
+- **降级**：DB 缺失/`node:sqlite` 不可用（Node < 22.5，动态 import 失败）→ 静默跳过（无发现、不报错）；**schema 漂移经显式 PRAGMA 列守卫探测 → 记 warn + 跳过**（ADR-0009）；AOS 本体 Node ≥ 20 兼容不受影响（仅该功能需 ≥ 22.5，README 注明）。
+- **边界**：Android 无 AOS-EXPECT adherence（断言核对仍 artemis 自管）；到达门槛为 1 个设计文本/屏名命中（OCR 缺失即无证据，保守）；未标 `coordinate_space` 的动作不计 tap。
+- **测试**：`test/android-trace.test.js`（DB 读取/标签与归一 taps/未知 trace 与缺库退化 + 套件端到端：OCR 命中升级对账边、元素条目带 designNodeId；`node:sqlite` 缺失自动 skip）。
+
+### 13.74 实施记录（backlog：对账决定历史 + 反向观测）
+
+> 实施于 2026-10-10；backlog 第四项（收尾）。改 `src/figma/reconciliation.ts`（direction/history + `applyRuntimeOnlyObservations`）、`src/artemis/android-trace.ts`（pre/post 标签 + transitions）、`src/figma/suite-runner.ts`（设计上下文 `loadDesignContext`、屏匹配 `bestScreenForSummary`、双端反向摄取）、`src/suite-command.ts`（list 呈现）；测试 +4；全量 849 绿。
+
+- **决定历史**：`reviewEdge` 仅在**决定变更**时把被取代的 review 追加进 `entry.history`（上限 10，含 reviewer/note/时间），同决定重复只刷新时间/reviewer；normalize 持久化 history；CLI list 追加 `决定历史 confirmed→rejected` 呈现；工具 JSON 全量透出。
+- **方向模型**：entry 增 `direction: "design" | "runtime-only"`（缺省 design，legacy 兼容）。runtime-only 条目：`designProvenance: legacy-unknown`、`provenance: runtime-observed`、初始 status pending；**永不影响生成**（`applyReconciliationToGraph` 过滤 runtime-only；审阅 confirm/reject 仅裁决留痕，provenance 保持观测级）。
+- **反向观测摄取（真机有设计无）**：iOS——`run.json` 步屏文本摘要压缩后取相邻转移；Android——`data_engine.db` 步骤 pre/post OCR 标签集合不同者；两侧统一经 `bestScreenForSummary`（按屏匹配数取唯一最大；并列/无匹配 → 弃，不猜）映射到设计屏；设计图已有该边（`edgeKeys`）则跳过；同 trace 幂等（traces 去重）、按边去重。
+- **边界**：反向观测为**证据级**（不生成、不升级、不硬断言）；映射并列即弃（保守）；Android 转移依赖 pre/post 图落盘（缺 post 即无证据）。
+- **测试**：`test/reconciliation.test.js`（历史追加/同决定不追加/round-trip；runtime-only 创建/幂等/design 优先/不升权/审阅留痕）、`test/android-trace.test.js`（transitions 采集 + 端到端逆向条目）、`test/suite-ios.test.js`（iOS 逆向条目端到端）。
+
+### 13.75 实施记录（iOS 设备解析收口：`resolveIosDevice` + `Runtime.iosDevice`）
+
+> 实施于 2026-10-11；架构评审候选 A（`improve-codebase-architecture`，见临时报告）。新增 `src/device/ios-facade.ts`（纯模块 `resolveIosDevice`）；改 `src/runtime.ts`（`iosDevice(serial)` 绑定）、`src/ios/task-runner.ts` / `src/figma/suite-runner.ts` / `src/device/ios-reset.ts`（3 个设备构造点迁移）；测试 +6（`test/ios-facade.test.js` 5 例 + `test/ios-reset.test.js` 1 例）；全量 855 绿、lint 干净。
+
+- **动机**：真机后端（M9a/M9c）叠加后，"选后端"的内联三元表达式散在多个调用点（`task-runner` 任务设备、`suite-runner` 复位注入、`ios-reset` 默认构造），真机 serial 在无注入时会错造模拟器设备；按 artemis `create_driver` 的先例收成单一设备解析入口。
+- **机制**：`resolveIosDevice(serial, deps)`——非 iOS serial → `null`；模拟器（UUID 形态）→ `makeIosDevice`（`simulatorOptions` 透传，测试注入 exec/env/platform）；真机（8-16 / 40 hex）→ `deps.wdaDevice(udid)`，缺 provider → 明确抛错。`Runtime.iosDevice(serial)` 绑定 `this.iosWda().device`，为生产唯一入口；设备构造点不再各自分支。
+- **边界**：观察读取（`tools/ios-state.ts`、`diff/device-source.ts` 的 `IosWdaService.screenshot/nodes`，含 observe 重试/`parse_failed` 归并）不在本次范围，保持现状（留给后续"平行实现收敛"候选）；`classifyIosSerial` 仍保留用于行为判定（复位策略、日志分支、`.ipa` 门禁）。`ios-reset` 的行为变化：真机 serial 无注入时由"错造模拟器设备"改为显式报错（`suite` 生产路径本就注入 WDA 设备，不受影响）。
+- **测试**：`test/ios-facade.test.js`（非 iOS → null 且零 provider 调用；模拟器本机构造且不触 WDA；`simulatorOptions` 透传生效；真机走 provider；真机缺 provider 抛错）、`test/ios-reset.test.js`（真机无注入 → `/WDA provider/` 拒绝）。
+
+### 13.76 实施记录（iOS 平行实现收敛：日志窗口策略 / 崩溃分发 / trace raw 读取 / 观察截图取源）
+
+> 实施于 2026-10-11；架构评审候选 B（承接 §13.75）。改 `src/device/ios-log.ts`（新增 `collectWindowLogs` 窗口策略与类型）、`src/ios/task-runner.ts`（`collectFailureLogs` 只留落盘与 `IosFailureLogs` 组装）、`src/crash/ios-dispatch.ts`（新，`collectIosCrashesFor` 分发）、`src/runtime.ts`（崩溃采集改经分发，删除 `useDevice` 分支）、`src/ios/trace-store.ts`（新增 `readIosRunPayload`）、`src/figma/suite-runner.ts`（对账读取改经 trace-store）、`src/tools/ios-state.ts`（截图取源改经 `runtime.iosDevice` 门面）；测试 +6（`test/ios-log.test.js` 3 例、`test/ios-crash-dispatch.test.js` 3 例）；全量 861 绿、lint 干净。
+
+- **动机**：A 落地后仍存在的"同概念多实现"——日志窗口策略在 task-runner 重写、崩溃分发在 runtime 手写、suite 对账直读 run.json、`mobile_get_device_state` 观察截图自行按 kind 选源。
+- **日志（B2）**：`collectWindowLogs({serial, windowStartMs, windowEndMs, processName?, tail?, collector?, env?, nowMs?})` 收口策略——tail 快照（真机实时尾）→ 模拟器 `log show` → 真机无 tail `no-collector`；`ok` 时 lines 必非空（空窗口以 `skipped` 表达）；窗口过滤由实现侧适配（`clockWarning` 标注近似）。task-runner 保留 `persistFailureLogs`（`logs/device.log` + `IosFailureLogs` 契约）。
+- **崩溃（B3）**：`collectIosCrashesFor(serial, window, dispatch)`——`{via:"injected"}`（注入覆盖，来源标 `diagnostic-reports`；互斥 union）或 `{via:"auto"}`（按 serial 种类：模拟器 DiagnosticReports / 真机 devicectl，source 随实现）；runtime 的 `useDevice` 判断删除，注入缝保留（`deps.collect` / `iosCrashCollector` 改为 `IosCrashCollectFn`）。
+- **trace（B4）**：`trace-store.readIosRunPayload(traceDir)` 暴露原始 run.json（缺失/不可解析 → null，调用方判空）；suite 对账不再直读文件。
+- **截图（B1）**：`mobile_get_device_state` 截图（含 `parse_failed` 回退）改经 `deps.device ?? runtime.iosDevice(serial)` 门面取图；错误文案真机保留"真机截图失败"前缀、模拟器透出底层错误（错误码映射退场）；层级读取（`IosWdaService.nodes` 的 observe 重试）与 `device-source` 的 note 标签保持原路径（本切片显式不动）。
+- **边界**：层级两个 formatter 不合并（0-1000 人读 vs 逻辑点 prompt，契约不同；共享 occlusion 已抽出）；`device-source` 截图保持现状（note 的 idb/simctl 标签保真）。
+- **测试**：`test/ios-log.test.js`（tail 优先窗口过滤、真机无 tail 降级、模拟器采集器与异常/空窗）、`test/ios-crash-dispatch.test.js`（按 kind 分发 + injected 覆盖 + source 标注）、`test/ios-device-state.test.js`（注入缝由 `captureIosPng`/`wda` 换为 fake `device`）。
+
+### 13.77 实施记录（iOS 执行器拆分：task-runner 门面 + 9 个实现模块）
+
+> 实施于 2026-10-11；架构评审候选 C（承接 §13.75/§13.76）。`src/ios/task-runner.ts`（1,908 行）拆分：`types.ts`（记录/状态类型 + `VerifierTarget`）、`task-registry.ts`（任务内存注册表）、`script-plan.ts`（【AOS-EXPECT】解析与贴合）、`prompt-history.ts`（system prompt/屏幕格式化/历史摘要/提示）、`verifier.ts`（终态验证）、`failure-logs.ts`（日志窗口落盘 + `resolveLogFeedback`）、`trace-persist.ts`（run.json/status.json 持久化 + 截图落盘）、`run-loop.ts`（执行循环 + 动作执行）、`tool-entry.ts`（两个工具入口 + 状态视图）；`task-runner.ts` 收敛为 7 行门面（仅再导出 `maybeIosRunTask`/`maybeIosManageTask`/`getIosTask`/`__resetIosTasks`）。测试 +0（纯搬移）；861 全绿、lint 干净。
+
+- **动机**：单文件混合编排/感知/LLM 往返/动作/持久化/验证/日志/工具 schema；拆分后每块有明确 seam，导航与改动半径下降（候选 C 的"验证与感知降为内部缝、外围工具成薄适配层"）。
+- **接口**：`mobile_*` 工具面与 `Runtime` 集成零变化（`runtime.ts` 仍只 import 门面）；类型消费者（`trace-store.ts`/`inspect.ts`）改直连 `types.js`，消除唯一的 type-level 环；`StartIosTaskDeps` 留在 `tool-entry.ts`（`run-loop.ts` 仅 type-import，无运行时环）。
+- **边界**：`executeAction` 留 `run-loop.ts`（循环内环动作执行）；`captureStepShot` 随 `trace-persist.ts`（产物写入）；`visibleElementCount`/`MIN_TEXT_ELEMENTS` 留 `run-loop.ts`（视觉触发属循环决策）；不新造 runTask 接口（`maybeIosRunTask` 已是唯一深接口）。
+- **测试**：既有 35/36 入口级用例零改动通过；`parseScriptPlan`（`test/ios-task-runner.test.js`）与 `buildHistorySections`（`test/ios-noop.test.js`）改从新模块导入（2 行）。
+
+### 13.78 实施记录（路由收口：trace 前缀单源 / api-errors 来源标签 / 路由测试补齐）
+
+> 实施于 2026-10-11；架构评审候选 D（承接 §13.75–§13.77；事实修正后范围收敛）。改 `src/ios/trace-store.ts`（新增 `IOS_TRACE_PREFIX`/`isIosTraceId`）、`src/ios/tool-entry.ts`（traceId 用常量）、`src/server.ts`（任务统计跳过改用谓词）、`src/suite-command.ts` + `src/figma/suite-runner.ts`（api-errors 来源按 serial 种类标注：真机 `idevicesyslog` / 模拟器 `simctl-log`，修真机错标）、`src/artemis/api-errors.ts`（`source` 联合类型放宽）；测试 +6（新 `test/ios-routing.test.js` 6 例，其中 1 例自 `test/ios-task-runner.test.js` 迁出；`test/suite-command.test.js` +1）；全量 867 绿、lint 干净。
+
+- **边界（事实修正）**：原报告"18 处字符串嗅探"在 A–C 后大部分已归位（设备构造走 `Runtime.iosDevice`、崩溃走 `collectIosCrashesFor`、日志分支为模块内部合法语义）；剩余真实项 = 前缀硬编码 3 处 + 来源标签 1 处 + 路由测试缺口。不做 dispatch 表驱动（现状单点分发、4 条 if 清晰）；`device-source.ts` 错误文案正则留给候选 E。
+- **前缀单源**：`IOS_TRACE_PREFIX` + `isIosTraceId`（trace-store 唯一事实源；`isIosTraceDir` 磁盘归属判定不动，platform 字段优先）；`tool-entry` 写入与 `server.ts` 任务统计跳过共用，`server` 不再内联 `startsWith`。
+- **来源标签**：`api-errors` 产物 `source` 按 serial 种类标注真实采集器（真机 `idevicesyslog`、模拟器 `simctl-log`），修 suite-command 与 suite-runner 两处真机错标；`ApiErrorArtifact.source` 联合类型同步放宽。
+- **路由测试**：`test/ios-routing.test.js`——wrapper 级（经 `runtime.proxy.callTool`）：iOS UDID `mobile_run_task` 截获 / `mobile_diagnose` 穿透 / Android serial 穿透 / 磁盘 iOS trace 的 `manage`、`inspect` 截获；server 级：`ios-` 结果跳过任务行补记、普通 trace 补记（对照）。
+
+### 13.79 实施记录（结构化降级：`device_busy` 与缓存帧脱离字符串）
+
+> 实施于 2026-10-11；架构评审候选 E（承接 §13.75–§13.78）。改 `src/ios/appium/service.ts`（`WdaCaptureResult` 增加 busy 判别变体：`IosDeviceBusyError` → 结构化 `{busy:true, cachedFrame}`，不再拍平为字符串）、`src/diff/device-source.ts`（删除 `/busy|占用/i` 正则，改读结构化字段；异常路径 `instanceof` 转换）、`src/tools/ios-state.ts`（截图 busy + 缓存帧 → 落盘缓存帧并返回路径 + 标注 `capturedAt`；无帧/层级 busy → 结构化报错）；测试 +4；全量 871 绿、lint 干净。
+
+- **动机**：README/DESIGN/CONTEXT 三处承诺"busy 返回 `device_busy` + 最近缓存帧"，但实现里结构化错误在 `service.screenshot/nodes` 拍平为字符串，消费者只能拿正则反推，`service.cachedFrame` 无生产消费者——承诺全部落空（ADR-0005 的显式降级原则）。
+- **机制**：`WdaCaptureResult<T> = ok | {ok:false, busy?:false, error} | {ok:false, busy:true, error, cachedFrame}`（busy 作判别键，既有注入 `{ok:false,error}` 不受影响）；`service.screenshot/nodes` catch `instanceof IosDeviceBusyError` → busy 变体（携带 `.cachedFrame`；`CachedFrame` 类型经 session 导出）。
+- **降级口径**：观测截图（`mobile_get_device_state` device 分支）busy 且有缓存帧 → 写 `live_screenshot_<udid>.png`（缓存帧）并返回 `file://…` + 标注「device_busy：返回最近缓存帧，capturedAt=…」；无缓存帧 → `device_busy` 结构化文案；层级 busy → 结构化文案（无帧可降级）。diff/compare（`device-source`）busy 仍报错（陈旧帧可能误报差异，显式不做帧降级），错误提示由结构字段生成并注明缓存帧可用性。
+- **边界**：缓存帧无 TTL/stale 标记（会话空闲回收不清帧，仅 dispose 清理）；执行器步骤截图 `captureStepShot` 的 busy 仍静默跳过（不引入陈旧步骤图）。
+- **测试**：`test/ios-wda-service.test.js`（service busy → 结构化变体；device-source busy/普通错误两条提示；普通失败走 Appium 指引）、`test/ios-device-state.test.js`（busy 缓存帧降级返回并标注/无帧报错/层级 busy 提示）。
+
+### 13.80 实施记录（`data_engine.db` 对账读取收边：显式 schema 守卫 + ADR-0009）
+
+> 实施于 2026-10-11；架构评审候选 F（收尾）。改 `src/artemis/android-trace.ts`（`REQUIRED_COLUMNS` + `schemaGaps`（`pragma_table_info` 探测）；schema 漂移 → `logWarn` + 跳过，宽 catch 仍兜损坏）、`test/android-trace.test.js`（+1 用例：缺列/缺表 → null）；新增 `docs/adr/0009-android-trace-readonly-schema-binding.md`；全量 872 绿、lint 干净。
+
+- **动机**：本条读取是 AOS 源码中唯一的 SQLite schema 绑定（151 行、只读、降级为 null），原实现以宽 catch 兜底——schema 漂移与未知 trace/缺库**不可区分**且无测试；与 ADR-0003（其理由"不绑定上游 schema"）的口径张力从未成文。
+- **机制**：打开只读库后先按列探测契约（`steps`: session_id/step_number/action_taken/pre_image_name/post_image_name；`images`: image_name/ocr_result；`data_engine` 无 `user_version`，只能 PRAGMA）；缺表/缺列/不可读 → `logWarn`（可诊断的契约漂移）+ 返回 null；缺库/`node:sqlite` 不可用/未知 trace 保持静默（预期内缺数据）；数据解析路径不变。
+- **边界**：不迁移上游工具面（`mobile_inspect_trace` 返回渲染文本，pre/post 标签与归一 taps 无法无损还原——ADR-0009 Considered Options）；读取结果仍为 `null` 语义（消费方只需要有/无）；ADR-0003 继续约束"失败步骤截图"来源，不受影响。
+- **测试**：`test/android-trace.test.js` 新增 schema 漂移用例（缺 `post_image_name` 列、缺 `images` 表 → null；真实 `node:sqlite` 构造，node < 22.5 自动 skip）。
+
+### 13.81 实施记录（观察读取统一：`ios/observation.ts`）
+
+> 实施于 2026-10-11；第二轮架构评审候选 1。新增 `src/ios/observation.ts`（`observeScreenshot`/`observeHierarchy` 判别结果：ok 携带 bytes/nodes+backend，失败携带 serial 种类与 busy（含缓存帧））；改 `src/tools/ios-state.ts`（截图/层级统一经观察模块，注入缝收缩为 `observe` 一处）、`src/diff/device-source.ts`（iOS 分支委派观察模块，保留既有 `captureIosPng`/`captureWdaPng` 注入兼容）；测试 +0（注入缝更新）；全量 873 绿。
+
+- **动机**：同一"读屏"概念三套协议（facade `Buffer|throw`、service `WdaCaptureResult`、raw `IosPngCapture`）与三处注入端口（`device`/`wda`/`describeIosUi`），busy/parse_failed 策略在消费者重复实现。
+- **机制**：观察模块按 serial 种类分派——模拟器走 idb/simctl 原始捕获（保留 tool 标签），真机走 WDA 服务（结构化变体；`IosDeviceBusyError` → busy 判别）；`device-source` 的 note/提示由判别结果生成，不再各自分支。
+- **边界**：执行器内环（run-loop）继续直接使用 `IosDevice` 动作接口（观察 ≠ 动作）；`device-source` 的差异对比不在 busy 时降级用缓存帧（陈旧帧可能误报，沿用 §13.79 决策）。
+- **测试**：`test/ios-device-state.test.js` 注入缝换为 `observe.{wdaScreenshot,wdaNodes,captureIosPng,describeIosUi}`（含 busy 缓存帧/无帧/层级 busy 三态）。
+
+### 13.82 实施记录（执行器内环拆分：`step-observe`/`step-record` + 设备解析隐患修复）
+
+> 实施于 2026-10-11；第二轮架构评审候选 2。新增 `src/ios/step-observe.ts`（`observeStep`：读屏/尺寸/前置截图 → preflight/scriptHits → noop 游标 → 视觉融合降级）、`src/ios/step-record.ts`（`toStepRecord` 三段重复合一）；改 `src/ios/run-loop.ts`（`runLoop` 401 → ~320 行，只留顺序与终态）；测试 +1（设备解析失败 → 终态 failed）；全量 873 绿。
+
+- **机制**：循环携带状态收缩为 `ObservationCursor`（lastSignature/lastShotHash/previousAction）；`observeStep` 失败抛 `观察屏幕失败: …`，由 `runLoop` 终态收尾。
+- **隐患修复**：设备解析（`runtime.iosDevice`）与 `runtime.entries()` 移入守护——WDA/Appium 启动失败不再产生未处理拒绝、记录不再滞留 `running`（回归用例断言 `无法解析 iOS 设备` 终态）。
+- **边界**：`executeAction` 与 `visibleElementCount` 判定随 `runLoop` 留驻（内环动作/视觉触发策略）。
+
+### 13.83 实施记录（缓存帧生命周期：age/stale 与消费面）
+
+> 实施于 2026-10-11；第二轮架构评审候选 3（兑现 `.scratch/ios-real-device` spec 的 stale 承诺）。改 `src/ios/appium/session.ts`（`CachedFrame` 增 `capturedAtMs`；`frameAgeMs`/`isFrameStale`/`resolveCachedFrameMaxAgeMs`；`AOS_IOS_CACHED_FRAME_MAX_AGE_MS` 默认 10min，0=关闭陈旧判定）、`src/tools/ios-state.ts`（busy 降级标注 `age≈…`，陈旧追加「已陈旧」）、`src/diff/device-source.ts`（busy 提示含帧龄）、`src/ios/appium/service.ts`（删除无生产消费者的 `cachedFrame(udid)` 访问器）；测试 +3；全量 876 绿。
+
+- **策略**：陈旧帧仍返回（保留降级可用性）但显式标注；差异对比路径不消费帧（§13.79 决策不变）。
+- **边界**：帧无 TTL 自动清理（随会话 manager dispose 释放）；`AOS_IOS_CACHED_FRAME_MAX_AGE_MS` 由 `runtime.iosEnvironment()` 分层读取。
+
+### 13.84 实施记录（design 资源单一读取：`figma/design-store.ts`）
+
+> 实施于 2026-10-11；第二轮架构评审候选 5。新增 `src/figma/design-store.ts`（`readTestsDocument`/`loadDesignFlowGraph`（必归一）/`loadGeneratedCases`/`toGeneratedCase`/`designDir`）；迁移 6 个 tests.json 解析器（suite-runner / preflight / run-report / generation-feedback / case-index / suite-command ×2）与 4 个 flows.json 读取（suite-runner / preflight / run-report / reconciliation）经 store；测试 +3（`test/design-store.test.js`）；全量 879 绿。
+
+- **动机**：同一文件六种解析、`GeneratedCaseLike` 三处重声明；`preflight`/`run-report` 的 raw 读取绕过 `normalizeFlowGraph`，provenance 默认值可能分叉。
+- **边界**：`test-gen` 的自定义 flowsPath 读取（错误语义特异）保持原样；`pen` 侧无独立 suite 读取路径不受影响。
+
+### 13.85 实施记录（套件执行核心：`figma/case-runner.ts`）
+
+> 实施于 2026-10-11；第二轮架构评审候选 4。新增 `src/figma/case-runner.ts`（`executeCase(testCase, context)`：reset → 提交（含失败记账）→ 轮询 → api-errors 采集与产物 → 结果组装；返回 `{result, submitted, submitError, terminal}`）；`suite-runner.ts` 866 → 528 行（`runGeneratedTests` 只留加载/筛选/编排/聚合，对账摄取抽为 `ingestTraceObservations`）；新增 `src/crash/query.ts`（`crashesForTrace`，与 run-report 去重）；测试 +0；全量 879 绿。
+
+- **接口**：`CaseRunContext`（runtime/model/deviceSerial/lockedAppPackage/quarantined/failOnApiErrors/apiCatalog/resetFn/iosDeviceWda/timers/采集器）——轮询与提交语义可脱离设备文件夹具直测；flake/retry 复用同一执行器。
+- **边界**：停止/首错传播由调用方（runner 循环）处理；对账摄取留在 runner（依赖设计上下文与 reconciliation 模块）。
+
+### 13.86 实施记录（任务台账抽取：`tasks/ledger.ts`）
+
+> 实施于 2026-10-11；第二轮架构评审候选 6（第一切片）。新增 `src/tasks/ledger.ts`（`TaskLedger`：提交/结果记账（`local-` 占位、caseId 回填、lockedPackages 上限 200）、`traceStatus`（status.json 优先 + iOS orphan 对账 + 代理回退）、`syncTaskStatuses`（终态回调注入崩溃取证））；`runtime.ts` 对应方法改为委托（公开面零变化，`traceDir` 保留）；测试 +0；全量 879 绿。
+
+- **边界**：`ChildSupervisor` 见 §13.88（本轮补齐）；`lockedPackageFor` 暴露给崩溃扫描进程名推断。
+
+### 13.87 实施记录（server ListTools schema 缓存）
+
+> 实施于 2026-10-11；第二轮架构评审候选 7（功能切片）。改 `src/server.ts`（`nativeSchemaCache`/`figmaSchemaCache`——zod→JSON schema 转换按工具名缓存一次，HTTP 每 POST 新建 server 的 ListTools 不再重复转换）；测试 +0；全量 879 绿。
+
+- **边界**：`NATIVE_TOOLS` 域文件拆分见 §13.89（本轮补齐）；stdio/HTTP 引导去重（`runtime-host`）仍暂缓——涉及两入口的 store 生命周期与 dispose 顺序，留作独立轮次（纯整理，不影响行为）。
+
+### 13.88 实施记录（子进程生命周期抽取：`artemis/child-supervisor.ts`）
+
+> 实施于 2026-10-11；第二轮评审候选 6（第二切片，§13.86 补齐）。新增 `src/artemis/child-supervisor.ts`（`fingerprintForEntry`/`spec`（无 LLM 回退 bare spec）/`recordSpawned`（state.child 记账）/`clearChild`/`taskCounts`/`artemisPython`/`sweep`（孤儿清理，含 cmdline 守卫））；`runtime.ts` 对应方法改为委托，`buildDefaultProxy` 的 `prepare/onSpawned` 直连 supervisor；`sweepStaleChild(runtime)` 保留为薄包装（server/http/测试零改动）；测试 +0；全量 879 绿。
+
+- **边界**：`doActivate` 里 restart 前对 `state.child` 的删除保留在同一批 state 写入内（原子性优先，不拆到 `clearChild()`，避免快照回写复活 child 记录）。
+
+### 13.89 实施记录（NATIVE_TOOLS 域拆分：`tools/native-tools/`）
+
+> 实施于 2026-10-11；第二轮评审候选 7（第二切片，§13.87 补齐）。`src/server.ts` 918 → 360 行：34 个原生工具按域拆为 `tools/native-tools/{llm,aos,jira,design,figma,pen}.ts`（`NativeToolDefinition` 类型独立于 `types.ts`），server 只留 `NATIVE_TOOLS = [...域数组]` 装配、传输与门禁；测试 +0（server-smoke/usage 全绿）；全量 879 绿。
+
+- **机制**：每域文件自持 `z` 与 handler 导入（按引用符号自动裁剪），`schema` 缓存（§13.87）按工具名继续生效。
+- **边界**：加/改一个工具只动对应域文件；stdio/HTTP 引导去重见 §13.90（本轮补齐）。
+
+### 13.90 实施记录（运行宿主：stdio/HTTP 引导去重）
+
+> 实施于 2026-10-11；第二轮评审候选 7（第三切片，§13.87/§13.89 边界收尾）。新增 `src/runtime-host.ts`（`RuntimeHost.prepare`：日志引导 + artemis 依赖检查 + 项目存储 + 30s 同步循环；`createRuntime`：initialize → figma token 同步 → 孤儿清理 → 注册；`shutdown`：循环清除 + 逐 Runtime 代理/WDA 回收 + 存储关闭 + 停桥）；`src/server.ts` 360 → 304 行（runServer 缩为宿主装配 + stdio 生命周期）、`src/http-server.ts` 284 → 229 行（workspace 引导与 getRuntime/close 改经宿主；多项目共享 store 语义不变）；测试 +0（server-smoke / http-server / usage 全绿）；全量 879 绿。
+
+- **边界**：进程级差异留在各入口——stdio 的 stdin/exit 钩子与初始化失败降级日志、HTTP 的 `httpServer` 关闭与每请求新建 server/transport；30s 同步循环统一由宿主持有（HTTP 不再自有 timer）。
+- **行为微调（记录）**：stdio 初始化失败时若宿主已配置日志则不重复 `configureLogging`；HTTP 的 figma token 同步/孤儿清理失败现在记日志（原静默 best-effort）。
+
+### 13.91 实施记录（视觉交互识别：`vision-inferred` + flows.json v3）
+
+> 实施于 2026-10-12；ADR-0010。`.pen`（v2.20 无原型交互字段）与无原型链接的 Figma 节点此前只能靠画板排布推断跳转，"图标即入口"（如购物袋 FAB）不可见。新增视觉识别阶段：`src/design/vision.ts`（受控类别/意图词表 + 提示构建 + 回复解析 + bbox→nodeId grounding + `runVisionPass` 编排）、`src/pen/render.ts`（复用 `runPenInteractive` 的 `Export([ids],"png",dir,{scale:1})` 单会话批量渲染，产物落 `.artemis/design/vision/<name>/`）；`pen_extract_flows` 增 `vision: auto|true|false`（默认 auto）。产出：`screens[].elements[]`（元素清单）+ `to:null` 探索边 + `unresolvedDestinations`，flows.json 升 schemaVersion 3；provenance 新增 `vision-inferred`（low）——断言侧只出探索步骤、覆盖率侧豁免硬闸，升权沿用对账闭环（真机观测/人工确认）。测试 +7（`test/pen-vision.test.js`）；全量 888 绿。
+
+- **证据分流（`src/provenance.ts`）**：`isUnconfirmedProvenance` 与 `isHardCoverageTarget` 同时认识新值；`normalizeFlowGraph` 对 `schemaVersion > 3` 显式报错（旧消费者把未知来源当 legacy-unknown → 硬闸，版本闸防止静默误判）。
+- **降级与成本**：不可用/离线/未登录各给独立警告（`vision-unavailable`/`vision-render-unavailable`/`vision-call-failed`/`vision-no-elements`/`vision-invalid-items`/`vision-screen-cap`/`vision-screen-no-geometry`/`vision-disabled-by-env`/`vision-model-unverified`），全部落 flows.json warnings 与响应，不阻断、不静默；`AOS_VISION=0` 全局关闭，`AOS_VISION_MAX_SCREENS` 默认 50（`0`/`all` 不限；§13.130 起屏尺寸缺失时取渲染图 IHDR 兜底）；模型能力用名启发式（`isVisionCapableModel`），`vision:true` 可显式强制。（2026-10-19 修订：增补 `deepseek[^/\s]*flash`——V4.1 Flash 原生多模态但稳定别名不含 vision 词干致漏判；iOS 侧 `looksVisionCapable` 收口为同一实现；见 §13.127）
+- **生成侧（`src/figma/test-gen.ts`）**：未决目的地边不计覆盖目标，但按"每条只探索一次"保留用例（否则视觉边永不执行、对账无观测）；探索步文案带元素名（`探索未知跳转「购物袋」…`）。
+- **不猜目的地**：视觉识别只产意图与元素，目的地只能由真机观测或人工确认绑定（`to:null` + `unresolvedDestinations`）。
+
+### 13.92 实施记录（远程设备宿主 + 跨机产物，ADR-0011）
+
+> 实施于 2026-10-12；ADR-0011。集中部署（Mac mini）与分散项目间两端执行拓扑不对称：Android 可无线调试（设备侧联网），iOS 要求 Appium/WDA 宿主与设备同机且 `.ipa` 路径由宿主读取。本轮做操作层对齐：(1) `aos.config.jsonc` 高级层新增 `deviceHosts`（`ios.appiumUrl/wdaBundleId/xcodeOrgId/xcodeSigningId`、`android.adbHost`），解析优先级 config < 项目 `.env` < 进程 env（iOS 经 `deviceHostEnvFromConfig` 注入 `iosEnv` 打底层；Android 经 `buildChildEnvForEntry` 注入 `ADB_SERVER_SOCKET`，`dotenv` getter 由 Runtime 传入）；(2) `app_path` 支持 `http(s)://`——iOS 走 Appium `app` 能力（`AppiumSessionManager.acquire` 新增 `app` 选项：同 app 复用、变更轮换、无 app 观测复用；`installIpa` URL 分支建会话即安装），Android 在 Runtime 代理层下载到 `<项目>/.artemis/cache/apps/<sha16>.<ext>` 后以本地路径转发（`AOS_APP_DOWNLOAD_TIMEOUT_MS` 默认 600s），下载失败显式错误不转发；(3) `doctor` 探活宿主（iOS `GET /status`、Android adb `host:version` 握手，均短超时 best-effort，失败给 SSH 隧道/`adb -a` 暴露提示），`aos_status.deviceHosts` 显示解析结果与来源；`src/device/device-hosts.ts` + `src/device/app-artifacts.ts` 承载映射/探针/缓存。测试 +10（`test/device-hosts.test.js`、会话轮换、iOS URL 安装通道）；全量 899 绿。
+
+- **不变量**：跨机产物不得以服务端本地路径冒充（iOS）；模拟器仍限服务本机；不新建反向隧道/常驻协议。
+- **优先级细节**：`ADB_SERVER_SOCKET` 解析顺序为进程 env（含 Runtime baseEnv）> 项目 `.env` > config；`ADB_DEVICE_SERIAL`（项目级设备钉选）不受影响。
+
+### 13.93 实施记录（生成物三件套与真实数据硬门禁）
+
+> 实施于 2026-10-12。两项生成物强约束落地为 `suite check` 硬门禁：(1) **三件套完整性**——tests.json 存在则同名 tests.xlsx 必须存在且不早于 tests.json（防手写/裁剪与陈旧产物）；(2) **真实数据约束**——`figma_generate_tests` 为每个 taskDesc 注入 `【真实数据】` 条款（数据必须经被测应用真实请求链路准备：界面操作或其后端 API；禁止伪造/写死页面或数据、mock、手造页面、跳过真实请求；无法满足时停止并报告 blocked），`suite check` 以标记做硬校验，缺标记 exit 2。实现：`src/figma/data-policy.ts`（标记与条款唯一来源）、`preflight.ts` 增 `artifacts`/`dataPolicy` 字段、`suite-command.ts` `coverageGateIssue` 组合三类硬门禁（三件套/真实数据/流程覆盖，`--strict` 语义不变）。测试 +2（suite-command 门禁四态、preflight 字段）；全量 901 绿。
+
+- **边缘与边界**：门禁作用于 `check`/`loop`（及 `run --fail-on-uncovered`）；`suite run` 不带该开关仍可执行（Excel 缺失不阻断设备执行），但 taskDesc 已内含真实数据条款约束执行者。
+- **legacy 影响（有意）**：旧 tests.json（无标记或无 xlsx）在 `suite check` 响亮失败，需用最新 `figma_generate_tests` 重新生成——禁止手写用例进入 CI 闸。
+
+### 13.94 实施记录（PG 连接串环境变量改名）
+
+> 实施于 2026-10-12。`AOS_DATABASE_URL` → `MOBILE_TESTING_DATABASE_URL`（与服务名 `mobile-testing` 对齐），**硬切换、不保留旧名回退**：`src/db/index.ts`（读取与降级提示）、`src/install.ts`（CLI 写入客户端配置 env）、`src/commands.ts`（doctor/init 引导文案）、`src/usage-command.ts`（CLI usage 读取与内存降级 note）、`docker-compose.yml`、`.env.example`、README/AGENTS/接入指南/DESIGN 文档同步。旧名配置将直接进入内存降级（doctor/`aos_status` 可见警告）。测试同步更新 `test/install.test.js`、`test/usage-command.test.js`；全量测试绿。同时本机库名由 `aos` 改为 `mobile-testing`（示例连接串与 docker compose `POSTGRES_DB`/healthcheck 同步；角色仍为 `aos`）。
+
+### 13.95 实施记录（批次清单：overview-panel T1）
+
+> 实施于 2026-10-13（多项目总览面板 `.scratch/overview-panel/spec.md` 的 T1）。把"一次 suite run/loop"立为**批次清单一等实体**，解决"跑完即走"（此前套件报告只在内存/终端，默认不落盘）。新增 `src/figma/run-manifest.ts`：`buildRunManifest`（纯函数映射 SuiteRunReport → 清单：`summary`（含 `flaky`/`quarantinedFailed`）、`gate{result,exitCode,reasons}`、`failureDomains` 归并、preflight 摘要、tests.json 指纹 sha256+mtime；**不存 taskDesc**）、`saveRunManifest`（原子 + 独占创建：tmp + `link`，撞名换后缀重试 ≤4；同秒碰撞概率 ~1/16.7M）、判别式读取 `loadRunManifest`（`ok | missing | invalid | newer`：`missing` 含裁剪竞态 ENOENT；`newer` 仅 `BaseRunManifest`（runId/startedAt/finishedAt/ok/summary{total,passed,failed}）白名单字段逐类型校验映射并标注）、`runManifestFileNames`/`loadLatestRunManifest`（文件名倒序 = 时间序，零额外 stat，供 L1 轻量索引）、`pruneRunManifests`（`AOS_SUITE_RUNS_MAX` 默认 200、写后 best-effort、max ≤ 0 不裁剪；prune 是唯一删除者）。接线：`suite run`/`suite loop` 完成（含 retry 诊断与门禁计算）后写 `<configDir>/design/runs/run-<UTC时间戳>-<6位后缀>.json`，best-effort（写失败仅 WARN、不影响退出码）；`suite run` 新增 `--no-save`；`AOS_SUITE_RUNS=0` 全局关闭；`suite flake` 采样轮次不写。`failure-taxonomy` 增 `FAILURE_TAXONOMY_VERSION`（随清单记录，供"原判 vs 重算"区分）；`RETENTION_CATEGORIES` 增 `runs`（`suite retention` 覆盖）。测试 +13（新增 `test/suite-run-manifest.test.js` 9 例 + `test/suite-command.test.js` 4 例：落盘字段、开关、写失败降级、loop 来源）；全量 914 绿。
+
+- **口径**：`gate.reasons` 词汇 = `suite-not-executed`（report.ok=false）/ `preflight-gate`（三件套/真实数据/覆盖/`--strict` 组合门禁）/ `failed:N`（N = 扣除隔离失败后的首跑失败数）；`summary.failed` 保留原始计数，`quarantinedFailed`/`flaky` 单列；失败域为运行期 `classifyFailure` 原判（重算对照属面板侧，T2）。
+- **边缘**：`missing`/`invalid`/`newer` 均为合法读取结果（消费方占位/降级，不抛错）；清单只存 caseId/name 等，taskDesc 回查失败（用例集重生成）的降级标注留待面板侧（T2）。
+
+### 13.96 实施记录（面板聚合层：overview-panel T2）
+
+> 实施于 2026-10-13（`.scratch/overview-panel/spec.md` 的 T2）。新增 `src/panel/overview.ts`（跨项目只读聚合层，**无子进程 / 无网络 / 无写盘**）：`buildPanelOverview`（L1：项目集合 = PG 注册项目 ∪ workspace 子目录；逐项目软读 → 状态灯 + 固定顺序 `lampReasons` + 最新批次摘要）、`buildPanelProjectDetail`（L2：集成详情（LLM 条目/active/可用性与缺失、Figma/Jira/pen 凭证 presence、config validation、deviceHosts、设计资产存在性+mtime、宿主 deps/build）+ 批次列表（清单权威，默认 20 / 上限 100）+ 独立运行（台账行扣除已加载批次覆盖的 traceId，默认 20）+ 批次空态**原因清单**）、`buildPanelBatchDetail`（L3：判别式读取透传 + 逐用例证据链存在性校验（trace/notes/stderr/stdout 两态，null 路径不生成）+ 文件名合法性守卫）。**状态灯短路顺序**：磁盘可达性 → 灰（短路，仍展示注册层）；无可用 LLM → 红；黄按固定聚合序（Figma/Jira 凭证缺 → 宿主 deps stale|missing → 三件套不齐 → store 降级 → build stale）；全无 → 绿。**宿主级判定**：deps 为 `depsStatus(serviceRepo)` 一次、`buildStale` 由调用方注入；pen key 仅展示 presence、不参与灯（避免未用 pen 的项目一律标黄）。**软读构成**：`loadProject({AOS_PROJECT_DIR})` + `scanProjectEnv` + store LLM 条目 `entryIssues` + `detectProjectStacks` + `resolveIosHost/resolveAndroidAdbSocket` + `jiraConfigFrom`。共享口径：`outcomeOf`（台账状态映射）提至 `src/tasks/outcome.ts`，面板与 run-report 共用（行为不变）；"按当前规则重算"（`recomputed` 对照）留在渲染侧（T4）/后续增量。测试 +10（pg-mem 假 store + 临时项目 + 假批次清单）：四灯、工作区并入、内存降级标注、批次权威 + 独立运行过滤 + outcome 映射 + limit、空态原因、证据存在性、判别式读取与非法文件名、磁盘不可达降级；全量 924 绿。
+
+- **降级口径**：磁盘不可达 → `integration:null` + 台账行按独立运行展示 + `warnings` 标注；未知项目（无注册且无磁盘）→ `null`；清单/证据缺失 → 两态占位，不猜测。
+
+### 13.97 实施记录（面板 HTTP 路由与缓存：overview-panel T3）
+
+> 实施于 2026-10-13（`.scratch/overview-panel/spec.md` 的 T3）。新增 `src/panel/web.ts`：`handlePanelRequest(url, deps)`（与 usage 看板同构的 `{status, contentType, body}` 处理器，`http-server` 直接接线）。路由：`GET /panel`（HTML）/ `GET /panel.json`（同源 JSON，envelope `{ok, view: "overview"|"project"|"batch", ...}`）；查询参数 `project`（项目名 / 根路径 / workspace 子目录名）、`batch`（清单文件名，配 project）、`limit`（L2 批次数，默认 20、上限 100）；未知项目 404。开关 `AOS_PANEL_WEB=0` → 两路由 404（对齐 usage，不影响 `/usage`/`/healthz`/`/mcp`）；进程内短缓存 `createPanelWebCache`（TTL 默认 5s、`AOS_PANEL_CACHE_MS` 可配、0 关闭；命中回同响应体）。HTTP 模式注入 store/workspaceRoot/serviceRepo/`buildStale`（`isBuildStale(import.meta.url, 进程启动)`）/env/缓存实例；**不建 Runtime、不 spawn、不触网、不写盘**。测试 +7（`test/panel-web.test.js` 5 例：开关与 TTL 解析与 404、总览 JSON+HTML、项目详情生命周期（空态→批次→独立运行）、批次详情与非法文件名、缓存 TTL 命中/过期；`test/http-server.test.js` +2：真实 HTTP 面板路由、`AOS_PANEL_WEB=0` 只关面板路由）；全量 931 绿。
+
+### 13.98 实施记录（面板 HTML 渲染：overview-panel T4）
+
+> 实施于 2026-10-13（overview-panel T4）。`src/panel/web.ts` 服务端渲染 HTML（内联 CSS、零依赖、零前端构建，与 `/usage` 同风格）：**L1** 项目表（灯色点 + `lampReasons` + 栈/最后活跃/最新批次/备注；存储与宿主徽标）；**L2** 项目页（集成信息卡 + 凭证/资产表 + 批次表（门禁/通过率/失败域/清单链接）+ 空态**原因清单** + 独立运行表 + 降级提示）；**L3** 批次页（gate/exitCode/reasons + summary 卡片 + 失败域 chips + 用例表（状态/失败域与置信度/脚本来源「断言N/探索M」/隔离与 flaky/证据）+ 选项与 tests 指纹上下文；`read != ok` 时只渲染占位与说明）。证据链按两态渲染：存在 → 路径文本；缺失 → `[已清理]`（不做未校验链接）；`escapeHtml` 提至 `src/util.ts`（usage 看板复用）。**未含**"按当前规则重算"对照（P1：需按 trace 重跑 `classifyFailure`，成本与价值待验证；清单内 `taxonomyVersion` 已预留）。测试见 §13.97（HTML 关键区块断言随路由测试）；全量 931 绿。
+
+### 13.99 实施记录（设计流水线截图：共享模块 + 保留期，design-screenshots T1）
+
+> 实施于 2026-10-13（`.scratch/design-screenshots/spec.md` 的 T1）。新增 `src/design/screens.ts`：`sanitizeScreenId`（文件名安全转义，空回退 `screen`）、`isPngBuffer`（魔术头）、`storeScreenPng`（sha256 相同跳过、保留 mtime；损坏/变更原子覆盖；非法 buffer 不落盘）、`importScreenFile`（pen CLI 直写产物：读取 + 校验 + 原子入库 + 清理临时文件）、`figmaScreensDir`/`penScreensDir`（`design/screens/figma-<fileKey>` / `pen-<slug>`）、`relativeScreenPath`（md 相对引用、POSIX 分隔）、`screensEnabledFrom`（arg 优先、`AOS_SCREENS=0` 关闭）与 warning 词汇 `screenshot-skipped` / `screenshot-render-unavailable` / `screenshot-mapping-missing`。`RETENTION_CATEGORIES` 增 `screens` 分类（README retention 六类→七类）。测试 +7（`test/design-screens.test.js`：转义边界、PNG 校验、写入/跳过/覆盖/损坏替换/非法不落盘、导入清理、目录与相对路径、开关、词汇与保留期）；全量 942 绿。
+
+### 13.100 实施记录（pen 截图通道，design-screenshots T2）
+
+> 实施于 2026-10-13（design-screenshots T2）。`pen_extract_flows` 默认渲染屏幕截图（新增 `screens?: boolean`，默认开；`AOS_SCREENS=0` 关闭、显式 true 覆盖 env）并嵌入 `flow-map.md`（每屏 `<img src="screens/pen-<slug>/<id>.png" height="200">`）。**一次渲染两用**：截图与 vision 共享 memoized 渲染（`screenAssetLoader`）——渲染落私有临时目录 → 逐张校验原子入库 `design/screens/pen-<slug>/` → 清理临时目录；vision 的 outDir 从 `design/vision/<name>/` 迁入统一目录（历史 `evidence.render` 不回溯）。**降级**：全通道失败 → `screenshot-render-unavailable`、部分缺屏 → `screenshot-skipped`，md 照常生成、不阻断；响应新增 `screenshots: { dir, rendered, skipped, skippedScreens }`（避免与既有屏幕列表 `screens` 键冲突）。**并发加固**：`runPenInteractive` 进程级串行队列 + session 输出名唯一化（`session-<pid>-<rand>.pen`）；`--export` 一次性调用不入队。测试 +4（`test/pen-flows.test.js` 3：默认渲染 + 幂等（mtime 稳定）、通道失败/部分缺屏降级、`screens:false`/`AOS_SCREENS=0` 与显式覆盖；`test/pen-cli.test.js` 1：并发不交错）与既有断言更新（`test/pen-vision.test.js`：共享渲染计数=1、证据路径改 `screens/`）；全量 942 绿。
+
+### 13.101 实施记录（figma 截图通道：flow-map.md + 批量渲染，design-screenshots T3）
+
+> 实施于 2026-10-13（design-screenshots T3）。`figma_extract_flows` 新增 **`flow-map.md`**（屏幕含缩略图/跳转/入口屏/未决目的地/警告/统计；`savedTo` 由字符串改为 `{ json, markdown }`，对齐 pen；仓库脚本未消费该字段）与**屏幕截图**（`screens?: boolean` 默认开、`AOS_SCREENS=0` 关闭、显式 true 覆盖）：一次批量 `fetchImages(fileKey, ids, "png", 1)` → 逐节点下载 → PNG 校验 → `storeScreenPng` 原子入库 `design/screens/figma-<fileKey>/`。**单屏 null 有界重试**：等 1s 后仅对未决屏二次请求并**绕响应缓存**（vendor 补丁：`fetchImages`/`figmaFetch` 增可选 `noCache`，NOTICE 第 6 条——缓存中的 null 会吞掉重试）→ 仍缺则逐屏降级 `screenshot-skipped`；通道级失败（无 token/限流/HTTP 错误）→ `screenshot-render-unavailable`，md 照常生成。响应增 `screenshots: { dir, rendered, skipped, skippedScreens }`。测试 +5（`test/figma-screens.test.js`：批量一次调用 + scale=1 + 嵌入 + 幂等 mtime、null-once 重试全恢复、partial 仅查询未决屏、通道失败降级、开关与 env 覆盖、`renderFigmaFlowMap` 直测）；全量 947 绿。
+
+### 13.102 实施记录（tests.md 用例配图，design-screenshots T4）
+
+> 实施于 2026-10-13（design-screenshots T4）。`figma_generate_tests` 的 `tests.md` 默认按用例嵌入屏幕截图（`screens?: boolean` 默认开、`AOS_SCREENS=0` 关闭、显式 true 覆盖；仅 `save !== false` 时执行——无 md 则不渲染）。**映射**：新增 `design-store.readFlowDocumentMeta`（保留 flows.json 顶层 `fileKey`/pen `source` 与屏幕名→id；**不改 `normalizeFlowGraph`**）；`figma` 来源（含 URL 直提）走 Figma 批量通道、`pen:*` 走 pen 单会话通道（新增 `src/pen/screens.ts` 共享捕获原语，pen/flows.ts 同步重构复用、行为不变）；每用例 ≤3 张 `height="160"` 缩略图、超出提示「…（共 N 屏）」；映射缺失（legacy flows 无来源 / 屏幕名对不上）→ `screenshot-mapping-missing` 无图降级。**降级**：通道级 `screenshot-render-unavailable` / 逐屏 `screenshot-skipped`；响应增 `warnings` 与 `screenshots: { channel, dir, rendered, skipped, skippedScreens }`。回归：既有 testgen 用例（手写 flows 无来源）走映射缺失路径、无渲染调用，行为不变。测试 +5（`test/figma-test-screens.test.js`：pen 通道嵌图 + 一次渲染、figma 通道批量、映射缺失降级、开关与 env 覆盖、`renderMarkdown` ≤3 截断直测）；全量 952 绿。
+
+### 13.103 实施记录（面板磁盘资产 + 批次趋势：overview-panel T6 部分）
+
+> 实施于 2026-10-14（overview-panel P1 第一切片）。**磁盘资产**：新增 `src/panel/assets.ts`（`collectDiskAssets`，全部只读、单项失败降级 warnings）——崩溃签名（`CrashIndexStore.list`：总数 + 最近 20 条）；对账资产（`reconciliation.json`：present/updatedAt、边数、pending/upgraded/confirmed/rejected 与 runtime-only 计数）；设备基线热点（`generation-feedback.collectVisualHotspots` 重构为导出并接收 `configDirAbs`、`VisualHotspot` 增 `serial`，feedback 行为不变）；保留期摘要（复用 `collectRetentionEntries` + `buildRetentionReport`，90 天只读、分类 chip）。**批次趋势**：L2 从已加载清单派生 `trend { points（时间升序）, domainTotals, recentPassRate }`（`buildBatchTrend`；无 ok 清单为 null）。**渲染**：项目页批次区加趋势行（最近 20 批 `passed/total` 色块序列 + 失败域累计 chips）、新增「磁盘资产」区块（崩溃/对账/基线/保留期 + 降级提示）；JSON 契约同步增 `trend`/`diskAssets`（磁盘不可达均为 null）。测试 +4（`test/panel-assets.test.js` 2：汇总 + 空态；`test/panel-overview.test.js` +2：趋势与磁盘资产聚合、无批次 trend=null；`panel-web` 增 HTML 断言；`generation-feedback` 断言同步 `serial`）；全量 956 绿。
+
+- **边界**：保留期为整树只读扫描（含 traces），依赖面板 5s TTL 缓存限频；不改 `suite retention` 语义。
+
+### 13.104 实施记录（面板深探层：overview-panel T6）
+
+> 实施于 2026-10-14。新增 `src/panel/deep.ts`（`createPanelDeepProbe`）：L2 详情在 HTTP 模式下经注入 provider 懒建 Runtime（workspace 一级子目录校验后复用既有 `getRuntime`）后仅取**纯读子集**——activeProfile、LLM 条目数、setupRequired、store（kind/degraded/note/lastError）、usage、modelRefresh、artemis（repo/configDir/python/`proxy.status()`）、figma 桥状态与 token 来源、jira、logs 路径、build stale；**不拉起 artemis 子进程、不触网打外部 API**。**iOS 环境检测为显式动作**（`?ios=1`）：允许白名单本地 CLI 探测（`iosAppiumInfo`，内部超时 + 外层 45s 兜底），失败/超时如实记录 `error`，**实例内按项目 60s 时间缓存**。L2 契约增 `deep`（无 provider / 构建失败为 null）；项目页新增「深探信息」区块（含 `?ios=1` 指引与探测结果）。测试 +5（`test/panel-deep.test.js` 3：默认不探测的纯读子集、显式探测 + TTL 缓存、失败/超时如实记录；`panel-web` +1 注入断言；`http-server` 增深探与"默认不探测"断言）；全量 963 绿。
+
+### 13.105 实施记录（CLI `panel --web`：overview-panel T6）
+
+> 实施于 2026-10-14。新增 `src/panel-command.ts`（`mobile-testing-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]`；`cli.ts` 接线与 help 更新）：复用 `handlePanelRequest` 同一 handler 的独立只读看板，默认 loopback、端口占用 exit 2；存储经 `createProjectStore(MOBILE_TESTING_DATABASE_URL)`（缺省内存降级并如实提示）；`--workspace` 可选并入未注册工作区目录；独立进程无跨项目 Runtime → **深探层不可用（`deep:null`）**。测试 +3（`test/panel-command.test.js`：临时端口服务与清理、端口冲突 exit 2、help/参数错误）；全量 963 绿。
+
+### 13.106 实施记录（回归服务 P1a：生成侧——功能切分/命名/身份继承/归档/登记）
+
+> 实施于 2026-10-14（设计稿 `docs/superpowers/specs/2026-10-14-regression-service-design.md` §5.1–§5.3；计划 `docs/superpowers/plans/2026-10-14-regression-service-p1a-generation.md`，P1b/P1c 另立）。新增 `src/figma/features.ts`（纯函数）：`splitFeatures`（信号优先级 Figma 页面 → 屏幕名公共前缀（未覆盖屏按边邻居多数归并）→ 无向图连通分量 → 单组回退；全部按屏幕名 code-point 确定性排序）；`nameFeatures`（回退链：候选名 ≤16 字 → LLM（`ChatFn` 注入，缺省经 `runtime.activeEntry()` 仿 pen vision 解析；输出 `{"name":"…"}`，≤8 字）→ `功能N`（按组序号）+ `feature-naming-fallback` 告警）；`applyIdentity`（重叠率 |交集|/min，唯一最高且 ≥0.5 继承 key/name——名称冻结；否则新 key `f-<slug>-<sha8(排序屏幕)>` + `feature-identity-new`；同一 prior 不重复继承）；`assignCaseFeature`（用例屏幕多数归属、并列取首屏、无命中 null）。`src/figma/case-sets.ts`：`caseSetsDir`/`caseSetStem`（`<UTC YYYYMMDD_HHmmss>_<功能名>`；非法字符/空白→`-`、空→`feature`、≤40 字、目录冲突 `-2` 递增）/`saveCaseSetFiles`（三件套同 basename 原子写）。`src/figma/flows.ts`：`FlowScreen` 增可选 `page`（`buildFlowGraph` 沿 `parentOf` 链取所属 PAGE 名；`normalizeFlowGraph` 容忍缺失；**不升 schemaVersion**）。DB：`case_sets`/`case_set_features` 两表（screens 以 TEXT+JSON 存，仿既有惯例）+ `recordCaseSet`/`listCaseSets`（新→旧、默认 50；pg-mem + memory 双实现）。`figma_generate_tests` 接线：用例带 `feature`、payload 增 `features[]`；保存时每功能子集三件套归档 `.artemis/design/case-sets/`（子集 JSON 含 flows/coverage/features；md/xlsx 复用同渲染器；`savedTo.caseSets` 三路径；空功能段不产出）；生成前 `listCaseSets` 展平为 prior 做身份继承（不可用 → `case-set-registry-unavailable` 告警），保存后 `recordCaseSet` 登记（失败 → `case-set-registration-failed`，不阻断）；live 三件套契约不变；`suite retention` 增 `case-sets` 分类。测试 +33（features 15 / case-sets 4 / case-sets-gen 8 / db-case-sets 3 / flows +2 / retention +1）；全量 996 绿。
+
+- **口径**：功能名生成后冻结（改名不改档案，后续合并走别名映射）；身份继承以屏幕重叠为唯一确定性依据（低置信不静默合并——新 key + 告警）；"份"＝功能段（回归引用与命名单位）；"磁盘归档是事实源、DB 是索引"，store 不可用一律如实降级、不阻断生成。身份修订（2026-10-19）：同屏集重复身份继承最近一份、新建 key 与已用 key 碰撞确定性消歧、自愈/回填屏集取归档声明（§13.131）。
+
+### 13.107 实施记录（回归服务 P1b：执行与对比——suite task / run --task / 登记 / 同用例集对比 / 结果表）
+
+> 实施于 2026-10-14（设计稿 §5.3/§5.5/§5.6；计划 `docs/superpowers/plans/2026-10-14-regression-service-p1b-execution.md`）。DB 增 `regression_tasks`/`suite_runs`/`suite_run_cases` 三表（多行写入提取 `withTransaction` 公共辅助，`recordCaseSet` 一并改用；`suite_run_cases` 带 name 列与裁决预留列 `verdict*`、`suite_runs` 带 `app_version`）；新增 `src/tasks/run-compare.ts`（`compareRuns`：仍通过/修复/回归/仍失败/新增失败/新增通过/消失 + 清单；pending 不计数、无基线 → `established`；`crossPlatformDeltas`）与 `src/tasks/run-registry.ts`（`platformOf`（UDID→ios / adb→android / null→unknown）、`buildSuiteRunInput`（报告→登记行；duration 诚实留空）、`resolveRunRefs`（按 `case_set_features.jsonPath` 精确匹配用例集血统）、`registerSuiteRun`（best-effort；createdAt＝finishedAt 保证新→旧确定性）、`baselineFor`（同（caseSetId, featureKey, platform）最近一条、可排除自身））；`suite-command.ts`：`suite task create|list|show`（引用＝feature key，取该功能**最新用例集**；未知 key exit 2 列可用项；`--platform` 默认 ios+android）、`suite run --task <id> --device …`（refs×设备展开；**同设备内**跨用例集 caseId 去重——跨设备不去重，双端回归是目的；逐设备运行登记带 `regression_task_id`；任务状态机 pending→running→completed/partial/failed；**子集运行不做全图覆盖门禁**并如实标注、`--fail-on-uncovered` 忽略提示）、`suite report --task <id>`；`suite run`/`suite loop` 全部 best-effort 登记（`--no-save` 跳过；json 模式不污染输出；失败输出"登记降级"行）；`run-report.ts`：结果表增「功能」「端」列（空值 `—`；台账源经 case_sets 解析功能名）、新增 `buildTaskRunReport`（命名 `<stamp>_<功能>_回归.xlsx` / `<stamp>_多功能N项_回归.xlsx` + JUnit）；`GeneratedCaseRecord`/`GeneratedCase` 增 `feature` 解析；`assignCaseFeature` 并列决胜收窄到并列组内（P1a 缓办 minor 落地）。评审遗留口径：`case_sets.basename`＝生成时 live 用例文件名（informational，引用解析以 feature key 为准）；归档子集 `counts.screens/edges`＝设计全量（`flows` 为子集数，子集覆盖看 `coverage`）。测试 +33（db-suite-runs 4 / run-compare 4 / run-registry 6 / suite-command +5 / suite-task 11 / run-report +2 / figma-features +1）；全量 1032 绿。
+
+- **口径**：登记与基线查询一律 best-effort（store 不可用 → 如实降级、不影响退出码）；对比血统＝同（case_set, feature, platform）份（跨用例集对比后置）；任务运行退出码 0 全通过 / 1 有失败 / 2 执行错误；结果表命名用 UTC 紧凑时间戳；任务报告与 `suite report` 台账报告并存（后者不动）。
+
+### 13.108 实施记录（回归服务 P1c：面板动作层——引用创建 / 任务页 / 归因裁决 / 统计下钻 / 反馈联路）
+
+> 实施于 2026-10-14（设计稿 §5.4/§5.7/§5.8；计划 `docs/superpowers/plans/2026-10-14-regression-service-p1c-panel-actions.md`）。DB 增 `updateCaseVerdict`（裁决写库：按（run,case）更新 `suite_run_cases.verdict/verdict_by/verdict_at/verdict_note`，项目作用域校验，未命中 → false；`CaseVerdict`＝case-defect/execution-deviation/app-defect/uncertain）；`suite_runs` 增 `runner TEXT`（`registerSuiteRun` 缺省填 `os.hostname()`——P1 语义＝执行机 hostname，P2 runner 引入后扩展为 runner 名）。
+>
+> - **动作层（仅 HTTP 模式）**：`POST /panel/api/tasks`（`{project, refs:[{caseSetId,featureKey}], platforms?, baseline?}`——refs 非空且需命中已登记份、platforms ⊆ {ios,android}（自动去重）、baseline ∈ {latest,none}、refs≤100；成功 → `createRegressionTask(createdBy:"panel")`；**重复提交不幂等**，会创建多个任务）；`POST /panel/api/verdicts`（`{project, items:[{runId,caseId}], verdict, note?, by?}`——items≤500，逐条 `updateCaseVerdict`；部分失败容忍（per-item 捕获，回 `{updated,missed,failed}`）；全未命中 → 400，全失败 → 500 通用错误（详情仅日志，不泄露底层错误原文））；**body ≤256KB（超限 413）**——动作层不复用 MCP 端点的 4MB 上限；`AOS_PANEL_ACTIONS=0` 整体关闭（404；与 `AOS_PANEL_WEB=0` 相互独立）；**v1 内网无鉴权**（任何能访问 HTTP 端口者可写任务/裁决——仅限受控内网部署，鉴权升级已实施：见 §13.113）；独立 `panel --web`（CLI）保持只读、不挂动作路由；写成功后清空面板缓存（`PanelWebCache.clear`；含部分失败路径），POST 后 reload 立即看到新状态；`createAosHttpServer` 增 `store` 注入缝（测试/嵌入复用外部 store）。MCP 端点保持 4MB 上限、动作层 256KB；修复轮将读体超限行为从「连接重置」统一为「排空 + 413」（动作层 413 有 http 级测试锁定，MCP 超限同样 413 不再 ECONNRESET）。
+> - **视图参数优先级** `task > batch > view`（`view=review|stats`）。新视图：**任务页**（`?task=<id>`：状态/引用用例集（用例集已清理占位）/设备运行（失败域/对比/清单路径）/跨端差异/触发执行指引）、**归因队列**（`?view=review`：最近 10 次运行的全部失败用例，未裁决在前、新→旧；初判域+置信+理由+证据（trace 目录两态：存在路径 / `[已清理]`）；批量裁决表单（radio 四选项+备注）→ POST 后 reload；动作指引行：重跑 `suite run --task/--tests`、隔离 `quarantine.json`）、**统计下钻**（`?view=stats`：功能维度（通过率/趋势小方块/失败域/归因构成）、最不稳用例（连败/flaky/最近裁决）、跨端差异、改进出口三清单（案例问题/执行偏差/应用缺陷，按（份,用例）取最新裁决）+ 指引行）。
+> - **统计口径**（`src/panel/stats.ts`）：仅用例集血统运行参与（`featureKey`/`caseSetId` 为 null 的普通运行跳过；**改进出口三清单与 `suite feedback` 裁决建议同口径**）；功能级跨用例集连续（feature key）；**case 级仅同用例集累计（（caseSetId＋caseId）分组，禁止跨用例集按 caseId 聚合）**；跨端差异仅同用例集内比较；连败＝该（份,用例）序列自最新往回连续非 passed 次数；裁决取最新非空；入参乱序亦按 createdAt 自排（新→旧）。
+> - **P1b 评审遗留落地**：`suiteRunTask` 两处 `updateRegressionTask` 包 try/catch（失败 → 告警 + 「注意: 任务状态回写失败（运行结果不受影响）」；退出码与结果摘要不受影响）；`suite task create` 参数白名单（`--platform` ⊆ {ios,android}、`--baseline` ∈ {latest,none}，非法 exit 2 不落库）；`suite feedback` 增 `kind:"verdict"` 建议（case-defect 按功能分组 → 「建议下一轮重新生成该功能用例」；只读按需，store 不可用跳过该维度不阻断）。
+> - **两条口径确认**：`task.runIds` 为**替换语义**（每次 `suite run --task` 重写为该次设备运行 id 集合；历史按 `regression_task_id` 查 `suite_runs`，任务页与 `suite task show` 均按 taskId 查询）；失败设备运行对比保持现状（task 模式 `report.ok=false` 为不可达路径——设备运行清单生成失败即不落盘，P2 runner 引入后重审）。
+>
+> 测试 +26（db-suite-runs +3 / panel-stats +5 / panel-actions +3 / panel-overview +4 / panel-web +4 / http-server +3 / suite-task +2 / generation-feedback +2）；全量 1060 绿。
+
+- **口径**：面板动作层只写「任务创建 + 裁决」两类事实（登记/对比/状态机仍由执行侧负责）；动作层与只读层同源 store、同视图构建路径（动作后 reload 即可见）；中心侧只存索引与状态，大件（清单/截图/证据）留在项目机磁盘、面板仅展示路径。
+
+### 13.109 实施记录（回归服务 P2：runner 心跳 + 自动领取执行 + 产物只读预览）
+
+> 实施于 2026-10-14（设计稿 §5.3/§5.4/§5.5/§7；计划 `docs/superpowers/plans/2026-10-14-regression-service-p2-runner-dispatch.md`，经两轮独立复核修订）。DB 增 `runners` 表（id/project_id/name/hostname/platforms/devices/tools/artifact_base_url/version/last_seen_at/created_at；`devices`＝`{serial,name,platform,kind,state}` 列表、`tools`＝adb/idb/simctl/ideviceId/appium 布尔、JSON 宽容解析）；`regression_tasks` 增 `claimed_by/claimed_at`（存量库经 MIGRATIONS 补列）与状态 **claimed**；`suite_runs.manifest_path` 首次接线（此前该列无写入方，恒 null）。
+>
+> - **runner（`suite runner` 常驻，项目机）**：首轮心跳 upsert（`runners.id` 为身份；`--name`/缺省 hostname）→ 启动释放自己的 claimed/running（崩溃残留回 pending）→ **并行心跳循环**（独立 async；`AOS_RUNNER_HEARTBEAT_MS` 默认 30s；异常仅日志不终止——**长跑执行期间不失联**）→ 主循环原子领取（最旧 pending 且**任务 platforms ⊆ runner 设备端**；单条 `UPDATE ... AND status='pending'` 守卫、不用 SKIP LOCKED、竞争失败下轮再试；**全量 pending 扫描（PG/内存同口径，无候选窗截断）**；领取前冻结库存快照；领取累加 `attempts`）→ 复用 `suite run --task`（argv 带 `--project` 与按任务端过滤的 `--device`，可多设备）→ **执行异常或非零退出码且未达终态 → 守卫释放本次领取**（`attempts` 未达上限（`AOS_RUNNER_MAX_ATTEMPTS` 默认 3）回 pending 按 `pollMs` 重试；达上限直接置 `failed`——不再自动重试、**不饿死队列**；已终态不覆盖）＋防热循环延迟。`--once` 单轮冒烟；SIGINT/SIGTERM 优雅退出（心跳步进 ≤250ms 检查 + 退出限时等待 2s）；**需要中心 PG**（内存 store 拒启 exit 2）。设备盘点：adb devices（emulator-* → emulator）＋darwin 下 simctl Booted 可用模拟器＋`idevice_id -l` 真机（best-effort）；`AOS_RUNNER_DEVICES` 逗号分隔**覆盖全部来源**（真机 UDID 显式列入口径）；tools 探测 idb（--version）与 appium（`AOS_APPIUM_URL` 配置）。
+> - **产物只读服务**（runner 同进程；`GET|HEAD /healthz`＋`/artifact/<rel>`）：根＝`<项目>/.artemis`（realpath 双重校验拒绝 `..`/绝对路径/符号链接外逃）；文件流（图片 inline、json/md/txt/log text/plain、xlsx 对应 MIME、`nosniff`）；目录浅索引（转义/不递归/父链接/>500 截断、`nosniff`）。**默认监听 `0.0.0.0`、默认无鉴权**（可选令牌见 §13.113；内网口径；暴露范围含 `.artemis/logs` 与 `.artemis/crashes`，README 点名）；`--artifact-port 0` 关闭、端口占用不阻断执行且**不广播基址**；基址＝`AOS_RUNNER_ADVERTISE_URL` 或 `http://<hostname>:<port>`；监听 `0.0.0.0`/`::` 时启动打印醒目告警。CLI 参数：`--name/--poll-ms/--heartbeat-ms/--artifact-port/--artifact-host/--once`。
+> - **面板**：项目页「执行机（runner）」区块（TTL 90s（`AOS_RUNNER_TTL_MS`）在线灯、设备 chips、工具徽标、最后心跳、产物基址；有 runner 时 30s 刷新）；任务页状态标签（待执行/已领取/执行中/已完成/部分失败/失败）＋领取方（在线/失联；未知执行机）＋活跃态 10s 刷新＋「在线 runner 会自动领取执行」指引；**pending 且无单台在线 runner 端覆盖时提示原因**（双端任务需单机双端）。**产物链接**：任务页设备运行「清单」（设备运行各自落批次清单并登记 `manifest_path`）与引用用例集 json/xlsx、归因队列「打开证据」（run→task→runner 链；`artifactUrl` 相对 `.artemis` 分段编码，越界 → 纯路径文本）；中心只拼 URL 不取文件，面板/中心不触网。
+> - **「一键下发」＝面板创建任务后由在线 runner 自动领取执行**（**不加按钮**）；无 runner 时手动 `suite run --task` 路径不变（claimed 不阻塞手动，契约锁）。`suite task release <taskId> [--force]`＝管理侧救济（**复用 `releaseRegressionTask` 状态守卫**——读取与写入之间任务已达终态则不覆盖；默认要求执行机离线，在线需 `--force`；`claimed_by` 为空的数据异常态默认拒绝、`--force` 可重置）；`suite_runs.runner` 经 `SuiteCliDeps.runnerName` 透传（runner 子命令把 `--name`/hostname 解析后显式传入；不经 `process.env`）。任务页显示 `attempts > 1` 的重试次数。
+> - **§8 剩余项**（沿用现状/列 P3）：多实例并发迁移（init 幂等 best-effort）、`platforms/devices/tools` 无版本宽容解析、真机 iOS 自动发现。（面板动作层/产物服务鉴权升级已实施，见 §13.113；claimed 自动超时重置、按端部分领取、`upsertRunner` 原子化已实施，见 §13.116；`suite backfill` 回填扫描已实施，见 §13.117——均不在剩余项。）
+>
+> 测试 +54（db-runners 12 / runner-inventory 5 / runner-agent 12 / runner-artifact 6 / suite-runner-cli 6 / suite-task +6 / panel-overview +4 / panel-web +5；另含端到端缝：`artifactUrl` 构建的 URL 打到真实 loopback 服务 200）；全量 **1123 绿**（含 Review Focus 五条锁定：并发领取守卫、路径穿越、崩溃重启释放、心跳/在线边界、手动与自动并存；两轮评审修复补：非零退出未达终态释放/终态不覆盖、**重试上限不饥饿队列**、`to:"failed"`、null claimedBy 救济、>50 条饥饿锁、守卫化 release）。
+
+- **口径**：领取＝任务端子集＋原子状态守卫；心跳 TTL 90s（3×默认周期）判定在线（字段级 now 对比）；产物 URL 一律相对 `.artemis`（与服务根一致，越界不链接）；claimed 超龄＋失联自动回收（§13.116），人工救济＝启动释放＋`suite task release`；产物服务与动作层并列**内网无鉴权**面（无鉴权为默认、已可选令牌见 §13.113；默认 `0.0.0.0`、`.artemis` 只读范围，风险在 README/DESIGN 点名）；双端任务需单机双端 runner（分机部署走手动；`AOS_RUNNER_PARTIAL_CLAIM=1` 可按端部分领取，见 §13.116）。
+
+### 13.110 实施记录（回归服务 P3a：定时回归——schedules + runner 触发）
+
+> 实施于 2026-10-14（设计稿 §5.5/§7 P3「定时回归」；计划 `docs/superpowers/plans/2026-10-14-regression-service-p3a-schedules.md`）。DB 增 `schedules` 表（id/project_id/name/feature_keys/platforms/baseline/every_minutes/enabled/last_fired_at/last_note/created_at/created_by；新表无迁移）。`latestFeatureRefs`/`ResolvedTaskRef` 从 suite-command 提取到 `src/tasks/feature-refs.ts`（逐字迁移、零行为变化；suite-task 既有测试为回归锁）。
+>
+> - **触发**（`src/runner/schedules.ts` `fireDueSchedules`；agent 主循环每轮「**先触发再领取**」）：`enabled` 且（从未触发或 `now - last_fired_at >= every_minutes`；毫秒 now 经 `Date.parse` 与 ISO 换算）→ **窗口 CAS**（`UPDATE ... WHERE enabled AND (last_fired_at IS NULL OR last_fired_at <= cutoff)`——多 runner 并发恰一个赢，败者静默跳过；**触发解析走全量**——`listSchedules`/`listCaseSets` 缺省全量，不受展示分页 50 上限影响（展示/交互路径显式传分页值：交互 `suite task create` 保持 50 且可见报错、非静默）；`listCaseSets` 读取失败 → 本轮不触发、**不消费窗口**）→ 赢得者**实时解析最新用例集**（featureKey → 最新 caseSetId；用例集重生成自动跟随，不冻结）→ `createRegressionTask({createdBy: "schedule:<name>"})` → 由既有领取循环执行（**不新增执行路径**）。部分引用缺失 → 可解析子集建任务 + `last_note` 记缺项；全缺失 → 跳过 + `last_note="引用用例集均不可用"`（窗口仍推进——**补跑仅补一次**，防风暴）。触发失败 best-effort（**每 due schedule 独立捕获**：窗口抢占失败仅告警跳过——窗口未消费、下轮重试；建任务失败告警 + `last_note`；均不阻断其余 schedule、不打断主循环）。`AOS_RUNNER_SCHEDULES=0` 关闭（默认开；`--once` 亦检查一次）。
+> - **CLI `suite schedule add|list|show|enable|disable|remove`**：`add --ref <featureKey>… --every <minutes≥5> [--platform ios|android]… [--baseline latest|none] [--name <n>]`（key 解析校验、platform 白名单+去重、name 缺省=首个 featureKey；**同项目同名拒绝**——`UNIQUE(project_id, name)`）；enable/disable 幂等（已是目标值提示仍 exit 0）；list/show 支持 `--json`。
+> - **面板（只读）**：项目页「定时回归（schedule）」区块（名称/功能 chips/端/节奏/启用/上次触发+`last_note`/最近任务链接——按 `createdBy=schedule:<name>` 在最近任务中匹配）；任务页状态行显示「来源」；空态给 CLI 提示。管理走 CLI（面板动作层扩展列 backlog）。
+>
+> 测试 +25（db-schedules 5（含同名拒绝）/ feature-refs 1 / fire-schedules 9（含 sets 读取失败不消费窗口、>50 份全量解析、CAS 抛错逐 schedule 隔离）/ runner-agent +4 / suite-schedule 4（含同名 exit 2）/ panel-overview +1 / panel-web +1）；全量 **1148 绿**（含 Review Focus 五条锁定：并发双触发 CAS、引用时效、补跑仅一次、触发失败不阻断、禁用/删除语义；两轮复核修复补：name 唯一、触发解析全量、sets 失败不消费窗口、窗口抢占失败不阻断其余）。
+
+- **口径**：节奏 v1 仅 interval（最小 5 分钟；cron/每日定点/时区、错峰、schedule 编辑/改名、面板管理动作列 P3+）；触发在 runner（项目机常驻、CAS 单触发）；schedule 引用 featureKey 而非 caseSetId（份演进自动跟随）；补跑仅补一次；面板只读、CLI 管理；**schedule `name` 项目内唯一**（面板「最近任务/来源」关联前提）；**schedule platforms 无匹配 runner 时任务逐窗口累积 pending**（owner 配置责任、面板任务列表可见；v1 不自动清理）。
+
+### 13.111 实施记录（回归服务 P3b：改进出口接线——生成反馈联路 / 环境清单 / Jira 一键建单）
+
+> 实施于 2026-10-14～15（设计稿 `docs/superpowers/specs/2026-10-14-regression-service-p3b-design.md`（决策 D1–D10）；计划 `docs/superpowers/plans/2026-10-14-regression-service-p3b-exits.md`，经一轮独立复核修订 C1/I1–I4/M1–M6）。目标：把归因裁决（§13.108）的三个改进出口接线——**案例问题 → 生成侧只读呈现（不自动改）**、**执行偏差 → 环境改进清单（视图＋导出）**、**应用缺陷 → 面板一键建 Jira 单（证据＋回写单号）**。
+>
+> - **store**：`suite_run_cases` 增 `jira_issue_key TEXT`（SCHEMA 与存量库 `MIGRATIONS` 补列，同 `verdict*` 款）；`ProjectStore` 增 `setCaseIssueKey`（按（run,case）更新单号，项目作用域子查询校验、未命中 false，镜像 `updateCaseVerdict` 形状）与 `getSuiteRun`（按 runId 读单条运行＋其用例，项目作用域，未命中 null）；memory/pg-mem 双实现；`recordSuiteRun`/`cloneSuiteRun` 的 cases 映射统一 `jiraIssueKey ?? null`（M6 卫生）。
+> - **共享出口聚合（单一事实源）** `src/tasks/verdict-exits.ts` `collectVerdictExits`：收编面板统计与生成反馈既有两处重复循环——**用例集血统口径**（`run.featureKey === null` 跳过，§13.108 契约）；入参自排 createdAt **新→旧**（乱序亦确定性）；按 `(caseSetId ?? "")|caseId` **首见即最新**；`caseDefects`/`appDefects` 按 caseId 升序（tie → `featureName` 升序 → `runId` 升序）；`environment` 按 `${device ?? ""}|${platform}` 分组（count 累加、features 去重后字典序、lastAt 取最大、notes 去重保序），组排序 **count 降序 → device 升序 → platform 升序**。面板统计视图、`suite feedback`、生成侧三处同源。
+> - **Jira 服务层提取**（`src/jira/`）：`resolve.ts`（`resolveJiraClient`／`jiraMissingConfigPayload`／`jiraErrorPayload`——错误三态（限流/API/通用）随迁为 **payload 级**字段（M2）；建单条目结果统一用 `reason?` 字段（M4））、`attachments.ts`（附件去重上传核心 `uploadAttachmentsDeduped`／`deterministicAttachmentName`／`shortContentHash`，工具与 `post.ts` 共用避免循环依赖，I2）、`post.ts`（`postEvidenceToIssue`——凭证检查→key 解析→trace 存在性→幂等评论＋去重附件；**`dryRun` 且 key 为空/未提供 → 跳过 key 解析、`issue: null`**，M1）、`issue-template.ts`（`buildRegressionIssueSummary`／`buildRegressionIssueDescription`——summary 两态、description 按字段有无省略的 ADF 列表）。`src/tools/jira.ts` 改为薄封装，**输出逐字不变**（`test/jira-tools.test.js`／`test/jira-evidence.test.js` 为回归锁，未改）。
+> - **面板一键建单**：`POST /panel/api/issues`（`src/panel/actions.ts` 路由 + `src/panel/issues.ts` 核心 `createRunCaseIssues`）。仅 HTTP 模式；`AOS_PANEL_ACTIONS=0` 整体关闭（404）；`items` ≤ **20**（超限 400）、逐条 `{runId, caseId}`；body ≤256KB（沿用 P1c 动作层上限）。**准入（D9，先校验后建单，不允许部分副作用后才发现格式错）**：未知运行/用例 → `skipped`；`status === passed` → `skipped`；既有裁决存在且 ≠ `app-defect` → `skipped`；无裁决允许；已有 `jira_issue_key` → `existing` 直接返回（**顺序重复点击幂等**）。**缺省链（D5）**：`projectKey`＝`payload.projectKey ?? 项目 .env JIRA_ISSUE_PROJECT`（皆空 → 400 指引）；`issueType`＝`payload.issueType ?? JIRA_ISSUE_TYPE ?? "Bug"`；`labels`＝`normalizeLabels(payload.labels ?? JIRA_ISSUE_LABELS)`（trim＋去空＋去重）。`dryRun:true` → `preview`（摘要＋附件清单，**不触网、不建单、不回写**）。建单失败 → 该条 `error`、**不回写单号、不误报 created**。证据评论＋附件经 **服务层 `postEvidenceToIssue`**（与 `jira_evidence_post` 同源），返回 `evidence: posted|skipped|error`（**best-effort**——traceId 缺失 → `skipped`；回写失败仅日志）；产物 URL 经 `regressionTaskId → runners.artifact_base_url` 复用面板 `artifactUrl` 拼法（尽力，无基址则纯路径）。建单成功回写单号（`setCaseIssueKey`，失败仅日志）；有条目 `created`/`existing` 时清面板缓存。**建单路径只读配置＋trace 产物，不拉起子进程**；`runtimeFor` 缝（HTTP 注入 `deepRuntimeFor`：仅 workspace 内**单段**项目名可解析（M3），缺省返回指引错误）。
+> - **生成侧只读呈现（D1：不静默自动改产物）**：`figma_generate_tests` 响应增 `feedback.caseDefects`——**仅当匹配到本次生成的功能**时出现（`total` + `byFeature[{featureKey, featureName, count, cases[{caseId,name,note}]}]`，`src/figma/generation-feedback.ts` `collectCaseDefectFeedback`）；`tests.md` 末尾追加「上轮案例问题修订提示（裁决反馈）」段（逐功能列用例名与备注）。store 不可用 → 响应省略该块 ＋ `warnings` 记 `case-defect-feedback-unavailable`（**不阻断生成**）；`cases`/`taskDesc` 等产物**未触及**。
+> - **CLI `suite feedback` 扩展**：JSON 输出增 `exits`（`caseDefects`/`environment`/`appDefects`，其中 `appDefects` 每条带 `jiraKey`）；文本输出在建议后追加「出口清单（按最新裁决）」段——案例问题（条数＋功能）/执行偏差（条数＋按设备计数）/应用缺陷（条数＋已建单数），三清单皆空 → 单行空态「出口清单为空（暂无已裁决失败）。」；`verdict` 建议含用例名与备注摘要（**截断 40 字 + `…`**，空备注省略括号）。**不新增子命令**（D2）；只读按需、store 不可用静默降级不阻断。
+> - **面板 UI（统计下钻改进出口区）**：**环境清单表格**（设备/端/次数/涉及功能/最近裁决/备注摘要——备注合并 ≤120 字、超出 `…`）；**应用缺陷行 checkbox + 已建单 chip**（单号为**纯文本**——见下方降级点名）；**内联建单表单**（项目/类型/标签输入 ＋「预览」/「建单」按钮）——预览调 `dryRun`、建单成功后 reload；客户端结果用 DOM API（`createElement`/`textContent`/`replaceChildren`）渲染（无 `innerHTML` 注入面）、服务端字段 `escapeHtml`、内嵌路径 `JSON.stringify` + `<`→`\u003c`；案例问题指引行同步更新为「修订期望 / 重新生成」。
+> - **降级与风险点名**：①**一键建单＝外部副作用**——v1 动作层**内网无鉴权**（沿用 P1c 口径），任何能访问 HTTP 端口者均可建立**真实 Jira 单**（仅限受控内网部署，鉴权升级已实施：见 §13.113）；②**并发双开为已接受限制**——同一条目被两个请求并发建单时可能各建一张（无 DB 级去重/锁），内网单操作员口径，与 `tasks` 路由「重复提交不幂等」同口径（顺序重复点击仍幂等）；③**已建单 chip 的 siteUrl 降级**——面板渲染层**无 Jira 站点来源**，故 chip 只显示纯文本 KEY（不生成 `browse` 链接）；建单响应内的 `url`（含 siteUrl）仅在本次结果列表可点；④**证据 best-effort**——Jira 未配置 → 400＋指引且不触网；证据回写失败不回滚已建单（`evidence:"error"` 如实标注）；⑤未配置 Jira 凭证 → 400＋`howToFix`，不消耗任何外部请求。
+>
+> 测试 +40（原 +38：db-suite-runs +4 / verdict-exits +7（新文件）/ jira-issue-template +4、jira-post +3 / panel-actions +9 / panel-web +3 / generation-feedback +2、suite-command +1 / figma-test-gen +5；收尾复核修复波 +2：`test/panel-actions.test.js`、`test/figma-case-sets-gen.test.js` 各 +1）；全量 **1188 绿**（含 Review Focus 五条锁定：Jira 未配置/失败不触网不误报、重复建单顺序幂等、越权/坏输入先校验后建单、注入转义、生成侧降级不阻断；回归锁 `test/panel-stats.test.js`／`test/jira-tools.test.js`／`test/jira-evidence.test.js` 未改；`test/panel-overview.test.js`／`test/generation-feedback.test.js` 随接口演进更新形状断言（口径不弱化，由 `test/verdict-exits.test.js` 新测试锁定））。
+
+- **口径**：改进出口＝**共享聚合单一事实源**（面板/CLI/生成三面同源，用例集血统口径，§13.108 语义）；**生成侧只呈现不改产物**（案例问题→提示重生成，不静默改写用例）；**建单粒度＝每条一张**（不批量合并）；**证据与 `jira_evidence_post` 同源**、best-effort 不回滚；Jira 缺省值项目 `.env`（`JIRA_ISSUE_PROJECT`/`JIRA_ISSUE_TYPE`(默认 Bug)/`JIRA_ISSUE_LABELS`），payload 优先；面板建单为**外部副作用**（v1 内网无鉴权（默认；已可选令牌，见 §13.113）、并发双开接受、已建单 chip 无 siteUrl 降级）；动作层与只读层同源 store、写成功清缓存（reload 即可见）。
+
+### 13.112 实施记录（回归服务 P3c：跨项目对比——多项目对比视图）
+
+> 实施于 2026-10-15（设计稿 `docs/superpowers/specs/2026-10-15-regression-service-p3c-design.md`（决策 D1–D11）；计划 `docs/superpowers/plans/2026-10-15-regression-service-p3c-compare.md`，经一轮独立复核修订 I1–I2/M1–M8）。目标：补上统计维度的「项目」层——只读**多项目对比视图**（`?view=compare` ＋ `/panel.json?view=compare`），按中央台账跨项目呈现质量水位、趋势、失败域与待办，回答「哪个项目需要关注」。前置 P1（§13.106–13.108）/P2（§13.109）/P3a（§13.110）/P3b（§13.111）已落地。
+>
+> - **视图**（`src/panel/compare.ts` `buildPanelCompare`）：行＝项目（**复用 `buildPanelOverview`** 的项目行与**接入健康灯/lampReasons**——未注册/磁盘不可达提示与 L1 同源，不与「无批次」混淆）；列组六列：**项目**（名链接项目页＋灯）｜**最近批次**（时间·门禁·通过率）｜**趋势**（内联 SVG 迷你图，最近 ≤10 批通过率、时间升序）｜**质量**（flaky 计数·失败域 top3 chips）｜**待办**（未裁决失败条数·未建单缺陷项数·任务积压·failed）｜**运行**（runner 在线/设备·定时回归 enabled/最近触发）。**不改 L1 既有列语义**——L1 只加「多项目对比」页头链接、对比页回链 L1。
+> - **窗口与口径（D4/D8/D9/D11）**：窗口＝**用例集血统运行**（`featureKey !== null`，adhoc 不入窗）最近 **20** 批——台账 `listSuiteRuns(rootPath,{limit:40})` 读回后 JS 过滤、取前 20（窗口稀释有界、如实短窗）；「最近批次」列与**排序键**取台账窗口最新一批（`at = finishedAt`；`gate` **非 pass/fail 一律归一 null**；`passRate = passed/total`，total 0 → null）。**D8 修订**：L1 的「最新批次」软读对磁盘不可达项目恒空、排序失效，故对比视图改用台账口径（L1 自身列与灯**不动**）。`trend`＝窗口前 ≤10 批映射后**反转为时间升序**；`flaky`＝窗口内**运行级 `run.flaky` 之和**（D11）；`domains`＝合并窗口 `failureDomains` 计数后 **count 降序 → domain 升序** 取 top3。**两列待办语义不同并如实标注**：`pendingVerdicts`＝窗口内「`status !== "passed" && verdict === null`」的**发生次数**（同归因队列精神）、`unissuedAppDefects`＝窗口内按（`caseSetId ?? ""`|`caseId`）**取最新裁决去重**后 `app-defect && jiraKey === null` 的**条数**（复用 `collectVerdictExits`，与统计/建单面同源）；**精确待办以归因队列（近 10 次口径）为准**（两窗口故意不同）。
+> - **运行列（近似口径）**：任务积压＝`listRegressionTasks(rootPath, 200)` **最近 200 条近似**（超出部分旧条目不计）计数 pending/claimed/running/failed（其余状态不计）；runner 在线＝`listRunners(rootPath, 100)`（**显式放宽默认 limit 20**）经既有 `isRunnerOnline`/`runnerTtlFrom`（TTL 90s，与 overview 同源）判定，`devices`＝在线 runner 设备数之和；定时回归＝`listSchedules(rootPath)` 计 enabled 数、`lastFiredAt` 取非空最大值。
+> - **排序与封顶（I1）**：固定「关注优先」，**先排序、后截断**：`rank`（无批次 0 → 最近门禁 fail 1 → 其余 2）升序 → `passRate` 升序（null 后置）→ 项目名升序（稳定）；输出封顶 **50** 行，`truncated:true` ＋ warning（避免红灯项目被 overview 最后活跃序误丢）。排序/封顶提取纯 helper `selectCompareRows(rows, cap=50)` 供单测。**行级降级（D7）**：单项目台账读取抛错 → 该行 `error`（面板显「读取失败：…」）如实标注、其余字段给空默认，**不整页失败**；无数据单元格显 `—`。
+> - **D10 批量装载**：`listSuiteRuns`（postgres）内部由「逐 run 装载 cases」改为**单查询批量装载**——收集 runIds → 动态占位 `IN (…)`（占位符自 `$1` 起）一次读取 `ORDER BY run_id ASC, case_id ASC` → 按 run_id 分组装配；**零 run → 跳过批量查询**（`IN ()` 守卫）。对外**行为逐字不变**（runs 顺序（新→旧、limit 语义）与逐 run `cases` 按 `case_id` 升序），全部既有调用方同为提速、零语义变化；对比视图每项目 DB 往返 ≤3。
+> - **路由/JSON/渲染**：`buildView` 在**无 `project` 参数**分支按 `view=compare` 命中（带 `project` 时**不命中**、回退项目页路径）；`toJsonView` → `{ …compare, view:"compare" }`，JSON 形状稳定 `{ok,generatedAt,store,window:{runs:20},projects,truncated,warnings,view:"compare"}`；`renderComparePage` 渲染列组＋**口径说明行**（窗口 20 批、任务积压 200/runner 100 近似、数据源＝中央台账、精确待办以归因队列为准）＋降级行＋空态，全字段 `escapeHtml`、迷你图仅由钳制后数值拼接；渲染分支置于兜底 `renderBatchPage` **之前**。`panel --web`（独立只读看板）**自动可用**（同一 handler、无运行时缝依赖）；缓存沿用 `PanelWebCache`（`AOS_PANEL_TTL_MS`）。
+>
+> 测试 +17（db-suite-runs +2 / panel-compare +9（新文件：聚合＋排序/封顶＋路由/JSON）/ panel-web +6（渲染＋互链＋escape））；全量 **1205 绿**（含 Review Focus 五条锁定：窗口/口径稀释、磁盘不可达但有台账项目排序照常、行级降级与 >50 截断、只读与转义/数值钳制/JSON 形状稳定、`listSuiteRuns` 批量装载后既有调用方输出逐字不变（`db-suite-runs`/`panel-overview`/`panel-web` 为装配锁））。
+
+- **口径**：对比视图＝**项目级只读**（功能级跨项目匹配留 P3+，需先定义匹配规则与误报口径）；数据源以**中央台账为主**（磁盘不可达项目机同样可比，**不读批次清单**）；窗口＝用例集血统最近 20 批（趋势/flaky/域/最近批次同窗）；两列待办**故意不同口径**并如实标注（窗内发生次数 vs 最新裁决去重）；排序固定「关注优先」、**先排序后截断 50**；**行级降级不整页失败**；L1 列与灯不变（对比视图独立视图）；跨项目**动作不做**（动作层保持单项目作用域、对比视图严格只读）；`?view=compare`＋`/panel.json?view=compare` 同源构建，`panel --web` 自动可用，无子进程/无网络/无写盘。
+
+### 13.113 实施记录（回归服务 P3d：动作层与产物服务鉴权升级——可选静态令牌）
+
+> 实施于 2026-10-15（设计稿 `docs/superpowers/specs/2026-10-15-regression-service-p3d-design.md`（决策 D1–D8）；计划 `docs/superpowers/plans/2026-10-15-regression-service-p3d-auth.md`，经一轮独立复核修订 C1/I1–I2/M1–M6）。目标：为两个对外网络面（`serve --http` 的 `/mcp`/`/panel*`/`/panel/api/*`/`/usage*` 与 runner 产物服务 `/artifact*`）加**可选静态共享令牌**，默认行为零破坏，并对「非 loopback 且未设令牌」的 `serve --http` 给安全默认。前置 P1–P3c（§13.106–§13.112）已落地。
+>
+> - **机制（`src/auth.ts`，D1/D4/D5）**：**静态共享令牌**（不做账号/角色/OAuth/mTLS）。请求凭据三种形式等价：`Authorization: Bearer <token>`、`Authorization: Basic <base64(user:pass)>`（用户名任意/空、**密码＝token**，浏览器原生弹窗零改造）、产物服务另接受 URL `?t=<token>`（HTTP 服务**不开**查询参数通道）。比较经 `crypto.timingSafeEqual`（先长度归一，长度不等直接 false；等长才逐字节比较，避免时序侧信道）；**空 token 恒 false**；`Authorization` 与 token 值 `trim` 归一。令牌仅读**进程 env**（无项目 `.env` 语义、无 CLI flag）；日志用 `maskSecret` 只回 masked 预览。
+> - **`serve --http` 闸门（`MOBILE_TESTING_HTTP_TOKEN`，D2/D7）**：未设＝现状（无鉴权，loopback 本地开发不变）。设置后**先鉴权后路由**——除豁免面外一切路径（含 `/mcp/<project>`、`/panel*`、`/panel/api/*`、`/usage*`、深探层、**禁用路由与未知路径**）未认证一律 `401`（不泄露路由存在性）；豁免仅 `GET|HEAD /` 与 `GET|HEAD /healthz`（serve **补齐 `HEAD` 处理返回 200 无体**，与产物服务 parity）。401 带 `WWW-Authenticate: Basic realm="mobile-testing-mcp"`（触发浏览器弹窗）＋ JSON `{"error":"unauthorized"}`，且 **`HEAD` 抑制 body（`Content-Length: 0`）**。启动日志 `认证：已启用（Bearer/Basic，token=<masked>）` / `认证：未启用`。
+> - **安全默认（D2/M1）**：绑定**非 loopback**（`0.0.0.0`/`::`/LAN 地址）且未设 token 且未显式放行 → 抛 `InsecureBindRefusedError`（检查置于 `RuntimeHost.prepare` **之前**，fail-fast 无副作用）→ CLI `serve` 分支捕获 → stderr 指引 ＋ **exit 2**（其余错误维持 exit 1）；`AOS_HTTP_ALLOW_INSECURE=1` 放行并打印**醒目 WARN**；loopback 绑定不受此限。
+> - **runner 产物服务（`AOS_RUNNER_ARTIFACT_TOKEN`，D3/M5）**：未设＝现状（默认 `0.0.0.0`＋既有告警，**不因默认绑定强制**）。设置后 `/artifact/*`（GET/HEAD）要求认证（Bearer/Basic/`?t=`），未认证 → `401` ＋ `WWW-Authenticate: Basic realm="aos-artifact"`（`HEAD` 抑制 body）；**闸门覆盖非 `/artifact*` 路径**（无凭据 401、不泄露路由）；豁免仅 `GET|HEAD /healthz`（`/` **不在**豁免）。复用既有 `env?` 缝读 token（命令层无需改）、启动行 masked；令牌**不随心跳广播**（不落 PG、不出现在面板链接——面板产物链接保持纯 URL，浏览器按弹窗输入）。
+> - **`install --mode http` 注入（`src/install.ts`，D6/M6）**：操作者进程 env 有 `MOBILE_TESTING_HTTP_TOKEN` → 各 target 的 http/remote 形状注入 `headers.Authorization: Bearer <token>`（本地 stdio 条目不受影响）；输出附「已注入 Authorization 头…」提示，**但全部 target 都 `skipped_exists` 时不给该提示**（只在确有条目带 token 落位时声明）；未设 token → 不带头并提示「目标服务若启用令牌，请在客户端配置 Authorization」；**token 变更后配置视为「已存在但不同」→ 需 `--force` 重装**；输出**不打印明文**。
+>
+> 测试 +26（auth +7（新文件）/ http-server +9 / runner-artifact +6 / install +4；含 CLI serve 的 exit 2 缝）；全量 **1231 绿**（含 Review Focus 锁定：闸门先于路由与豁免边界、凭据形式等价与常时比较/空 token、安全默认 exit 2 与放行 WARN、`HEAD` 无体、`?t=` 仅产物服务且仅在开通道时生效、install 幂等与不泄露明文）。
+>
+> - **口径**：鉴权＝**可选静态共享令牌**（Bearer＋Basic 双接受；产物服务另允 `?t=`）——默认零破坏、设＝强制；**先鉴权后路由**、未认证不泄露路由；豁免**仅** `GET|HEAD /`（serve）与 `GET|HEAD /healthz`（serve＋产物服务）；`serve` 非 loopback 无 token 为**安全默认启动失败（exit 2）**，`AOS_HTTP_ALLOW_INSECURE=1` 为显式逃生门；令牌仅进程 env、比较常时、日志 masked、install 输出不落明文；`isLoopbackHost` 为**纯字符串判定**（仅 `127.0.0.1`/`::1`/`localhost` 大小写不敏感，`::ffff:127.0.0.1` 及解析到 loopback 的主机名一律按非 loopback **fail-closed**）；401 对 `HEAD` 抑制 body；账号/角色/OAuth/mTLS/令牌轮换、独立 CLI 看板鉴权、产物签名 URL/中心代理、默认绑定改变均**不在范围**（另立计划）。产物服务**目录浏览建议用 Bearer/Basic**；经 `?t=` 认证打开的目录索引会为条目与父链接**续带 `?t=`**（**仅当该 `?t=` 值自身校验通过**，Bearer/Basic 路径不带），`?t=` 仍以**单文件直链**/书签场景为主（本条对原建议的**局部反转**见 §13.115）。
+
+### 13.114 实施记录（回归服务 P3e：跨项目功能对齐——同源功能对照）
+
+> 实施于 2026-10-15（设计稿 `docs/superpowers/specs/2026-10-15-regression-service-p3e-feature-alignment-design.md`（决策 D1–D10）；计划 `docs/superpowers/plans/2026-10-15-regression-service-p3e-feature-alignment.md`，经一轮独立复核修订 I1–I2/M3–M9）。目标：补 P3c（§13.112）明确推迟的**功能级跨项目匹配**——先定匹配规则与误报口径，回答「同一功能在 A/B/C 三个项目里的通过率、flaky、待办各如何」。前置 P3c/P3d（§13.112/§13.113）已落地。
+>
+> - **匹配规则（D1/D2/D5/D8，`src/panel/feature-alignment.ts` 纯函数）**：**组＝同设计源身份 ＋ 归一化功能名**；**仅组内项目数 ≥2 展示**（名下同名不同源不成组）。**源身份归一化**（`normalizeDesignSource(source, rootPath)`）：**前缀优先判定**——`figma:` 先判，取 `figma:` 后**首个 token** 为身份（`figma:<fileKey>[ (名)]` → `figma:<fileKey>`，**不 lower**，fileKey 原样保留）；`pen:` 次判，`pen:<rel>` → posix 化＋**小写**（含分隔符仍走 pen 归一化）；其余含路径分隔符/绝对路径 → `path.relative(rootPath, source)` 后 posix＋小写（相对结果以 `..` 开头 **或** 经盘符判定后仍为绝对路径（跨盘符）→ **原样小写**）；其余形式**原样小写**。**功能名归一化**（`normalizeFeatureName`）：NFC → trim → 连续空白折叠单空格 → 小写（CJK 不变；**不剥词形**，不剥离「流程/页」等后缀、不做同义词）。**已声明边界（误报口径随视图展示）**：同一 Figma 文件「工具 url 形式（`figma:<key>`）vs 管道路径形式（相对路径）」**不互相匹配**（v1 纯文本归一化；跨形式对齐需读 flows.json 内 fileKey，列 P3+）。
+> - **数据与窗口（D2/D7/D9）**：数据源＝对比视图**同一窗口**——各项目「用例集血统运行最近 20 批」（台账 `listSuiteRuns(limit:40)` → JS 过滤 `featureKey !== null` → 取前 20）。每项目**新增一次 `listCaseSets(rootPath)`（缺省全量）**并投影为 `sets: [{id, source, features:[{key,name}]}]`，**保证窗口内老份也能映射**（限 20 会静默漏旧份）。**聚合单位＝`(caseSetId, featureKey)`**（跨代 key 可跨多份/多源）；随后**按（项目, 源身份, 归一化名）合并**：Σ passed / Σ total / Σ runs / Σ flaky / Σ pendingVerdicts、`latestAt` 取最大时间。`passRate`＝Σ passed / Σ total（total 0 → null）；`pendingVerdicts`＝该功能窗内「`status !== "passed" && verdict === null`」的用例发生次数（P3c 同款谓词，`isPendingVerdict`）。**名称权威来源＝case set 冻结名 `features[].name`**；**补丁口径（M4）**：**set 存在但该 `featureKey` 不在 `features[]` 中（或冻结名为空串）时回退 `run.featureName`**，回退后仍为空/`null` 则跳过该运行。**跳过口径（M7）**：`featureKey === null` 的运行、以及 `caseSetId` 无对应 set（无映射）的运行**一律跳过且不产生组键、不参与 unmatched 计数**。
+> - **输出与排序（D3/D4/D10）**：`PanelCompareView.featureAlignment: { groups, unmatched }`（**加性字段**，JSON 向后兼容）。`unmatched`＝**仅出现在 1 个项目中的组键数量**（distinct 组键中项目数 <2 的个数；被跳过的运行不计入）。`groups[]` 每项 `{ sourceLabel, displayName, entries }`；**`sourceLabel`＝原始 `source`（不经归一化，展示用）**——因此**路径式 source 会显示生成项目的路径**（同布局项目下文本不同、仍成组，属预期；文档如实注明）。`entries[]` 每项目一行 `{ project, featureKey（合并后取首个，展示用）, passRate, runs, flaky, pendingVerdicts, latestAt }`，**项目名升序**。**组间排序**：项目数降序 → **通过率极差**（组内非 null passRate 的 max−min，**参与值 <2 → 0**）降序 → `displayName` 升序。**只并列、不合并**——**不产出跨项目聚合通过率/总分/排名**，每行数据均标注来源项目。
+> - **渲染（`src/panel/web.ts` `renderFeatureAlignmentSection`）**：对比页**第二区块**「功能对齐（跨项目）」（紧随项目级区块，不新增视图）；每组＝表头（显示名 ＋ `sourceLabel` ＋ 项目数）＋小表（项目/通过率/批次/flaky/未裁决/最近）；顶部口径说明行（匹配规则、窗口、误报口径、未匹配计数）；空态（无 ≥2 项目组）＝说明行＋未匹配计数。**对齐区块全部展示、无封顶**（M9，与项目级区块封顶 50 行不同）。**全部字段 `escapeHtml`**。`/panel.json?view=compare` 响应含 `featureAlignment`。
+> - **降级与只读（D3）**：单项目 `listCaseSets` 失败 → `sets = null` → **该项目不参与对齐**（项目级区块照常、行级 `error` 不改），计数如实、不整页失败。沿用 P3c：**严格只读**（无子进程/无网络/无写盘）、输出入 `PanelWebCache`（`AOS_PANEL_TTL_MS`）。**性能**：每项目新增 1 次 store 读（`listCaseSets` 全量）——对比视图每项目 DB 往返 ≤5（原 4＋本 1）（`listCaseSets` 为全量读；case set 数量大时按 1+N 查询计）。
+>
+> 测试 +23（feature-alignment +16（新文件：归一化/分组/指标/降级）/ panel-compare +4（`featureAlignment` 加性字段与组装）/ panel-web +3（区块渲染/空态/未匹配置/escape））；全量 **1254 绿**（含 Review Focus 锁定：前缀优先与路径相对化/跨形式不匹配边界、set 缺 key 回退 `run.featureName`、被跳过运行不产生组键且不参与 unmatched、组排序（项目数→极差→名）与 entries 项目名升序、对齐区块无封顶与全字段转义、P3c 项目级区块/JSON 字段零回归（加性））。
+>
+> - **口径**：跨项目功能对齐＝**保守匹配**（同设计源身份 ＋ 归一化功能名，宁缺勿蹭；组内 ≥2 项目才展示）；**只并入对齐表、不合并统计**（无跨项目聚合通过率/总分/排名，每行标注来源项目）；名称归一化**不改词形**、名称权威＝**case set 冻结名**（set 缺 key 则回退 `run.featureName`，仍空跳过）；**被跳过运行（`featureKey === null` / 无 case-set 映射）不产生组键、不参与 unmatched**；`unmatched`＝**仅出现在 1 个项目中的组键数**；`sourceLabel` 为**原始 source**（路径式会显示生成项目路径）；同文件「url 工具形式 vs 管道路径形式」**不互相匹配**为**已声明边界**；对齐区块**全部展示**（无封顶）；**严格只读**、全字段转义、加性 JSON 向后兼容；手动别名/映射文件、模糊/AI 匹配、同名不同源「疑似」提示、跨项目合并统计与动作、历史对齐演进均**不在范围**（另立计划）。
+
+### 13.115 实施记录（回归服务清理批次：切分加固 + 产物索引令牌续带 + 测试补强）
+
+> 实施于 2026-10-16（计划 `docs/superpowers/plans/2026-10-16-regression-service-cleanup.md`，经一轮独立复核修订 I1–I2/M 系列；提交 779816a/f29571a ＋ 本记录）。范围＝P3 复盘遗留的**小半径加固与文档回收**，**零行为回归（未设令牌／默认路径）**。前置 P1–P3e（§13.106–§13.114）已落地。
+>
+> - **切分加固（`src/panel/web.ts`）**：任务表单 `refs` 与归因裁决表单 `items` 的 `value = "<左>|<右>"` 解析，由「按 `|` 全量切分」改为**首个 `|` 的 `indexOf`/`slice`**（镜像 §13.111 `issue-item` 表单既有先例）——右侧（`featureKey`/`caseId`）自身含 `|` 时不再截断；**payload 形状逐字不变**（元素仍 `{caseSetId,featureKey}` / `{runId,caseId}`），属既有声明内的类比扩展。
+> - **产物索引 `?t=` 续带（`src/runner/artifact-server.ts`）**：目录索引（条目与父链接）在**且仅当该 `?t=` 值本身通过常时校验**时续带 `?t=<encodeURIComponent(queryToken)>`——Bearer/Basic 命中**不带**、未启用 token 逐字回归旧行为、保留字符 percent-encode。携带判定与请求凭据无关（`authorization: undefined`），故「有效 Bearer ＋ 陈旧/错误 `?t=`」**不携带**坏链（I2 收紧）。**本条对 §13.113 原建议「目录索引链接不携带查询串」为局部反转（I1）**——§13.113 与 README 对应句已回收改写；`?t=` 仍以**单文件直链**/书签场景为主。
+> - **测试补强**：① **路由级错误分支**（issues 动作路由：`runtimeFor` 为 null／未配置 Jira → 400 指引，离线）；② **D8 直测**（「磁盘不可达但有台账」：门禁 fail → 对比行 `rank` 1、`latestBatch` 非空）；③ **零 run 守卫**（`listSuiteRuns` 批量装载在零 run／`limit:0` 下跳过批量查询，pg-mem 命中）。
+> - **文档指针两处**：§13.109 产物服务口径改「默认监听 `0.0.0.0`、**默认**无鉴权（可选令牌见 §13.113）」；README 功能对齐段补「越界/不可相对化则原样小写」（与 `normalizeDesignSource` 的 `..`/跨盘符回退一致）。
+>
+> 测试 +9（runner-artifact +5 / panel-web +1 / panel-actions +1 / panel-compare +1 / db-suite-runs +1）；全量 **1265 绿**（Review Focus 锁定：refs/items 含 `|` 值的形状级切分、索引续带**仅随有效 `?t=`**（Bearer/Basic 与未设 token 均不带）、路由级 400 与 D8 排序/零 run 守卫）。
+>
+> - **口径**：本批为**加固与文档回收**，不含新功能与口径变更；`?t=` 携带＝**有效性收紧**（该值自身过校验才带，防有效 Bearer 携陈旧坏链）；**零行为回归**（未设令牌／默认路径逐字不变）；切分语义＝**声明内类比扩展**（首个 `|`）。
+
+### 13.116 实施记录（回归服务 P2.x 加固：失联领取回收 + 按端部分领取 + upsertRunner 原子化）
+
+> 实施于 2026-10-16（设计稿 `docs/superpowers/specs/2026-10-16-regression-service-p2x-hardening-design.md`（决策 D1–D7）；计划 `docs/superpowers/plans/2026-10-16-regression-service-p2x-hardening.md`，经 builder-check 复核（Q1–Q3）与一轮外部复核（关键点 1–2／中 3–5／低优先三条）修订；提交 3583780/999ada9/6088a0c ＋ 本记录）。范围＝§13.109 §8「剩余项」中的三项服务化加固（claimed 自动超时重置、按端部分领取、`upsertRunner` 原子性），**默认配置零行为回归**。前置 P2/P3a（§13.109/§13.110）已落地。
+>
+> - **失联领取回收（D1/D2/D5，`releaseStaleClaims`，`src/db/postgres.ts`/`src/db/memory.ts`）**：单条原子 `UPDATE … WHERE`（无读改写窗口）——命中 `status ∈ {claimed, running}` ∧ `claimed_at` 非空且 `<= claimedBefore`（**超龄**）∧（`claimed_by` 为空 **或** 该 runner `last_seen_at <= offlineBefore`（**失联**；`claimed_by` 悬空即查不到对应 runner 时同样回收））→ 置 `pending`、清 `claimed_by/claimed_at`；**`attempts` 不动**（`attempts` 语义＝**领取即累加**，在 `claimRegressionTask` 的 `attempts = attempts + 1`）；返回 `rows.length`（`RETURNING id` 风格）。agent 主循环**每轮**在「触发 schedules → 领取」**之前**调用（`offlineBefore = now − runnerTtlMs`（既有 90s TTL）、`claimedBefore = now − staleClaimMs`）。开关 `MOBILE_TESTING_RUNNER_STALE_CLAIM_MS` 默认 **900000**（15min），**专用解析器**：`"0"` → 0 **关闭回收**（不回退默认）、非法/空 → 默认。回收 >0 条记日志。**自洽性质**：**无在线 runner 时无人回收**（回收由在线者执行，首个恢复的 runner 先回收再领取）。**前置依赖**：回收正确性依赖「执行期间心跳持续」——心跳循环与主循环解耦（P2 已在场，§13.109），长跑任务只要心跳在跳就不会被判失联；**毒丸守卫（外部评审关键点 2）**：crash 型循环触达不到「执行失败置 failed」路径，故领取成功后若 `task.attempts > maxAttempts` → 立即 `releaseRegressionTask(to:"failed")` ＋ 日志「毒丸防护」，**不进入执行**（毒丸在 max+1 次领取处终态化）。**成本口径**：每轮回收＝一次额外 DB 往返（单条 UPDATE；仅 `staleClaimMs > 0` 时发）。
+> - **按端部分领取（D3/D6/D7，`claimRegressionTask`）**：新增可选 `onlineBefore`/`allowPartial`，**缺省＝严格旧行为**（任务端 ⊆ 自身设备端，逐字）；**四组合仅 `allowPartial === true && onlineBefore 提供` 分叉**（其余三组合＝严格子集，旧行为本就返回 null 隐式等待）。规则：**完全覆盖优先**；无则对每个 pending 候选算交集，当**无他者在线 runner**（`last_seen_at > onlineBefore`，**排除 self**，self 用 `input.platforms` 直接判定）可**完全覆盖**该任务且交集 ≥1 时领最早候选，按**交集端**执行。开关 `AOS_RUNNER_PARTIAL_CLAIM=1` **显式开启**（**默认关**）。缺端**不自动补跑**、**不新增任务状态/结果表字段**；可见性＝领取日志「部分端执行（缺 X——在线无全覆盖执行机）」＋执行侧既有控制台缺端标注。**端覆盖审计反推口径**：DB 层对「completed 但缺端」无标记，反推＝任务 `runIds` 关联的 `suite_runs.platform` 集合 vs 任务 `platforms`（统计下钻分母按实际已跑端）。**快照竞态**：双端 runner 恰在在线快照后上线的小窗口**不覆盖测试**（与既有并发测试 backlog 同口径）。
+> - **`upsertRunner` 原子化与迁移（D4，`src/db/postgres.ts`）**：唯一索引**仅经 MIGRATIONS 建**——**先去重**（`DELETE FROM runners WHERE id IN (SELECT r1.id FROM runners r1 JOIN runners r2 ON r1.project_id = r2.project_id AND r1.name = r2.name WHERE r1.last_seen_at < r2.last_seen_at OR (r1.last_seen_at = r2.last_seen_at AND r1.id < r2.id))`——保留 `last_seen_at` 最大、并列取 `id` 最大；**pg-mem 3.0.14 实测唯一可行形态**：窗口函数/`DELETE…USING`/相关 EXISTS/`NOT IN`+GROUP BY 均不可用）**再** `CREATE UNIQUE INDEX IF NOT EXISTS runners_project_name_idx ON runners(project_id, name)`（幂等覆盖新库/存量库；**DDL 不加表约束**以避免新库双索引）；`project_id IS NULL` 行不参与去重（upsert 未注册项目即抛错，无实际影响）。实现改 INSERT → 命中唯一冲突（`23505`）→ 回退 `UPDATE`（按 `project_id, name`，与 `createSchedule` 归一先例同款）＝单行 upsert，双写并发最多一次回退、不产生重复行。**tie-break 口径**：并列取 `id` 最大＝UUID 字符串比较（确定性）；`last_seen_at` 文本比较依赖**统一 ISO 格式**（同格式字典序＝时间序，勿引入带时区偏移格式）。**迁移 best-effort 残余**：`MIGRATIONS` 维持仓库既有 try/catch 包装（多实例并发迁移 out-of-scope），以**迁移专项测试**（pg-mem，夹具沿用 `test/db-runners.test.js` 旧表形态）锁定去重＋索引＋单行不变量；「迁移未生效且并发插入」残余风险与现状同级。
+> - **部署约束**：失联判定以**回收者自身 TTL** 为准——多机队须**统一 TTL/心跳配置**，各机心跳间隔 **≤ TTL/3**（默认 30s/90s 满足）；混配（他机心跳间隔 > 本机 TTL）会把健康但慢心跳的执行机误判失联。
+>
+> 测试 +19（T1 +5 / T2 +8 / T3 +6；`db-runners`/`runner-agent` 等）；全量 **1284 绿**（Review Focus 锁定：超龄＋失联回收与**超龄＋在线不回收**、`attempts` 保留、悬空 `claimed_by` 回收、`"0"` 关闭、毒丸守卫 `attempts > maxAttempts` 置 failed 不执行；部分领取四组合、完全覆盖优先、他者全覆盖则等待、排除 self、默认关旧行为；迁移专项去重＋唯一索引、23505 回退单行不变量）。
+>
+> - **口径**：三项加固＝**默认零行为回归**（回收仅涉「超龄＋失联」、部分领取默认关、无新参数字段＝严格旧行为）；回收＝**双条件原子 UPDATE**、`attempts` **领取累加**语义不变＋**毒丸守卫**在领取侧兜底终态化；「无在线 runner 则无人回收」为**自洽性质**；部分领取＝**全覆盖优先、仅「无他者在线全覆盖」时按交集端**、缺端**不自动补跑/无新状态字段**、opt-in；`upsertRunner`＝**唯一索引仅经 MIGRATIONS（先去重后建）＋23505 回退**，单行不变量，残余风险与现状同级；部署须**统一 TTL/心跳且心跳 ≤ TTL/3**；claim 平台下推 SQL、并发领取执行级测试、多实例并发迁移、任务页/结果表级缺端标记、自动补跑缺端、真机 iOS 自动发现、artifact TOCTOU 均**不在范围**（另立小票）。
+
+### 13.117 实施记录（回归服务 backfill：从磁盘产物幂等重建登记）
+
+> 实施于 2026-10-16（设计稿 `docs/superpowers/specs/2026-10-16-regression-service-backfill-design.md`（决策 D1–D12）；计划 `docs/superpowers/plans/2026-10-16-regression-service-backfill.md`，经 builder-check 复核（Q1–Q5）与一轮外部复核（关键 1–3 成立、中 4 成立且高价值、中 5 误判澄清）修订；提交 b270d21/4b02619/dad2254 ＋ 本记录）。范围＝spec §5.3「降级与回填」与 §8 遗留项「回填扫描命令形态」：中心 PG 不可用时生成/执行照常、产物落盘——**产物是事实源、登记可回填**；本命令从既有产物**幂等重建登记**，补上「漏登记的份/运行只能靠人补库、或永远缺失」的缺口。
+>
+> - **命令与只读契约（D1，`src/tasks/backfill.ts` / `src/suite-command.ts` `suiteBackfill`）**：`suite backfill [--dry-run] [--json] [--project <dir>] [--since <ISO>]`。只读扫描 `design/runs/*.json`（批次清单 manifest，文件名倒序（排序后逆转））与 `design/case-sets/*.json`（用例集归档三件套的 JSON，basename 升序）；**仅写 DB 登记、绝不改写磁盘任何产物**（dry-run 与实跑同）。报告 `{ scanned{runs,caseSets}, registered{runs,caseSets}, wouldRegister{runs,caseSets}, skipped, invalid, beforeSince, dryRun, warnings }`＋文本行；`--json` 出结构化报告。`--project` 沿用通用旗标（项目身份经 `AOS_PROJECT_DIR`/`aos.config.jsonc` 解析）。
+> - **PG 守卫（D12）**：`store.kind !== "postgres"` → 报错并 **exit 2**（提示配置中心 PG；沿用 `suite runner` 先例）——**禁止在降级内存库上产生「成功假象」**（如实标注红线）。
+> - **登记下界（D10，`getEarliestRegistrationCreatedAt`）**：默认 `since`＝该项目**最早登记时间**（对 `suite_runs`/`case_sets` 两域各取 `MIN(created_at)` 再取 min）；**全库为空 → 无下界并 warning**（将扫描全部归档）。`finishedAt < since` 的 run 与 archive stamp `< since` 的归档**不登记**（`beforeSince` 计数）——防首跑把回归服务之前的历史清单导入（与非目标自洽）。`--since <ISO>` 显式覆盖。
+> - **幂等键与 DB 级约束（D2/D11）**：runs 幂等键＝**`manifest_path`**（**同源绝对路径、不 resolve/不归一/不相对化**——`saveRunManifest` 返回与 `loadRunManifest` 的 `read.file` 原样一致，逐字节一致是幂等前提）；迁移新增**部分唯一索引** `CREATE UNIQUE INDEX IF NOT EXISTS suite_runs_project_manifest_idx ON suite_runs(project_id, manifest_path) WHERE manifest_path IS NOT NULL`（`src/db/postgres.ts` MIGRATIONS），回填插入命中 **23505 → 按已登记 skip**（并发/与在线登记双写**不产生双行**）；在线登记路径维持 best-effort。**迁移不做前去重（裁定）**：`manifest_path` 由 `saveRunManifest` 独占写（tmp+link、撞名换后缀重试）保证唯一、无历史重复行可言，故既无前去重必要、也不写「潜在有害的 DELETE」；`MIGRATIONS` 维持仓库既有 try/catch best-effort 包装，迁移未生效时**降级为应用层幂等（`listRegisteredManifestPaths` 查重）**、**无数据损坏**（残余风险与既有迁移同级）。sets 幂等键＝**`features[].jsonPath`**（应用层集合去重：`listCaseSets(rootPath)` 全量摊平 `jsonPath` 集合；cases 无 DB 级约束）。
+> - **路径桥（D8，读侧重映射）**：`RunManifest` 增**可选** `registration?`（additive、`schemaVersion` 不变、`loadRunManifest` 读侧宽容不回归）：写侧**保存时点可得即写**——`run --task` 写 `regressionTaskId/caseSetId/featureKey/featureName/platform/runner/caseSetJsonPath(=ref.jsonPath)`，`suite run`/`suite loop` 写 `platform/runner/testsPath(=report.testsPath，即 --tests 入参原样)`；**`appVersion` 无写侧来源 → 恒 null（字段保留）**。**runner 取 `io.runnerName ?? os.hostname()`**（与在线对齐）。回填**先 sets 后 runs**：runs 段以 `registration.caseSetJsonPath ?? registration.testsPath` 匹配本轮新登记或既有已登记归档的 `features[].jsonPath` → **重映射 `caseSetId` 并恢复 `featureKey/featureName`**（同源恢复；降级窗口内引用的悬空就此修复）；**未命中原值保留**（不猜、不悬空扩面）。**run/loop 默认 feature-null**：`suite run`/`suite loop` 的在线登记本就 feature-null（refs 解析发生在登记之后、且主 `tests.json` 与归档 `jsonPath` 不同名）——回填同口径，仅当 `testsPath` 命中归档 `jsonPath` 时才经路径桥恢复血统。此机制同时消除原 D8「`--tests <归档>` 保存前解析 refs」backlog（写侧零时序变化、解析在读侧）。
+> - **字段口径（runs，D5/D9）**：`trigger`＝**`"cli"`**（与在线登记逐字一致；`manifest.source` 的 run/loop 细分属清单自身语义、不落登记列）；`status`＝`gate.exitCode === 0 ? "completed" : "failed"`；计数/gate/`failureDomains` 取自 manifest summary/gate；cases 逐条映射（`flaky`＝`retry.flaky`、`quarantined`、`traceId`、`failure.domain/confidence/reason`）；`createdAt`＝**`finishedAt`**（保历史时序）；`platform`＝`deviceSerial` 经 `platformOf` 分类 → 兜底 `registration.platform` → 再无 `"unknown"`；`manifestPath`＝`read.file`；**`manifest.runId` 不复用、不落列**（`suite_runs.id` 由 `recordSuiteRun` 生成，cases 经 `run_id` 关联新 id）；`durationMs/verdict/verdictBy/verdictAt/verdictNote/jiraIssueKey` 回填为 `null`（不伪造）。缺维度**如实 null**（platform 除外＝可分类）。
+> - **字段口径（case-sets，D4/D6/Q3/Q4）**：`source`＝归档 `source`；`designName`＝**恒 null**（归档不含该字段）；`basename`＝**归档 stem**（`<stamp>_<功能>`；展示项、非身份/聚合键——与在线登记恒 `"tests"` 不同，口径注明）；`fingerprint`＝**该归档文件 sha256（crypto 直算）**（与在线登记用的主 `tests.json` 指纹**不同源**，回填行以归档自身为准）；`createdAt`＝basename 前缀 UTCstamp（`YYYYMMDD_HHMMSS`→ISO，兼容旧归档 `YYYYMMDDTHHMMSS`）解析，不可解析兜底文件 mtime；`features`＝**单条/行**（本归档仅一个功能段：`key/name` 取 `features[0]`、`caseCount`＝`flows.length` 兜底 `counts.flows`、`screens`＝`flows[].screens` 摊平去重）——**与在线登记「一次生成一行多 features」粒度不同**（语义等价可用：用例集血统/对比键（份,功能）均以行内 feature 为准）；三路径按同名 `.json/.md/.xlsx` 推导。
+> - **失效与降级可见（`invalid` 计数）**：manifest 读取 `invalid`/`newer`/`missing`，与归档读取失败/JSON 解析失败/缺 `features[0].key|name`、登记抛错，一律计入 **`invalid` ＋ warning**（不阻断其余登记）；归档三件套缺 `.md`/`.xlsx` → 告警**仍登记**。
+> - **dry-run 语义**：`registered` 恒 0（不写库）、**`wouldRegister`＝将登记数**（未登记且过下界）；文本行额外标注「dry-run 未写库」。
+>
+> 测试 +14（T1 manifest registration +3 / T2 db 查询＋部分唯一索引 +3 / T3 backfill 扫描·路径桥·下界·幂等·命令层 +8；`suite-run-manifest`/`db-suite-runs`/`suite-backfill`/`suite-command`）；全量 **1302 绿**（Review Focus 锁定：runs/sets 幂等复跑全 skip、23505→skip 不双行、下界 `beforeSince` 与空库 warning、路径桥重映射与未命中原值保留、字段口径（platform 分类／`createdAt=finishedAt`／sets 单 feature／指纹=归档 sha）、内存 store exit 2）。
+>
+> - **口径**：backfill＝**只读扫描产物（绝不写盘）＋只写 DB 登记**、幂等（runs＝`manifest_path` 部分唯一索引＋23505→skip、sets＝`jsonPath` 应用层集合去重）；**须中心 PG**（内存降级即 exit 2，杜绝成功假象）；**默认下界＝项目最早登记时间**（防历史清单倒灌，`--since` 覆盖，`beforeSince` 可见）；runs `trigger="cli"`（同在线）、`createdAt=finishedAt`、`manifest.runId` 不复用；sets 单 feature/行、`basename`＝归档 stem、`fingerprint`＝归档 sha（**均与在线口径不同源，为展示/可用性取舍，口径已注明**）；缺维度如实 null（platform 除外＝deviceSerial 分类＋registration 兜底）；失效产物计 `invalid`＋warning 不阻断；**局限**：既有任务/引用的**历史 id 不可复原**（回填产生新 id；路径桥仅修复同窗口经 `caseSetJsonPath/testsPath` 可达的悬空引用）、**回归服务之前的历史清单不回填**（下界）；增量监视/自动触发、产物改写/补全三件套均**不在范围**（另立小票）。
+
+### 13.118 实施记录（设计×真机细节核验：区域核验「放大核验」）
+
+> 实施于 2026-10-16（设计稿 `docs/superpowers/specs/2026-10-16-design-device-detail-verification-design.md`（决策 D1–D12；builder-check＋外部评审两轮逐条核实并入）；计划 `docs/superpowers/plans/2026-10-16-design-device-detail-verification.md`（6 任务 TDD）；提交 efbe9b7/26f137b/2b9bfd5/27bbaa6/8035b87 ＋ 本记录）。动机：**整屏缩略对比对细节级差异结构性漏报**——受控实验 `.artemis/design/zoom-exp/`（同源四类细节差异：字重加粗/元素缺失/位置偏移/细线缺失）：默认整屏 diff **0/4**、调参 2/4＋噪声、**区域放大 4/4**；fresh 模型盲测虽 4/4 但靠自写差分脚本＋放大复核。做法：**给 `design_device_diff` 增加区域核验并默认开启**——区域提议 → 设备原生栅格成对裁剪放大 → 1:1 局部判定 → 对图输出＋工作流契约。
+> - **区域提议（D2/D3；`src/diff/detail.ts` 纯函数）**：`auto`＝叶子节点∪整屏 diff 命中；无节点源（拉取失败/为空）→ tiles 平铺（768px 网格、128px 重叠防跨缝）；叶子口径＝无更深节点覆盖 ≥90% 自身面积、排除零面积与 ≥95% 屏者；padding 16／相邻外扩后 ≤12 合并；截断优先级＝diff 命中＞小面积＞大面积（`detail.truncated`）；显式 `Bbox[]` 原样（按 y,x 排序、idx 1..N）。
+> - **公共栅格（D1/D5）**：区域判定在**设备原生栅格** 1:1（局部引擎 `maxEdge`＝crop 尺寸、factor=1，绝不降采样；`minAreaRatio` 分母＝区域裁剪面积）；设计侧按设备倍率渲染（Figma 小数 scale；pen `--export-scale`，`renderScale` 入返回值）或几何比率上采样；越界区域截断记账（单边 <4px 视作不可见，`out-of-bounds` 计数）；v1 只核验视口内。
+> - **细节档/降级档（D5/D6）**：默认 0.05/0.0005/4；有损源（JPEG 回退）或设计上采样 → 统一降级 0.1＋`lossy-source`/`design-upscaled` 警告；`DeviceCapture` 增 `lossless` 标记（adb PNG/WDA/simctl＝true；ARTEMIS live JPEG 与回退＝false；step 不设）；Android live 默认**二次无损抓图**（失败回退＋降级）；平台分等：Android adb 无损／iOS 模拟器 idb→simctl PNG／iOS 真机 WDA PNG／step 随执行器。
+> - **对图与接口（D4/D7/D8；双通道隔离 D11）**：`device｜design` 并排（zoom 默认 2（1–4）；单侧 ≤640px、总高 ≤1200px、gap 24）；落盘 `diffs/<...>/regions/<idx>-<slug>.png`；内联前 `returnCrops`（默认 8，hasDiff 优先按严重度→面积）；**分页＝回传 `regionDetails[].bbox`**（idx 仅同一响应内有效——live 每次抓图 diff 命中集合会漂移）；`regions:"none"` 严格旧契约（无新键、content=2、零额外请求）；`save:false` 不落盘（crops 省略、内联保留）；dryRun 不变；**整屏通道源/参数/阈值/产物名零改动**。
+> - **工作流契约（D9）**：工具描述（`design_device_diff`／`compare_design_and_device`）写入「对比结论必须来自区域级对图核对（引用区域编号）、整屏图仅定位」；属**纪律层**（机制层兜底＝对图默认产出、证据默认落盘、`localSummary` 供引用）；自动评鉴留后续。
+> - **口径与边界**：**跨源误报基线未验证（D12）**——同源实证 4/4 召回；跨源（设计渲染 vs 真机渲染）细节档「验证中」，默认放行以真实项目对基线实验为准（备选机制：容差匹配/分层阈值）；`alignment.ignoreRegions` 目前仅作用于整屏通道（区域核验未继承，后续项）；「真机多出·小」「节点外·小」为 v1 声明的盲区（spec §2.5 覆盖边界矩阵）；顺带修正工具描述过期口径（iOS 真机 WDA 早已支持，旧文案「仅 macOS 模拟器」）。
+> - 测试 +36（`diff-detail` 18、`diff-detail-tool` 13、`diff-pen-source`＋2、`device-screenshot`＋2、`ios-screenshot`＋1；含终审修复轮补测：C1 可见窗口对齐、out-of-bounds 部分截断记账、PNG 路径 lossless、step 保真档、nodes 截断优先级、S=3 二次渲染/失败降级/参数覆盖）；全量 **1341 绿**。
+
+### 13.119 实施记录（统一服务 ①：`design_to_test` 一条龙 + 脚本退役）
+
+> 实施于 2026-10-17（设计稿 `docs/superpowers/specs/2026-10-17-unified-project-service-design.md`（决策 D2/D3/D4/D10/D14/D15；② 回归＋Excel / ③ Jira / ④ 档案 另出计划）；计划 `docs/superpowers/plans/2026-10-17-design-to-test-tool.md`（5 任务 TDD）；提交 5a14564/83449e3/c0c4508/42d6308 ＋ 本记录）。动机：五步 CR 流程的编排原先做在 **MCP 之外的脚本层**（`scripts/design-to-test.mjs`、旧 `aos-call` 脚本编队（现 `scripts/mobile-testing-call.mjs`））——工具 schema 被复制到脚本层、已发生两次真实漂移 bug（`penPath` vs `path`、`vision` 字符串 vs boolean），用户还要记旗标/退出码。做法：把编排收进服务内部——新增原生工具 `design_to_test`（前置自检→读设计→懂交互→出用例→校验→可选执行一条龙，内部**复用既有实现而非 shell**），**退役脚本层**。范围＝工具＋`src/workflow/`（setup + 编排）＋`src/figma/gate.ts` 门禁提取＋脚本退役；②③④ 阶段与 `project_archive` 不在本阶段。前置 M2（Figma 20 工具）/M6（pen.dev P1）/`suite check` 闭环（§6.10）已落地。
+> - **工具与 schema（`src/tools/native-tools/workflow.ts`，§13.89 域装配）**：`design_to_test`——`figmaUrl`/`penPath` 互斥二选一（`nodeId` 仅 figma、`vision` 仅 pen）、`reuseExistingFlows`、`device`、`run`（**缺省 false**）；缺设计来源且未复用＝isError 用法错误；工具描述内写协议关键句（适用信号「设计稿/CR」、一条龙步骤、needs 协议、`run` 缺省）供唤醒路由。
+> - **编排与前置（`src/workflow/`，全依赖注入可离线测）**：`setup.ts` 三类前置——figma token（项目 `.env`/进程 env）、pen 登录（`PEN_CLI_KEY` 短路不触子进程，否则 `pen status`；CLI 缺失/超时/未登录/非零退出分路）、LLM ping（active 条目 ＋ 一次真实 ping，默认超时 15s，**不缓存**、与真实调用分离）；`design-to-test.ts` 串 提取（figma/pen；`reuseExistingFlows:true` 跳过并校验 flows.json 存在）→ `figma_generate_tests` → 门禁 `coverageGateIssue`（§6.10 硬/探索同口径）→（`run:true`）复用 `runGeneratedTests` 执行；**禁止 shell 到 CLI/脚本**（spec 反目标）。
+> - **needs 协议与错误面**：预期缺失＝**非 isError** 的结构化返回——`needs:"setup"`（`checks:[SetupNeed]`：target/missing/howTo[/note]）与 `needs:"info"`（`questions`/`context`，如多设备候选）；仅在参数冲突/全缺等用法错误用 isError；单步失败 `{failedStep:"extract"|"generate"|"check"|"run", detail, suggestions}`（人话指引，不裸抛 gate 输出）。
+> - **`run` 姿态（D15）**：缺省止于校验，响应 `nextAction={tool:"design_to_test",args:{reuseExistingFlows:true,run:true[,device]}}`；`run:true` 时**执行前写服务日志**（`log()`：将跑 N 条 / 来源 / 设备）并在响应 `steps` 回显 `{step:"run",cases,source,device}`；设备缺省＝自动盘点（0 台→needs-setup(device)、>1 台→needs-info 带候选，先问不猜）；执行走共享批次（quarantine＋批次清单＋运行登记，见下条）；run 失败返回 failedStep:"run"（`report.ok:false`＝0 条提交/执行器不可达，detail 取 `report.error`；用例已执行仅失败仍 ok:true、`run.ok:false`；产物在 `.artemis/design/runs/`、`.artemis/traces/`，重跑安全）。
+> - **终审修复轮（共享执行 / 失败语义 / usage / 设备 env）**：`suite run`/`suite loop`/`design_to_test` 共用 `src/figma/suite-batch.ts`（quarantine 加载 → 执行/重试 → 退出码 → 批次清单 → `suite_runs` 登记），CLI 只保留参数解析与展示、行为零回归；manifest `source=design_to_test`，响应 `artifacts.runManifest`，隔离用例不计门禁；执行失败按 `report.ok` 结构化（不再顶层 ok:true）；usage family=`workflow`，并从 payload 提取 `needs:<target>`/`needs:info`/`failed-step:<x>`/`run.gate` 信号；`checkLlm` 记录 model/ms/结果（不落 key、不记参数值）；设备盘点传入合并 env 并逐层透传到 `adb devices` 子进程（`ExecFn`/`ExecBufferFn` 增 `env`，`collectRunnerInventory`/`AdbLogcatCollector` 透传；`ADB_SERVER_SOCKET` 来自 `iosEnvironment()`＋deviceHosts/config/.env，ADR-0011）。
+> - **门禁提取（零行为变化；② 阶段打底）**：`coverageGateIssue` 由 `src/suite-command.ts` 原样搬至 `src/figma/gate.ts`（仅加 export），`suite check`/`loop`/`run --fail-on-uncovered` 口径与文案逐字不变（既有测试零回归）。
+> - **脚本退役（D11）**：删除 `scripts/design-to-test.mjs` 与 `test/design-to-test.test.js`；`scripts/audit-legacy-tests.mjs` 属运维扫描器**保留**；CI 如需非对话调用改 3 行 stdio 薄壳（另行）。文档同步：AGENTS 表行删除＋「设计流水线」段一句话入口注记、README 工具表新行。
+> - 测试 +37（`figma-gate` 4 / `workflow-setup` 16 / `workflow-design-to-test` 14 / `native-workflow-tool` 3），脚本退役 −8（`design-to-test.test.js` 随脚本删除）；全量 **1381 绿**。
+
+### 13.120 实施记录（统一服务 ②：`run_regression` 回归一条龙 + Excel 用例导入）
+
+> 实施于 2026-10-17（设计稿 `docs/superpowers/specs/2026-10-17-unified-project-service-design.md`（决策 D5/D5b/D6/D12/D15/D16；③ Jira / ④ 档案 另出计划）；计划 `docs/superpowers/plans/2026-10-17-regression-run-excel-import.md`（6 任务 TDD）；提交 544980c/ca6f6ea/10dcc8d/a0ece67/eade94a ＋ 本记录）。动机：回归入口此前只有 CLI 旗标（`suite run --task/--tests`），Excel 测试文档进不了用例库（不进最新用例集解析/报告/证据），用户要在"文档→用例→设备→报告"之间手工搬。做法：新增原生工具 `run_regression` 与导入器，把选择/回显/执行/聚合收进服务内部（复用 `executeSuiteBatch`，禁止 shell）。
+> - **门禁分档（`src/figma/gate.ts`）**：`coverageGateIssue` 拆为可组合的 `artifactGateIssue`（三件套）＋`dataPolicyGateIssue`（【真实数据】）＋私有 coverage 段，组合后文案/顺序逐字不变；`isImportedTestsFile` 读 `meta.source` 前缀 `imported:`；`gateIssueForTests` 按来源选闸——导入集只走 artifacts+dataPolicy（覆盖闸 n/a），生成集走完整三闸；`suite check`（输出 `覆盖: n/a (imported)`、JSON 增 `imported`）、`suite loop`、`suite run --fail-on-uncovered` 三面共用（生成集零回归）。
+> - **xlsx 读取（`src/workflow/excel.ts`）**：复用**既有运行时依赖** exceljs（`package.json` 已在用，非新增——D6 的"最小内建优先"按此裁决：手写 zip/XML 风险更高）；fail-loud：非 `.xlsx`、损坏、合并单元格（列出范围）、空表头、维度异常（>10000 行/200 列）均显式失败＋转换指引；cell 归一（字符串/富文本/数字/布尔/公式结果）；尾部空行裁剪。
+> - **导入器（`src/workflow/excel-import.ts`）**：列名别名自动识别（用例名/标题、步骤/操作、预期、前置、模块，中英）＋`columns` 覆盖；必填（用例名+步骤）缺失列出当前表头；按模块拆集（缺省＝文件 stem），每集三件套落 `.artemis/design/case-sets/`（JSON `{meta:{…},source,features:[{key,name,screens}],counts,flows}`（对齐生成归档，供 `suite backfill` 重建）、md 清单、xlsx 复用 `renderTestsWorkbook`），源文件副本**仅一份** `<UTCstamp>_<源文件>.source.xlsx`；caseId=`imp-<sha8(文件内容)>-<行号>`（名称冻结）；`taskDesc` 注入 `REAL_DATA_CLAUSE`；步骤口径：有预期→`执行「…」，应出现「…」`（assert；preflight 弱断言豁免判据"含应"），无预期→`探索：…`（expectations kind=explore）；登记每导入一条记录（多 features），`source=imported:<文件名>@<sha8>`、fingerprint=导入内容 sha256、designName=null；**功能身份稳定**：`featureKey=imp-<文档slug>[-<模块slug>]`（**不含内容哈希**——同名文档视为同一份演进，最新用例集按 key 去重取代旧版；sha 只在 source/fingerprint/caseId）；**幂等**：库内 source 命中→`skipped` 指向既有份（登记不可用时回退扫描归档 `meta.source`）；**失败回滚**：归档/源副本/登记任一步失败均删除本次已写文件后再报错（避免“归档在、登记无”被后续导入当成 skipped）。导入集**不参与**生成集的功能身份继承（`loadPriorFeatures` 过滤 `source` 前缀 `imported:`）。
+> - **编排（`src/workflow/run-regression.ts`）**：`RunRegressionArgs {excelPath?,scope?,all?,device?}`；前置 `checkLlm`＋设备解析（`src/workflow/devices.ts`，自 `design_to_test` 抽出：0 台→needs-setup(device)、>1 台→needs-info 候选；**先于导入/选择**，避免"导完才发现没设备"）；选择三模式——`excelPath`（导入/幂等复用后执行，`scope` 时集内按用例名过滤并透传 `caseIds`）、`scope`（库内每个 feature 最新用例集，功能名或用例名归一化 NFKC/大小写/空白匹配）、`all`/缺省（每个 feature 最新用例集全量）；回显（`steps[select].targets`：功能×条数＋`导入自 x/生成自 y`）并写服务日志后才执行；逐集 `executeSuiteBatch({options:{testsPath,caseIds?,deviceSerial},source:"run_regression",registration:{platform}})`（quarantine＋批次清单＋`suite_runs` 登记；manifest source 增 `run_regression`）；聚合 `run{device,sets,total,executed,passed,failed,gate,traceIds}` 与 `artifacts.sets[].manifestPath`；任一集 `report.ok:false`→顶层 `failedStep:"run"`（detail 取 report.error），用例失败已执行仍 `ok:true`、`run.gate` 反映；用法错误（excelPath/scope 与 all 同用）isError。
+> - **usage（D12）**：family=`workflow`；payload 根字段 `import:{outcome:imported|skipped|invalid}`、`scope:{hits}` → 信号 `import.outcome`/`scope.match`（只取枚举/根字段，不读参数值）。
+> - **收尾硬化（① 延后 Minor）**：`design_to_test` 生成 0 条用例→`failedStep:"generate"`（不再静默 ok）；needs 措辞同步 `checks[]`（工具描述/README）。
+> - 测试新增 29（`figma-gate`/`suite-command` 分档与 loop/run 口径、`workflow-excel` 5、`workflow-excel-import` 7、`workflow-run-regression` 11、`figma-case-sets-gen` 1、`suite-backfill` 1、`native-workflow-tool` 3、`usage-capture` 1、`workflow-design-to-test` 1 等）＋终审修复波 7（稳定功能身份/登记回滚/生成身份隔离/backfill 归档形状/loop·run 分档/columns 暴露）；全量 **1431 绿**。
+
+### 13.121 实施记录（统一服务 ③：`verify_jira_issue` Jira 验证一条龙）
+
+> 实施于 2026-10-18（设计稿 `docs/superpowers/specs/2026-10-17-unified-project-service-design.md`（决策 D8/D8b/D9/D12/D13/D15；④ 档案另出计划）；计划 `docs/superpowers/plans/2026-10-18-verify-jira-issue.md`（8 任务 TDD）；提交 6573be1/7df2626/252cbc7/b2eeee2/2d12337/5dacb97/fb553a1/bf48896/f4f9486 ＋ 本记录）。动机：Jira 验证此前只有散件（`jira_issue_get` ＋ 手工连用例 ＋ `jira_evidence_post`），"单子→用例→设备→回写"没有闭环；本工具把 读单/分档/映射/合成/执行/聚合/回写 收进服务内部（复用 `executeSuiteBatch`，禁止 shell）。
+> - **共享选择原语（`src/workflow/case-selection.ts`）**：`run_regression` 私有助手迁出复用（`normalizeKeyword`/`containsKeyword`/`provenanceOf`/`latestFeatures`/`selectByScope`）＋新增 `readCaseSummaries`（现场读用例清单 id/name，坏文件→[]）；`run_regression` 改 import，行为零回归。
+> - **前置（`src/workflow/setup.ts`）**：`checkJira`（`needs-setup target:"jira"`，missing 取 `jiraConfig().missing`，howTo 指向 `aos_configure`/`.env` 三键）；顺序：Jira 凭证（不触网）→ 读单 GET → 分档（粗单→needs-info，先于 LLM/设备）→ LLM ping → 设备盘点 → 选择/映射；Jira GET 失败→`failedStep:"ticket"`。
+> - **分档与合成（`src/workflow/jira-issue.ts`）**：AC 段／≥2 列表项／≥120 非空白字符→`detailed`；否则 `coarse`→`needs-info` 三条提问模板（功能页面、触发条件、期望结果）。步骤提取 `issueStepItems`（ADF 列表有序/无序/嵌套展平）；「单子即用例」合成：预期分隔 `(?:预期(?:结果)?|期望(?:结果)?|应该|应当|应出现|应显示)[：:，,]` → `执行「…」，应出现「…」`（assert）/否则 `探索：…`（explore），taskDesc 注入 `REAL_DATA_CLAUSE`＋工单号；落盘 `.artemis/design/jira/<KEY>.tests.json`（覆盖式；**不进 `case-sets/`**——避免 `suite backfill` 误登记）。
+> - **约束映射（`src/workflow/jira-mapping.ts`）**：LLM 只能从候选清单选 id（交集过滤编造项、保序去重、≤10 条），候选 ≤400 条（超限注明"已达上限"）；答无匹配→"单子即用例"；LLM 调用/JSON 失败→`failedStep:"mapping"`（不静默降级）；复验把上次评论「映射用例: …」行作为上下文传入（无新增存储，D13）；`scope` 给定时直接按关键词选（不调映射 LLM）。
+> - **聚合与回写（`src/workflow/verify-jira.ts`）**：分类＝`report.preflight.weakCases`（weak）／`scriptProvenance`（null→weak、`asserts===0`→explore）；**任一强断言失败→FAIL**；强断言 0 条→`inconclusive`（"无强断言"文案）；强断言未失败但弱/探索失败→`inconclusive`（"弱断言失败 N 条"文案）——均披露"弱断言仅记录路径，不代表验证通过"；quarantine 失败不计门禁。回写（`dryRun` 零写回（不产生任何外部副作用；读单/评论读取不变）＋结论预览）：失败证据 `postEvidenceToIssue`（trace 幂等，≤10 条＋`evidenceTruncated`）＋结论评论 `upsertMarkedComment`（marker `AOS-VERIFY:<KEY>`、评论属性 `aos-verify`，同单更新不刷屏；`src/jira/comments.ts` 从 trace 专用泛化为通用 marker，trace 委派行为不变）＋`jira_issue_key` 关联（`setCaseIssueKey`，best-effort）；**不写 verdict**（D9）；manifest source 增 `verify_jira_issue`。复验读回上次「映射用例」行作映射上下文（`buildVerifyComment` 输出 → `adfToText` → `parseVerifyMapping` 闭环，bullet 前缀容错）。
+> - **usage（D12）**：family=`workflow`；根字段信号 `ticket.detailTier`（detailed|coarse）、`mapping.selected`(N)/`mapping.none`（答没有时 `mapping:{selected:0}`）、`writeback`(sent|dryRun)。
+> - 测试新增 43（`workflow-case-selection` 5、`workflow-setup` 2、`jira-comments` 3、`jira-verify-comment` 5、`workflow-jira-issue` 5、`workflow-jira-mapping` 5、`workflow-verify-jira` 14、`native-workflow-tool` 3、`usage-capture` 1）；终审修复波 +2（映射行 bullet 前缀回读闭环、inconclusive 成因文案分述）；全量 **1476 绿**。
+
+### 13.122 实施记录（统一服务 ④：`project_archive` 项目档案只读摘要）
+
+> 实施于 2026-10-18（设计稿 `docs/superpowers/specs/2026-10-17-unified-project-service-design.md`（决策 D7/D14；§7 `project_archive {}`）；计划 `docs/superpowers/plans/2026-10-18-project-archive.md`（4 任务 TDD；外部评审 10 条已吸收：store 静默降级/activeEntry 守卫/jiraKeys 口径 等）；提交 ca2d555/70a13d8/77e6ca4/ce93499/07aa045 ＋ 本记录）。动机：统一服务四阶段收尾——三流程工具（design_to_test/run_regression/verify_jira_issue）之外的只读档案面，一处回答"这项目现在有什么、跑过什么、缺什么"。至此统一服务 spec 范围（①设计→测试 ②回归＋Excel ③Jira 验证 ④档案）全部落地。
+> - **静态就绪探针（`src/workflow/readiness.ts`）**：figma（`checkFigma`）/pen（`penEnvFrom`＋`resolvePenCliPath` 四态：key／env 路径／托管／PATH 兜底判 not ready）/jira（`jiraConfig`，email masked）/llm（`activeEntry` 包 try/catch——条目可落 PG，异常降级不炸整包；key masked）；每项显式 `verified:false`（「未复核」，D14）；不 ping、不 `pen status`、不触网、无子进程。
+> - **档案装配（`src/workflow/project-archive.ts`）**：payload 六段——项目与栈（`detectProjectStacks`）／设计血统（`flows.json` 来源·mtime·屏/边/入口/未决数·provenance 构成：六值（含 legacy-unknown））／用例库（每 feature.key 首见最新用例集：`provenanceOf` 来源文案＋createdAt；`truncated` 披露 200 窗口）／最近运行（近 10 批 `run-*` 清单：source/时间/计数/gate/exitCode/失败域；窗口内不可用件计 `unreadable`）／裁决与 Jira（`collectVerdictExits` 三组计数＋`jiraKeys` **独立扫全部 cases** 的去重非空 `jira_issue_key`——覆盖 verify_jira_issue 的 D9 自动关联，无 verdict 亦可见）／前置状态。
+> - **只读与降级**：不触网/无子进程/不写盘（测试：禁网＋目录快照）；恒 `ok:true`；**PG 不可用时 store 静默切换内存实现——以 `runtime.store.kind !== "postgres"` 探测（先例 `suite-command.ts`）并在 `degraded[]` 明示**；`degraded` 顺序：内存提示→flows 坏件→用例库降级→裁决降级→readiness.degraded。
+> - **usage**：family=`workflow`（不新增信号，D12 未列；`degraded` 非空计数事件留待下轮）。
+> - 测试新增 18（`workflow-readiness` 5、`workflow-project-archive` 10（含内存降级/口径交叉锁定/只读快照）、`native-workflow-tool` 2、`usage-capture` 1）；全量 **1494 绿**。
+
+### 13.123 实施记录（统一服务 ⑤：收尾补齐——usage 事件三项＋接入指南＋精选硬化）
+
+> 实施于 2026-10-18（完整性核查驱动；计划 `docs/superpowers/plans/2026-10-18-unified-service-closure.md`（6 任务 TDD）；提交 2f3cb3a/514170b/14b18fc/0fbe83f/96c291b/29a7460 ＋ 本记录）。动机：四阶段落地后按 spec 逐条核查发现 D12/§9 三个最小事件未落、接入指南未随统一服务更新；同时清掉 ③/④ 延续的精选 Minor。
+> - **needsInfo.category（D12）**：`NeedsInfoCategory` 五值（`device-ambiguous`/`no-flows`/`scope-no-hit`/`library-empty`/`ticket-coarse`）入 `setup.ts`；`DevicePick` info 变体收紧、三工具 needs-info payload 增根 `category`；usage 信号 `needs:info.category`（紧随 `needs:info`）。
+> - **needsSetup.missing[]（D12）**：usage 逐条信号 `needs:<target>.missing`（在全部 `needs:<target>` 之后、按 checks 顺序；无 missing 零新增）。
+> - **各步耗时（D12）**：三工具统一 `recordStep`（`steps[].ms`＝距上一步的实测间隔），`run` 步执行完成后回填执行耗时；usage 信号 `step-ms:<step>`（`run.gate` 之后按 steps 顺序）。**中断点**沿用 `failed-step:<step>`。
+> - **接入指南**：新增 §2.11「统一服务四入口」（四工具/needs 协议＋category/usage 信号清单/复用执行链）；版本行刷新（1502 用例）。
+> - **精选硬化**：`project-archive` 清单校验（`usableManifest`：runId/source/起止时间/summary 三数/gate result+exitCode/failureDomains——不完整 ok 件改判 `unreadable`，替代原 try/catch 掩蔽）；`verify_jira_issue` 候选用例文件不可读经 `deps.log` WARN 且不阻断、dryRun 预览补 `evidenceTruncated`（与发送路径同式）；dryRun 文案统一「零写回/不产生外部副作用」；README/DESIGN 文案两处。
+> - 未做（留档）：顶层 catch（假空载荷风险，per-path 已守）、读评论单遍、空 runs 原因提示。
+> - 测试新增 8（T1 usage 1＋run 2、T2 usage 1、T3 usage 1、T5 archive 2＋verify 2）；全量 **1502 绿**。
+
+### 13.124 实施记录（接入与下发加固 ⑥：CLI help 短路＋下发窗口假阴性修复＋接入文档三补）
+
+> 实施于 2026-10-18（依据：接入/下发可用性评审（B1/B2，B2 三复现实测变红）＋外部评审修订；计划 `docs/superpowers/plans/2026-10-18-onboarding-dispatch-hardening.md`（4 任务 TDD）；提交 32bc772/c36cb24/396ded9/9cbc530/2146bf0 ＋ 本记录）。动机：`--help` 会实际执行命令（`suite run` 真跑机、`serve` 起常驻、`init` 写文件）；"50 份窗口"被用于正确性路径导致**假报不可用**（task create 未知 key／run --task 引用均不可用／resolveRunRefs 归因丢失；runner 经同一路径重试后置 failed）。
+> - **help 短路（B1）**：`cli.ts` 顶部统一守卫（`suite`→suite 用法、其余→全局用法；jira 委托自身守卫）+`runSuiteCommand`/`runJiraCommand` 库级守卫；**`--help/-h` 优先于一切校验**（含拼写错误子命令）；修复裸 `jira --help`（原 exit 2）；零副作用经 spawn 实测（init 不写文件、suite run 不执行、runner 不启动、serve 不常驻）。
+> - **下发窗口修复（B2）**：口径＝**正确性/触发路径按全量读取，展示路径显式分页**（`db/types.ts` listCaseSets 注释）。**Step 0 全枚举分类**后改全量十处：`suite task create`／`run --task`／`schedule add`／`task show`、`resolveRunRefs`、`panel/actions` 建单校验、`test-gen` 身份继承、`run-report` 名称解析、`run-regression`/`verify-jira` 默认读取（原 200 窗口）。保留并记录理由：`excel-import` 200（文件扫描兜底）、`project-archive` 200＋`truncated` 披露、`schedules`/`backfill`/`compare` 已全量、`panel/overview` 展示窗口。
+> - **接入文档三补**：README/接入指南——项目机 runner **常驻化**（systemd/launchd 最小示例＋勿双开/中心 PG/产物令牌注意）、`mobile-testing-mcp init` 脚手架引用（§3.2）、**Excel 入料最小样例表**；文档提法逐一 `grep src/` 核对消费点（`AOS_RUNNER_ARTIFACT_TOKEN` 实装 `src/runner/artifact-server.ts:116`，DESIGN §13.113）。
+> - 未做（留档）：主 help 的 suite 行扩展、`suite task list` 的 runner 覆盖提示、`install` 的 dist 存在校验、`listCaseSets` PG `DISTINCT ON` 下推、task create 可用列表 cap、usage/panel 命令专属帮助文案、`-h` 作 flag 值 quirk。
+> - 测试新增 27（`cli-help` 15、`suite-command` 6、`jira-cli` 1、`panel-actions` 1、`run-registry` 1、`figma-case-sets-gen` 1、`workflow-run-regression` 1、`workflow-verify-jira` 1）；全量 **1530 绿**。
+
+### 13.125 实施记录（记录底座 ①：强制持久＋审计事件＋文件台账装配）
+
+> 实施于 2026-10-18（依据：`PRODUCT.md`「记录即产品」＋外部评审修订；计划 `docs/superpowers/plans/2026-10-18-data-foundation.md`（v2）；任务 1–3 已落地，任务 4–7 见后续记录）。动机：未配 PG 时"会话内存即弃"使接入与产出无留存；记录必须默认持久（**结果/过程/数据**三类）。
+> - **T1 审计接口**：`ProjectStore.recordAudit/listAudit`（Memory/PG 双实现，PG 表 `audit_events`：TEXT 时间戳＋`refs` JSON 文本，对齐 pg-mem 先例）；`kind` 联合扩 `"file"`（17 处行为位分类见下）。
+> - **T2 FileStore（`.artemis/ledger/`）**：`state.json`（原子 tmp+rename 快照，**写侧剥离 `apiKey`/`figmaToken`**）＋`usage.jsonl`/`audit.jsonl`（追加＋保留裁剪：usage 沿既有策略、audit **90 天/5 万条**；裁剪重写走原子写并先与磁盘并集）＋`journal.jsonl`（写操作取证行，**不承诺回放**）＋home `registry.jsonl`（跨进程项目索引）。**合并写**：每次读取/写前重读磁盘并合并——**同 id 冲突磁盘胜**（本地仅保留未落盘的少数记录），真并发窗口＝同步与落盘之间（毫秒级）；跨写者存活性与"更新不被陈旧写者回滚"均有测试锁定。运行期写失败经 `FileStore.writeErrors()` 暴露（`aos_status` 可见）。
+> - **T3 装配与自愈**：`createProjectStore` ＝ **PG → 文件台账 → 会话内存（仅最后兜底，`degraded=true`）**；PG 故障期 reason 明示"历史不自动回流"。**凭证回落**：`withEnvKeyFallback`（store 条目 key 为空时按 provider 约定→`AOS_LLM_API_KEY`/`DEEPSEEK_API_KEY`/`OPENAI_API_KEY` 从项目 `.env`/进程 env 回填；面板可用性判定同式）。**用例集自愈**：`.artemis/design/case-sets/*.json` 首载幂等登记（按 jsonPath；≤200 份，超出记 `registry/hydrate.capped` 交由 `suite backfill`）；登记前确保项目已注册；屏集取归档 `features[0].screens`（缺省回退用例覆盖并集；2026-10-19 修订见 §13.131）。
+> - **守卫再决策**：runner 仍 **PG-only**（文案改"文件台账不支持多进程"）；`suite backfill` **放行 file、仅拒 memory**；`project-archive` 仅对 memory 判降级。
+> - **面板解析**：`resolveProjectKey` 改为**工作区优先**（byPath → 工作区绝对路径 → 工作区名字 → 注册表名字＋存在性守卫）——持久注册表下防跨工作区串台（http 面板深探回归实证）。
+> - 测试新增 16（`db-audit` 3、`db-file` 9、`db-default` 4＋守卫 1＋env 回落 2 −重复）；全量 **1551 绿**。
+> - **T4–T7 补记（同日第二轮）**：内部编排审计接线六点（suite/import/schedule/panel/verify/issues；`recordAuditSafe` best-effort 不阻断主流程）＋ `test/audit-wiring`；产物索引 `src/artifacts/`（六族与 retention 同源、浅扫、目录项 size 0）；三口径导出 `src/export/`＋CLI `export`（JSON/CSV；文件台账项目 process 非空有测试）；全表面如实文案整改（`src/db/labels.ts` 统一标签：PostgreSQL／文件台账（.artemis/ledger）／会话内存（仅本次进程，数据不持久）；doctor 缺 PG 改 OK 级说明；`test/copy-gate` 防回归）。全量 **1562 绿**。
+
+### 13.126 实施记录（Web 控制台：CSDC 原地升级＋下发闭环）
+
+> 实施于 2026-10-18（依据 `docs/superpowers/specs/2026-10-18-web-console-shape.md`；计划 `docs/superpowers/plans/2026-10-18-web-console-csdc.md` Task 1–9）。动机：面板/看板从"只读记录展示"升级为**可操作控制台**（CSDC 风格基准＋下发任务闭环）。
+> - **视觉层**：`src/console/tokens.ts`（CSDC 唯一 CSS 变量源＋组件样式）／`shell.ts`（毛玻璃顶栏＋分区导航＋焦点可见＋窄屏媒体查询；`USAGE_STANDALONE_NAV` 子集）／`components.ts`（7 件组件，**表格双通道**：数据走 `rowsText` 自动转义）；对比度口径：正文灰 `#6E6E73`、`#86868B` 仅装饰；两处 AA 偏差记录（link-hover 采用 `#0066CC`；遗留 PAGE_CSS `#888`→`#6E6E73`）。
+> - **页面**：总览（CSDC 表/徽章）、项目页**一屏三问**（健康/在跑什么/待执行/下一步＋下发入口）、对比、任务（状态徽章＋**释放重跑只读预览**）、运行机（在线/失联徽章）、统计（并入外壳）、**下发向导**（`?section=dispatch` 四步＋预览回显，派发禁用待动作层）、用例库/档案与产物/审计/运维与数据（`?section=library|archive|audit|ops`，消费 artifacts/audit/export）；遗留页统一套壳（`page()` 走 shell）。
+> - **动作层（`/panel/api/*`）**：新增 release／schedules CRUD／quarantine（owner 签字）／export（POST＋GET 下载）／import（multipart 上传：Node `Response.formData`、20MB、单飞、临时文件必清、路径变体）；**同源校验**（`Sec-Fetch-Site`/`X-AOS-Console`，cross-site 403）＋Host 白名单（独立进程）；独立 `panel --web` 在 `AOS_PANEL_ACTIONS=1` 且 loopback 时开放动作层；全部写动作落审计。
+> - **收尾**：`scripts/console-fixtures.mjs` 生成 7 页 fixtures → **impeccable detect 0 anti-patterns**（修 h1→h3 跳级、遗留对比度、hover 色）；a11y 结构测试（唯一 h1/表格语义/焦点/刷新纪律）。
+> - 测试新增 ~30（shell/components/dispatch/pages/a11y/guard-upload/console-actions）；全量 **1597 绿**。
+> - 未做（留档）：暗色主题；usage 独立进程并入主导航（暂用子集）；impeccable critique/polish 未跑；分页与导出落盘（大项目）。
+> - **评审修复轮（c510554）**：C1 下发页用例集名转义（`rows` 通道存储型 XSS，回归测试锁）；C2 独立进程动作门改**显式 `AOS_PANEL_ACTIONS=1`**（与 README/DESIGN 文档对齐，测试锁）；I2 守卫补 **Origin↔Host 一致性**（无 Sec-Fetch-Site 的老浏览器跨站拒）；I1 部分接线：**下发向导「确认派发」**与**任务「释放重跑」**已走同源 fetch（带确认/`X-AOS-Console` 头/成功跳转；关键词模式按匹配份展开 refs）；计划/隔离/导入的表单提交留 CLI/API 指引（明示不承诺）；I4 项目页去掉整页刷新（刷新纪律，含表单页零刷新，测试翻转）；I5 遗留 `renderTable` 补 `scope="col"`、`page()` 去嵌套 `<main>`、usage 遗留灰与警示色 AA 修正；M2 上传临时文件名改**内容哈希**（导入溯源与同内容幂等）、M4 隔离/导入成功清缓存。detect 保持 **0**；全量 **1600 绿**。
+> - **impeccable critique→polish 轮（2026-10-18）**：双路评估（设计评审＋检测证据）首评 **16/40**，已按用户选择完成 **P0+P1 全修**：① 导航项目上下文＋真实版块路由（`tasks/runners/schedules` 锚点、`aria-current` 逐页正确、统计按进程能力渲染、无项目时项目级项禁用）；② **能力标记**（`data-console` 页级横幅＋写 CTA 禁用＋可见原因；HTTP 模式自动隐藏）；③ **派发两段确认**（隐藏摘要→确认创建）＋ **refs 服务端重解析**（`source/ref/keyword`，不信渲染期快照）＋移除 Excel 死选项与设备手输＋默认端单选；④ **单一样式源**：`console/compat.ts` 并入（去 legacy 覆盖/去 `color-scheme:light dark`/链接色统一/危险色 `#B91C1C`/`#2563eb` 清零）；⑤ AA 与可访问名（`aria-label` 全覆盖筛选与下发字段、跳链、`role="alert"` 内联错误区）；⑥ 派发回执（任务 id＋审计互链）、失败不再 `alert`。**detect 0**（1 条 em-dash advisory 已复核为误报）；全量 **1603 绿**。
+> - **该轮留档（P2/后续）**：检索闭环（份行内动作/产物可点/审计分页与时间预设/空态动作）；键盘快捷键（`/`、`g`、`?`）；legacy 异步结果区 `aria-live`；`meta refresh` 的 reduced-motion 豁免；`cConfirmForm`/`cEmpty` 死组件（接线或删除）；暗色主题；usage 页并入 a11y 扫描面。
+> - **P2 第一批（2026-10-18 追加）**：**产物可点**（`GET /panel/artifact` 只读服务：`.artemis` 范围＋白名单类型＋拒绝穿越，两进程接线，含路由测试；档案页行内链接）；**审计分页＋时间预设**（`AuditQuery.offset` 贯通 Memory/PG；页内 24h/7d/30d 预设与上/下页）；**用例库行内「下发该份」**（预填 `dispatch?source=case-set&ref=`）；**空态动作**（总览零项目改 `cEmpty` 并给接入指引）；`regression/verdict/issues` 三处异步状态补 `role="status"`；**死组件处理**：删除 `cConfirmForm`（两段确认已取代）、`cEmpty` 接线。全量 **1604 绿**。
+> - **P2 第二批（2026-10-18 追加）**：**键盘快捷键**（`?` 帮助面板／`/` 聚焦筛选／`g`+字母跳转，导航目标按能力与项目上下文生成）；**`prefers-reduced-motion` 豁免整页刷新**（前端移除 meta refresh）；**计划区块控制台表单**（创建/启停/删除，含能力关闭禁用与原因）；**用例库补齐**：Excel **上传导入**（multipart，失败内联回报）＋**隔离加入/移除表单**（owner 签字；空态从"动作层 add 后生成"改为真实入口）。全量 **1605 绿**（+1 用例）。
+> - **critique 二评（25/40，↑9）修复轮**：P0 项目页主 CTA 携带 project（修复"回总览"回归）；派发摘要**点击时按表单现值重建**＋端为空前置校验＋选项 `data-count`；建单加前置确认（外部副作用）；**flash 回执体系**（sessionStorage→跟随页横幅＋（查看审计）链接）覆盖裁决/计划/隔离/导入/释放/建单；导航口径修正（"使用统计"改名、review/stats/batch 不再错标高亮、`/` 覆盖 usage 工具框、禁用导航项可聚焦＋aria-label）；a11y 补强（7 处表格 caption、ref 复选框可访问名、悬空 label 修正）；内联 href 全量转义（`&amp;`）。二评留档：常驻记录底座指示器、批量汇总条/全选、可点"在跑什么"、术语/原始枚举清理、建单默认值回显、/usage 组件收敛、释放后果说明。
+> - **确认与后果轮（2026-10-18 第三批，二评后用户选定）**：① **顶栏记录底座指示器**（`storeHealth`：持久层＋最近写入时间＋写失败计数，链接运维页；panel 系全页由 `loadStoreHealth` 注入，usage 侧保留自徽章）；② **释放后果确认**（`data-confirm` 含领取方/在线态/已完成设备运行数/可能被重新领取；失败改内联 `role="alert"` 不再 alert）；③ **建单强闸门**（默认值按项目 env 回显为 value；必须先「预览」才可建单＋二次 confirm；按钮明示"外部副作用"）；④ 派发确认支持 **Esc 关闭＋焦点到主按钮**；`?` 面板 Esc 关闭。全量 **1606 绿**。
+> - **批量与对象轮（2026-10-18 第四批）**：归因队列与建单表补**批量工具栏**（全选/清空＋"已选 N 条"实时计数）；项目页"在跑什么/待领取"改为**可点任务对象**（前 3 个，直达任务页）。全量 **1606 绿**。
+> - **术语与文案轮（2026-10-18 第五批）**：`?` 帮助面板增**术语表**（份/裁决/失败域/基线/执行机/隔离/记录底座就地定义）；原始枚举与内部词清理——`深探信息`→运行时细节、`对账资产`→对账信息、`用例集血统`→用例集（口径句改人话）、`分类原版 vN`→分类口径、`宿主 deps：ready`→服务依赖：就绪、`setup_required`/`exit 2 · suite-not-executed` 文案人话化（代码标识保留于括号）；审计结果徽章/筛选改中文（值不变）；"runner/项目机"统一为**执行机**（首现带英文）；记录底座指示器加 title（最近写入/失败计数口径）。全量 **1606 绿**。
+> - **剩余留档收敛轮（2026-10-18 第六批）**：① **/usage 并入 CSDC 组件**（徽章→`cBadge`、指标卡→`cStat`、全部表格补 `th scope`＋`caption`，纯值转义口径保留）；② **暗色主题**（`:root[data-theme="dark"]` token 映射：apple 深色面色/文本/边框/语义色、accent 黄保持且黄底强制深字、链接 `#4DA3FF`、UA `color-scheme:dark`；shell 脚本按系统偏好设置属性并监听变化——**不用媒体查询包 token**，避免静态检测器把暗色变量当全局导致黄底对比误判）；③ **存储口径同源断言**（ops 页对 memory 台账显示 `coherentStoreNote` 兜底，杜绝"内存 badge＋文件台账说明"矛盾态，测试锁）；④ **档案页**：`since` 暴露＋24h/7d/30d 预设＋**索引 CSV 导出**（`/panel/artifact?format=csv`，含筛选）。全量 **1607 绿**；detect 0。
+> - **全局搜索（2026-10-18 第七批）**：顶栏 `role="search"` 搜索框（`/` 聚焦，提交 `?section=search&q=`）；结果页跨项目分组——项目（名/路径）、用例集（用例集名/来源/功能，带"下发该份"）、任务（id/状态，直达任务页）；上限 50 项目×各 20 条与"结果已截断"标注；`/panel.json` 增 `view:"search"`。全量 **1608 绿**；detect 0。
+> - **三评与驾驶舱轮（2026-10-18 第八批）**：三评 dual-agent **18/40**（新评审重 IA 与实机一致性；B 路首次真浏览器（Edge）证据抓到 `flashScript` 多余 `}` 自伤——已修 `f85b8d8`＋内联脚本解析回归闸）。按裁决执行：① **驾驶舱与项目导航**——项目页重排为 结论（批次/趋势）→ 在跑/待办 → 运行机/计划 → 新建回归（CTA）→ 折叠「环境自查与明细」（接入自检/运行时细节/磁盘资产/独立运行）；导航新增**「项目」**一级项（`active=project`，`g j`），任务锚点改指 `#tasks`；顶栏**项目切换器**（最近 20 项目；`setConsoleShellDefaults` 单请求注入，总览/项目/任务/批次及各版块页统一，消除逐页穿参）；空批次不再显「0/0 未通过」而显「未执行（无用例）」；H1 灯具喇叭改「点＋`sr-only` 状态播报」、文案改 健康/需关注/阻断/未知（消除「黄 AOS-ARTEMIS」读法）。② **派发唯一真相**——删除项目页内嵌表单，只保留下发向导（预填跳转）；顺带修复 `aosBindBulk` 仅存在于项目页脚本、裁决/建单页批量按钮从未生效的自伤（`bulkBindScript` 注入各表单页脚本＋「项目/裁决页内联脚本可解析」回归闸）。③ **证据链全链可点**——批次用例证据→`/panel/artifact` 链接（`artifactHref` 相对化 project 前缀；已清理仍标注）；档案分页（`offset`、每页 50、上一页/下一页）＋图片缩略图（`c-thumb`）＋文件链接新窗。④ 占位符对比度（`::placeholder` 亮 `#6E6E73`/暗 `#AEAEB2`，Edge 实测 2.5–3.0:1 → AA）。全量 **1612 绿**；lint 0；静态 detect 0；Edge 浏览器模式 script-error 0（残留 nested-cards/gray-on-color 为已复核误报）。
+> - **只读一致与无障碍收口轮（2026-10-18 第九批，三评 P2 清零）**：① **能力全页同源**——`capabilities` 并入 `setConsoleShellDefaults`，archive/audit/search 等此前未传能力的页面获得真实能力态（只读横幅不再断档；standalone 下 `/usage` 导航按能力禁用而非 404 死链）；② **禁用导航不可聚焦**——去 `tabindex="0"`（保留 `role="link"`＋`aria-disabled` 供播报），键盘 Tab 不再穿过不可激活项；③ **行选择可访问名**——裁决/建单行 checkbox 带用例上下文 `aria-label`；④ **组语义**——裁决、来源、目标端、计划端组均 `<fieldset class="c-fieldset">`＋`<legend>`；⑤ **`:disabled` 可见**（`opacity .55`＋`not-allowed`）；⑥ **窄屏表格**——`cTable`/`renderTable` 统一 `.c-table-wrap{overflow-x:auto}`（消除整页横向溢出）；⑦ **整页刷新→局部轮询**——`autoRefreshSeconds` 不再渲染 `meta refresh`，改为轮询 `fetch(location.href)` 就地替换 `#console-main`（三守护：`document.hidden`、焦点在主内容内、`prefers-reduced-motion` 不启动），活动任务页与 `/usage?refresh=` 同机制（键盘焦点/滚动不丢）。全量 **1613 绿**；lint 0；静态 detect 0；Edge 浏览器模式 0 low-contrast（仅序列误报）。
+> - **四评与真问题修正轮（2026-10-18 第十批）**：四评 dual-agent **23/40**（趋势 16→25→18→23）。A 侧：特异性"偏为本项目而作但交互层仍可迁移"，四个 P1 留档（下发预览与确认不同源/健康灯把可选配置当项目健康/建单预览可绕过且结果被 reload 抹掉/运行中可"释放重跑"）→ 待裁决。B 侧（Edge 真浏览器）确认第九批多数收口，**纠正一处我方过度声明**：390px 窄屏仍整页横向溢出（顶栏不换行、列向布局 `align-items:flex-start` 使主区被内容撑宽、`.c-button` 为 inline 导致换行重叠）——已修：≤960 断点顶栏换行＋搜索独占行＋`.c-layout{align-items:stretch}`＋主区/card/表格容器收宽＋`.c-button{display:inline-block}`＋`.c-main code{overflow-wrap:anywhere}`；移动视口复扫 **0 body-text-viewport-edge / 0 text-occlusion / project 页 0 条**。其余真阳性修正：`#regression` 双框（遗留全局 `section{border}` → `section:not(.c-plain)`＋CTA 区块 `c-plain`）；`input/select/textarea:disabled` 纳入禁用样式；用例库"按用例集下发"裸 `&` 补 `escapeHtml`；独立 `/usage` 死链（`brandHref:"/usage"`＋`hideSearch`）；遗留 `renderTable` 补 `caption`（批次/运行机/任务引用/跨端/应用缺陷/执行偏差）。全量 **1615 绿**；lint 0；静态 detect 0；Edge 移动视口仅剩已复核误报（nested-cards/gray-on-color）。
+> - **下发合同化（2026-10-19 第十一批，四评裁决执行）**：预览与确认**同源**——服务端按「表单签名＋解析结果（用例集集合/用例数）」签发 `previewId`（16 位短哈希），页面以同式 `formSignature` 客户端判定「字段变更→预览过期」（过期横幅＋禁用「确认派发」）；确认摘要读取**服务端数据岛**（不再从 DOM 二次推导）；POST 携带 `previewId`，服务端复算比对——改端/改份/改基线或**关键词匹配范围变化**（新登记份）→ **409 `stale:true`**（无 `previewId` 缺省向后兼容 CLI/legacy）。关键词来源预览本就解析引用用例集与总条数（本轮补齐合同与展示）；预览区补「设备由执行机领取时确定；最终设备见任务页」。只读形态（actions off）不渲染数据岛与可点提交（无合同可签）。测试：合同单元（岛同源/签名同式/过期判定）＋动作层三态（同源 200、篡改 409、缺省兼容）＋真机实测（同源预览 ID＋篡改 → 409）。全量 **1617 绿**；lint 0；静态 detect 0；Edge 无新类别。后续已锁：健康拆两轴（回归可执行 vs 生成/集成就绪）、释放拆三动作（停止/释放回队列/重新派发）。
+> - **健康拆两轴（2026-10-19 第十二批，四评裁决执行）**：`lamp`/`lampReasons` 明确为**执行轴**（磁盘不可达/宿主依赖/三件套/会话内存/构建陈旧）；新增 `integration{ready,total,missing}`（LLM/Figma/Jira）——**可选集成永不染执行灯**：LLM 缺失不再红、Figma/Jira 缺失不再黄，只标注「集成 i/3 就绪（缺 X、Y；不影响执行）」。项目页 H1 只留项目名，状态改为徽章行「执行：… · 集成：…」；总览项目列与脉冲卡同步（「执行健康」，hint 回落集成信息）；对比行透传集成轴。测试更新：LLM 缺失→执行绿灯＋集成缺 LLM；Figma/Jira 缺失→执行绿灯；内存存储→执行黄灯（保留）；磁盘不可达→灰（保留）。全量 **1617 绿**；lint 0；Edge project 页 0 条。
+> - **释放拆三动作（2026-10-19 第十三批，四评裁决执行）**：任务状态机新增 **`stopped`**；原「释放重跑」拆为——**停止执行**（仅 claimed/running，保留 claimant 历史；runner 每 3s 轮询任务状态并以 `shouldAbort` 注入执行链，`runGeneratedTests` **在用例边界**停止后续（已执行结果如实入报告、未执行计 skipped）；`suite run --task` 启动与收尾双守卫：已 stopped 不启动、结束时不回写终态/不自动重试）；**释放回队列**（仅 pending/stopped/partial；claimed/running → 409「先停止执行」；清空 claimant）；**重新派发**（复制 refs/端/基线创建新任务；运行中 → 409）。三动作各自写审计（`refs.taskId`）；任务页按状态渲染动作区（确认文案＋失败内联回报＋rerun 后跳新任务页），动作脚本纳入「项目/裁决/任务」三页可解析回归闸。测试：动作层链路（运行中 409 → 停止 → 释放 → 终态 400 → 重新派发同引用）＋runner 停止协议（`shouldAbort` 注入、stopped 保持不释放）＋三页脚本解析。全量 **1618 绿**；lint 0。
+> - **建单合同（2026-10-19 第十四批，四评裁决执行）**：应用缺陷建单改为**服务端预览回执**——`dryRun` 签发 `previewId`（16 位哈希：勾选排序＋项目/类型/标签归一＋标题覆盖）；**建单必须原样携带**：缺回执 → 400，回执不符（勾选/字段变化）→ **409 `stale:true`**「重新预览」。前端：预览/建单双按钮，**建单默认禁用**、任一变更立即作废回执（横幅＋禁用）；成功后**不再 reload**——结果面板（case→key→URL 与 created/existing/skipped/failed）就地保留，flash 提示刷新页面更新「已建单」列；移除 `__aosIssuesPreviewed` 布尔闸门。**Jira 未配置前置拦截**：env 可判定时不渲染预览/建单，直接给「缺 JIRA_BASE_URL/EMAIL/API_TOKEN → 配置后重启」指引（服务端仍硬闸：未配置时 dryRun 亦返回指引）。测试：路由三态（缺回执 400／篡改 409／dryRun 签发）＋单元预演链（成功路径 dryRun→create）＋UI 合同标记＋前置拦截两态。全量 **1619 绿**；lint 0。
+> - **首访与入口轮（2026-10-19 第十五批，四评 A 侧 P2）**：① 总览新增**「进入最近活跃项目 →」主按钮**（按 lastSeenAt 排序首行）与**每行显式「进入项目 →」**动作（项目名去 `<code>` 外壳，保留名称链接）；② **无项目上下文时不再渲染项目级死项**——侧栏只显示总览（＋统计），就地说明「进入任一项目后显示项目级版块（任务/下发/用例库/…）」，键盘 Tab 不再穿过不可激活项；③ 未配置统计能力时仍以禁用态＋原因渲染（不静默消失）。测试更新：无上下文导航断言（隐藏＋说明＋无 tabindex 残留）、总览两处入口断言；桌面/移动 Edge 复扫仅剩已复核误报。全量 **1619 绿**；lint 0。
+> - **项目切换体验轮（2026-10-19 第十六批，四评 A 侧 P2）**：① usage 项目过滤器：原生 `<select>`（大规模下 265 项）→ **可搜索组合框**（`input list`＋`datalist`；按名称提交，服务端 `resolveProject` 原样解析并回显当前项目）；② **「继续上次」**：项目页由 shell 注入 `localStorage.aos-last-project`（根路径原值），总览脚本匹配到仍存在的项目后显示「继续上次：X →」；③ **单项目自动进入**：仅 1 个项目且本会话未自动进入过（`sessionStorage` 守卫）→ `location.replace` 直达项目页，返回键回总览不再循环。测试：usage 组合框双态＋名称回显、shell 记录脚本（有/无项目两态）、总览位点与自动进入标记、总览页纳入内联脚本解析闸。全量 **1620 绿**；lint 0；Edge 总览 0 条。
+> - **五评与真问题修正轮（2026-10-19 第十七批）**：五评 dual-agent **33/40（良好 B+）**——趋势 16→25→18→23→33；A 侧确认"防错合同＋审计闭环"已成产品王牌（预览回执/健康拆轴/诚实空态/术语表），新 P1＝下发向导状态自洽（空引用仍可开确认）与"归因→建单"断链＋review/stats 导航当前态；P2＝机器语汇泄漏（`figma:demo`/`suite-run`/`action.tasks`/ISO 时间）、AA 两处缺口、确认/说明三套皮。B 侧核验清单 9/9 已修、移动视口 0 溢出、静态 0 主发现；**真阳性**：`.c-nav-hint` 3.3:1 与页脚/正文 muted 4.2:1（上轮引入）＋project 两表缺 caption——**已修**：hint 改 secondary、`.c-footer`/`.c-main .muted` 改 `#5F5F66`（暗色 `#AEAEB2`）、接入凭证/磁盘资产表补 caption；Edge project/overview 复扫 **0 条**。全量 **1620 绿**；lint 0。
+> - **下发自洽与断链接上（2026-10-19 第十八批，五评裁决执行）**：① **下发状态自洽**——数据岛新增 `ready`（引用用例集非空）；空预览时 ③ 卡显示「预览为空」横幅且「确认派发」禁用（点击拦截文案区分空/过期），不再只靠服务端 400 兜底；来源 radio **联动显隐**「份」/「关键词」字段（`dispatch-field-ref/keyword`）；**stale 横幅上移 ③ 预览卡**（改动点就地可见）；② **归因→建单断链接上**——归因页新增「下一步：去建单（应用缺陷 N 条）→」CTA（`#issues` 锚点直达统计页建单块，`<h3 id="issues">`）；review/stats 页**保留「项目」导航当前态**、batch 页保留「任务」，`page()` 系列页顶栏补「项目 X」上下文 chip。测试：空预览岛 ready:false＋空态横幅＋来源显隐＋拦截文案区分；CTA/锚点/两页 aria-current。全量 **1622 绿**；lint 0；Edge dispatch 无新类别；真机验证（只读态空预览横幅＋review 导航当前态）。
+> - **全站内确认（2026-10-19 第十九批，五评裁决执行）**：原生 `confirm()` 全数退场——shell 新增 `window.aosInlineConfirm(button,message,onConfirm)`：就地插入 `.c-confirm-inline` 确认条（确认/取消双钮、`role=status`、Escape 取消且焦点回按钮、确认后自动回收并恢复按钮）；**四处接线**：任务三动作（停止/释放/重新派发）、Jira 建单、计划删除、隔离移除（此前均为原生弹窗）；与派发两段确认同属站内模式。测试：助手与样式随壳断言、四处接线断言、五页（项目/裁决/任务/统计/用例库）`[^.a-zA-Z]confirm\(` **零残留**、stats 页脚本纳入可解析闸。全量 **1622 绿**；lint 0；Edge project/overview 0 条。
+> - **时间相对化（2026-10-19 第二十批，五评裁决执行）**：新增统一出口 `src/console/time.ts` `relativeTime(value, nowMs?)`——档位「刚刚／N 分钟前／N 小时前／N 天前／同年 月日 HH:mm／跨年 YYYY-MM-DD」，输出 `<time datetime="原值" title="完整本地时间">相对</time>`（`<time>` 语义＋悬停兜底；空值 `—`、非法值原样转义）。**覆盖**：总览（最后活跃、最新批次）、项目页（批次表起止、任务列表、运行机心跳、计划 lastFired、独立运行、磁盘资产、项目头）、任务页（创建时间、设备运行）、归因统计（环境清单 lastAt）、审计、档案、用例库（登记时间）。测试：新增 `test/console-time.test.js`（档位/跨年/title/datetime/空值与转义）＋审计与总览页 `<time>` 断言；真机验证（`1 小时前`＋title 本地时间）。全量 **1626 绿**；lint 0；Edge audit/archive 无新类别。
+> - **机器语汇中文化（2026-10-19 第二十一批，五评 P2 收口）**：新增 `src/console/vocab.ts` 映射层（**中文展示＋`title` 保留原文**，可追溯可复制）——来源（`figma:x`→「Figma 生成（x）」、`pen.dev 生成`、`Excel 导入`、`schedule:夜间回归`→「定时计划（夜间回归）」、`suite-run`→「套件运行」、`cli`/`panel`→CLI/控制台）；审计域/动作（`panel`→控制台操作、`action.tasks`→派发回归任务、`run.recorded`→批次登记…未知 `action.*` 回落「控制台动作（x）」）；档案 kind（批次/用例集/报告/差异/崩溃/轨迹，筛选下拉与徽章同步）；裁决 chip（案例问题/执行偏差/应用缺陷/不确定）；文案（「分类口径」→「失败域口径」、「六族浅扫」→列举六类、「签字 owner/到期（可选 ISO）」→「签字人/到期时间（可选，ISO）」）。测试：审计域/动作、库来源、档案筛选与徽章断言＋原断言以 title 兼容。全量 **1626 绿**；lint 0；Edge 无新类别；真机验证（审计「派发回归任务」、档案「批次/崩溃」）。
+> - **杂项收口（2026-10-19 第二十二批，五评 P2 尾项）**：① **裁决部分失败如实播报**——成功 flash 由「已提交」改为「已提交 N 条 · 跳过 X · 失败 Y · 已写入审计」（服务端计数直出）；② **建单附件预览失败标注**——`dryRun` 附件预览失败不再静默：预览结果带 `attachmentsFailed`，结果面板显「附件预览失败（不影响建单）」；③ **计划功能改点选**——创建计划的功能字段由手输逗号串改为**多选**（选项＝可引用用例集的功能名（N 例），提交 `getAll`）；无可引用用例集时回落手输并就地说明；④ **usage 空态与折叠**——0 事件成功率显示 `—`（不再 0.0%）、零调用工具折叠进「零调用工具（N）」目录、最近调用/事件时间接入相对时间。测试：dryRun 附件降级断言、usage 空态「—」与折叠、计划多选与提交收集、裁决播报文案。全量 **1626 绿**；lint 0；真机验证（usage 折叠目录、项目页多选字段）。
+> - **隔离用例点选（2026-10-19 第二十三批）**：用例库隔离表单的「用例 ID」改为**可搜索候选**——从最近 5 次运行收集失败用例（去重取最近，≤100 条）生成 `datalist`（`caseId` 值＋「名称（最近失败 日期）」），手输仍可用；「到期」改**日期控件**（`<input type="date">`，服务端仍接受 ISO）；候选随 `/panel.json`（`caseCandidates`）暴露。测试：候选 datalist 与日期控件断言、JSON 暴露断言（含失败运行夹具）。全量 **1626 绿**；lint 0；Edge library 无新类别；真机验证（可搜索输入＋日期控件就位）。
+> - **六评与真问题修正轮（2026-10-19 第二十四批）**：六评 dual-agent **28/40（B−）**——趋势 16→25→18→23→33→28；A 侧：特异性 ≈7.5/10（"下发预览合同"仍为峰值），新 P1＝① 停止是异步请求却同步宣告"已停止"（无 stopping/确认态）② 建单证据不闭合（预览丢 attachments、完成后不显 evidence posted/skipped/error）③"失败之后"路径（项目页 CTA 永远"新建回归任务"、review 无导航入口/无运行时间列、失败域与裁决在 review/stats 仍英文枚举）；P2＝空项目五卡空转、记录底座三信号矛盾（最近写入 UTC slice）、"多份引用"文案与实现不符等。B 侧：核验 8/8 基本已修（对比度全 PASS：nav-hint 4.66/7.69、footer 5.82/7.69；提示 borderline 4.52–4.66），并点名 4 处缺口——**本轮已修**：档案 kind 徽章补 `title` 原文（`cBadge.title`）、生成时间/批次头部时间改相对、下发确认条补 `role=status`、建单结果显 attachments 与 evidence（已附/已跳过/失败）＋汇总"证据失败 N"、顶栏"最近写入"改相对时间（修 UTC 口径）、"多份引用"文案改为"关键词模式可批量匹配"、**fixtures 单项目自动进入禁用**（静态快照可完整扫描，B 曾因跳转拿到空扫描）。全量 **1626 绿**；lint 0；Edge overview 恢复可扫（仅已复核误报）。
+> - **失败路径 IA（2026-10-19 第二十五批，六评裁决执行）**：① **导航加一级入口**——「归因」「回归统计」入侧栏（项目级；`v`/`y` 快捷键；review/stats 页面高亮各自项），review 空态也可达；② **项目 pulse 失败路径数字**——`reviewQueue{undecided,unissued}`（最近 10 次运行窗，与归因页同源）；**主 CTA 随未裁决切换**（有未裁决 → 「先去裁决 N 条 →」＋次按钮新建；否则新建），并显「待裁决 N 条 · 未建单缺陷 M 项」可点链接；③ **归因表行身份二列**——「运行（短 id，title 全文）＋时间（相对）」，同用例多次失败不再无法区分；④ **失败语汇中文化**——失败域（`app-defect`→应用缺陷等，title 原文）、置信度（高/中/低）、运行状态（通过/失败/跳过/错误）、裁决 chip（中文＋title 原文）覆盖归因表/stats 列头与域 chip/批次失败域/批次详情汇总；stats 标题去英文括号（「应用缺陷 → 建单」「执行偏差 → 环境核对」）。测试：review 二列与中文标签、导航当前态切至「归因/回归统计」、pulse 数字与 CTA 切换（含"先去裁决 1 条"分支）、`reviewQueue` 随详情暴露。全量 **1626 绿**；lint 0；Edge project 0 条；真机验证（两新导航项＋review 高亮）。
+> - **停止两段状态＋executor ack（2026-10-19 第二十六批，六评裁决执行）**：任务状态机新增 **`stopping`**——面板「停止执行」只置 `stopping`（重复点击幂等），**runner 轮询观察到后先回写 `stopped`（ack）再在用例边界中止**（`shouldAbort` 注入；收尾再兜底 ack 一次）；**释放/重新派发在 `stopping` 期一律 409**（「等待执行机确认（离线时为下次心跳读取）」），仅 ack 后可释放；`suite run --task` 启停守卫把 `stopping` 与 `stopped` 同等对待（不启动、不回写终态）；失联领取回收（memory/SQL）纳入 `stopping`（超龄＋离线双条件兜底）。任务页：`stopping` 显「停止中」徽章＋"确认后方可释放"指引、不渲染释放/重派按钮、仍按 10s 轮询；确认文案与 flash 全部改为两段口径（「已请求停止（等待执行机确认）」）。测试：动作链改为两段（stop→stopping→重复幂等→409→模拟 ack→释放 200）、runner ack 断言（stopping→stopped＋ack 日志）、任务页 stopping 三断言（徽章/指引/无按钮）。全量 **1626 绿**；lint 0；Edge project 0 条。
+> - **空项目 onboarding（2026-10-19 第二十七批，六评 P2）**：① 空项目（无批次/任务/引用用例集）首屏新增**三步开始卡**——接入检查（可选，链运维与数据）→ 生成或导入第一份用例（MCP 工具／用例库 Excel 导入）→ 下发第一条回归（含预览合同口径）；② **主 CTA 随状态切换**（三级）：有未裁决 → 先去裁决 N；无引用用例集 → 「先去生成/导入用例 →」（链用例库）；有份 → 新建回归任务；③ **空区块收敛**：批次/任务/执行机/计划四段空态折叠进「详细状态」details，首屏不再五卡空转；④ 下发块在无用例集来源时按钮改「去用例库」指引（不再指向无法完成的下发页）。测试：空项目三步卡/②步文案/CTA 切换/详细状态折叠/去用例库引导；有份项目不显示入门卡。全量 **1626 绿**；lint 0；Edge project 0 条。
+> - **记录底座三轴（2026-10-19 第二十八批，六评 P2）**：项目页状态行由「执行／集成」两轴拆为**三轴**——**可运行**（`runnableAxis`：磁盘不可达→灰；无在线执行机→黄「任务将排队，可 CLI 手动执行」；有在线执行机→绿「在线执行机 N」）、**可持久**（顶栏记录底座同源：存储层＋写失败标注）、**已接入**（LLM/Figma/Jira 就绪度＋"不影响执行"）；pulse 首卡由「执行健康」改为**「可运行」**（值与提示同源三轴）；旧执行灯原因（依赖/三件套/构建）仍以列表如实展示为环境注意。真机验证：`可运行：需关注（无在线执行机…） · 可持久：PostgreSQL · 已接入：2/3 就绪（缺 Jira；不影响执行）`。测试：三轴并列断言更新。全量 **1626 绿**；lint 0；Edge project 0 条。
+> - **证据重试入口（2026-10-19 第二十九批）**：建单证据闭合收尾——新增 `POST /panel/api/issues/evidence`（`retryIssueEvidence`）：对**已建单且带轨迹**的用例重试上传证据附件（无单号/无轨迹 → 400 语义，未建单不发网络）；成功写审计 `evidence.retried`（refs runId/caseId/issueKey）。前端：建单结果里 `evidence==='error'` 的条目动态渲染「**重试附件**」按钮（站内确认 → 就地重试 → 成功后移除按钮并回报"证据已补传 · 已写入审计"）。测试：单元四态（未建单 400／成功＋审计／无轨迹／上传失败如实回报）＋路由两断言＋UI 接线标记。全量 **1627 绿**；lint 0；Edge project 0 条。
+> - **七评与真问题修正轮（2026-10-19 第三十批）**：七评 dual-agent **27/40（C+）**——趋势 16→25→18→23→33→28→27（视角再换：聚焦"信任链"）。A 侧 P1＝审计行不可读不可跳（摘要机器语＋丢 `refs`＋无恢复动作）与"空运行涂红／跨页口径不一"；P2＝下发双重确认与摘要缩水、建单结果英文状态与重试后同行自相矛盾、术语三称与空态过度声称；B 侧全部核验有据（对比度全过、0 overflow、markup 100% scope/caption），真轻微问题 1 条（搜索空态 h1→h3 跳级）＋观察 1 条（会话内存双括注）。**本轮已修**：① 搜索等空态标题 `cEmpty` h3→h2（跳级消除）；② 「可持久」会话内存双括注去除；③ **审计摘要中文化＋带失败原因**（`派发回归任务：失败（预览已过期：…）`，服务端从响应体提取 error）；④ **趋势空运行不再涂红**（total=0 → 中性「0/0（未执行）」＋`title` 不计门禁）；⑤ **建单结果状态中文化**（预览/已创建/已存在/跳过/失败）；⑥ **重试成功后行内证据文案就地改写为「证据已补传」**（消除同屏矛盾）；⑦ 归因空态改诚实话术（"无失败，或尚无运行记录"）。全量 **1627 绿**；lint 0；Edge search 跳级已消（仅剩表格误报）。
+> - **审计可跳转＋恢复（2026-10-19 第三十一批，七评裁决执行）**：① **「关联对象」列**——审计事件的 `refs` 不再丢弃：`taskId`→任务页链接、`caseSetId`→用例库、`scheduleId`→计划锚点（短 id 展示＋`title` 全文；其余键以 `key=短值` 纯文本＋title）；② **「恢复」列**——失败行就地给恢复入口（`action.tasks`→「重新打开下发预览」、`action.issues`→「去建单」、`action.import`→「去用例库导入」、`action.verdicts`→「去归因队列」、`action.quarantine`→「去隔离」）；③ **域筛选改已知集合下拉**（vocab `AUDIT_DOMAIN_KEYS`，中文标签，替换自由文本）；列由 5 → 7。测试：关联/恢复二列、`task=t-abc123` 链接、恢复动作、域下拉与中文选项（含 refs 夹具）。全量 **1627 绿**；lint 0；Edge audit 无新类别；真机验证（列与下拉就位）。
+> - **compare 显式口径＋跳转（2026-10-19 第三十二批，七评裁决执行）**：对比页口径行**显式声明来源范围**——「仅计入「用例集」来源批次（suite run --tests／独立运行等其余来源见项目页）」；列组更名「**最近用例集批次**（时间·门禁·通过率）」；每行空态由「无批次」改为「**无用例集来源来源批次 · 看项目页**」（直达项目页对齐其余来源）；最近用例集批次时间改相对时间（title 绝对）。测试：口径行断言、空态跳转断言、列组更名断言、相对时间断言更新。全量 **1627 绿**；lint 0；Edge 无新类别；真机验证（口径行＋列组＋空态文案均就位）。
+> - **usage 对齐 CSDC（2026-10-19 第三十三批，七评裁决执行）**：保留独立进程形态的对齐收口——① **表格容器**：信号/事件等全部表格统一 `.c-table-wrap`（工具表既有）；② **顶栏记录底座条目**（`记录底座：PostgreSQL/文件台账/会话内存`；独立进程无可点运维页时 chip title 不再承诺"点击进入运维"）；③ **筛选词中文化**（状态 ok/error → 成功/失败）；④ **回链按进程口径区分**：同进程（HTTP 模式 `/usage` 路由，`deps.panelUrl="/panel"`）显「← 回到控制台」；独立 `usage --web` **不渲染死链**，改说明「独立统计进程（控制台总览：`panel --web`）」。测试：容器/底座条目/筛选词/独立说明/同进程回链且不重复说明（双态）。全量 **1627 绿**；lint 0；Edge usage 0 条；真机验证（四项均就位）。
+> - **下发单次确认＋术语统一＋P3 杂项（2026-10-19 第三十四批，七评留档清空）**：**Wave 1 下发确认收敛**——「确认派发」单击即弹**站内单次确认**（`aosInlineConfirm`，摘要含来源/用例/用例集明细（`refsDetail` 入岛）/端/基线/执行机在线态），确认后按钮禁用＋「**提交中…**」（`#dispatch-status`）；移除两段确认框；设备卡在无在线执行机时写「**待执行机领取（当前无在线）**」而非"runner 自动"。**Wave 2 术语统一**——全站归为「**执行机（runner）**」（导航/快捷键/候选/空态/完整覆盖提示/compare 口径与列组"执行（执行机·定时回归）"）；术语表补 **门禁/设备运行/领取/积压/flaky** 五条。**Wave 3 P3 杂项**——① **404 站内错误页**（HTML 路由出站内页＋「← 多项目总览」，`.json` 保持 JSON）；② **「起自」改 `datetime-local`**（服务端 `normalizeSince`：无时区按本地解析转 ISO，预设链接仍 ISO）；③ **计划功能多选下拉 → 复选组**（fieldset＋checkbox，`getAll` 不变）；④ **自动刷新可见标注＋暂停**（`#aos-live-note`「自动刷新中（每 N 秒）」＋暂停/继续按钮，`clearInterval` 生效；reduced-motion 分支显示"已按系统偏好关闭自动刷新"）；⑤ **移动触达高度**（≤960 `.c-button{min-height:44px}`）。测试：单次确认/提交中/岛字段、术语表五词、导航标签、404 双态、datetime-local 与本地归一、功能复选、刷新标注与暂停脚本、44px CSS。全量 **1627 绿**；lint 0；Edge 无新类别；真机验证（执行机导航/门禁术语/404 页/刷新标注）。
+> - **八评与真问题修正轮（2026-10-19 第三十五批）**：八评 dual-agent **31/40（良好上限，距优秀一步）**——趋势 16→25→18→23→33→28→27→31；A 侧确认"内容与语汇高度特异、布局语法通用骨架属正确取舍"，峰值仍是预览契约/两段停止/建单闭环；B 侧 findings 全部复核为已知误报（对比度 4.66–7.36:1 达标）。**本轮已修**：① **P1 自伤**——自动刷新每 10s `replaceChildren(#console-main)` 导致任务动作按钮与暂停按钮**静默失效**：动作绑定改为 `aosBindTaskActions`＋`data-aos-bound` 守卫＋跨页 `window.aosOnRefresh` 钩子（轮询替换后自动重绑），暂停按钮改**文档级事件委托**（替换免疫），标签每次重查节点；② usage **事件流水表补 `.c-table-wrap`**（390 页面级横向溢出消除，真机复扫 0 条）；③ 总览「生成时间」改相对（新增 `relativeTimeText` 纯文本通道，修 card subtitle 转义后露出标签的问题）；④ 审计 refs/recovery 链接 **7 处裸 `&` → `&amp;`**；⑤ **术语映射漏洞收口**——stats 最不稳用例（状态/失败域/裁决）、任务设备运行（状态/失败域）、compare 质量域 chips、搜索任务状态全部中文＋`title` 原文；compare 运行/待办文案「runner/failed」→「执行机/失败」；⑥ **下发首访警告收敛**——空关键词/未选份不再推 warning（③ 空态横幅承担），无在线执行机降级为预览信息行（未知份保留真实 warning）；⑦ 文档漂移修正（`web-console/DESIGN.md` 暗色跟随系统/移动端保底取舍、compat 注释）。测试：重绑钩子与委托断言、usage 事件表容器、总览相对生成时间、审计 `&amp;`、术语映射断言更新。全量 **1627 绿**；lint 0；Edge usage@390 **0 条**。
+> - **表格单源＋死类名清理（2026-10-19 第三十六批，八评结构项）**：① **表格单源**——`renderTable` 收敛为 **cTable 委托**（空态仍用页内 `<p class="empty">`，非空统一 `.c-table` 外观；项目/任务/归因/批次/统计等表格不再双轨）；usage 自有表格（工具汇总/零调用目录/事件流水/信号表）统一 `.c-table`；② **死类名落地**——`.dispatch-option`／`.c-nav-badge`／`.c-banner-actions` 补 CSS（不再悬空）；③ **兜底文案中文化**——`invalid JSON body`→「请求体不是合法 JSON（检查 Content-Type 与 body）」、`internal error`→「服务内部错误（已写入审计；可重试或查看日志）」。测试：全量 **1627 绿**（结构断言兼容）；lint 0；Edge 无新类别；真机验证（项目页 3 张、usage 5 张均为 `c-table`）。
+> - **计划区块可读性与刷新修复（2026-10-26）**：定时任务在只读态不再渲染整块禁用表单与动作按钮，改为一条只读横幅（独立进程给出 `AOS_PANEL_ACTIONS=1` 重启命令；HTTP viewer 给出 maintainer/admin 角色要求），已有计划仍可查看；可写态表单改统一 `c-form` 栅格（名称/间隔、功能、端分行，主行动 `c-button-primary`），修正 `fieldset` 嵌在 `p` 内造成的无效 HTML；提交与启停/删除改文档级事件委托（`__aosSchedulesBound` 防重），15s 自动刷新替换 `#console-main` 后仍然可用；列表功能列优先显示功能名（key 进 `title`），空态改 `c-empty`。
+> - 未做（留档/后续任务）：内部编排审计接线（T4）、产物索引（T5）、三口径导出（T6）、全表面文案整改（T7）。
+
+### 13.127 实施记录（视觉能力启发式修订：DeepSeek Flash 原生多模态）
+
+> 实施于 2026-10-19。`pen_extract_flows` 的 `vision:auto` 对 active 模型 `deepseek-flash` 误报 `vision-unavailable` 跳过：DeepSeek V4.1 Flash 已原生多模态（官方 Vision 指南：`deepseek-flash` 接受 base64 data URL/外链/Files API 图片，单边 ≤8192px，仅 user 消息可带图），但稳定别名不含 `vision` 词干，旧启发式（token `vl/vision/4v/omni/multimodal` + 厂商白名单）漏判；iOS 侧还挂着第二用例集名单（`src/ios/vision.ts` 的 `VISION_NAME_PATTERN`），两用例集名单已在细节上漂移（qwen-vl 分支/大小写处理不同）。
+
+- **修复**：`isVisionCapableModel`（`src/design/vision.ts`）增补 `deepseek[^/\s]*flash`——命中 `deepseek-flash`/`deepseek-v4-flash`/`deepseek-v4.1-flash`（含第三方网关 `deepseek/deepseek-flash` 形态）；`deepseek-v4-pro`/`deepseek-chat` 维持不判定（官方文档仅点名 Flash 收图；`vision:true` 仍可显式强制）。`looksVisionCapable`（iOS 执行器 + 终态验证器复用）改为委托同一实现，第二用例集名单删除。
+- **影响面**：pen 视觉识别、iOS 每步视觉输入（多模态主模型直附图）、`AOS_IOS_VISION_LLM`/`AOS_IOS_VISION_MODEL` 缺省时的 active 复用三处闸门同时放行 `deepseek-flash`；`vision-model-unverified`（`vision:true` 覆盖路径）与其余 `vision-*` 降级语义不变。
+- **测试**：`test/pen-vision.test.js` 增 4 条启发式断言（flash 三形态命中/pro 不命中）＋端到端用例（fetch stub：`auto` 放行 → `makeChatFn` 真实 OpenAI 兼容通道 → user 消息附 `image_url` data URL → 元素与探索边落盘）；`test/ios-vision.test.js` 同步（`looksVisionCapable`、`resolveVisionTarget` active 复用、pro 边界）。全量 **1628 绿**；lint 0（2 条既有 warning 与本次无关）。
+- **同类扫描**：全仓模型名清单复核——`src/llm/providers.ts` 厂商别名（`configure.ts`/`catalog.ts` 仅在**新鲜列表**中命中才生效，缺失回退并告警，过期影响有界）、`src/pen/agent.ts` agent 前缀判定（有显式 `agent` 覆盖）、`src/llm/catalog.ts` `CAPABILITY_TOKENS`（防能力降级的保护名单）均无同类误判风险，本轮不改。
+- **边界**：仍为名启发式——稳定别名可再次掩盖能力（同形态问题大概率仍出自这里）；单源化只防名单漂移、不防认知过期；彻底方案（条目级能力声明或一次真实探测）未纳入本轮，留档。（2026-10-19 追加：已由 §13.128 落地——声明优先＋探测缓存＋未知即尝试，启发式降级为快速通道。）
+
+### 13.128 实施记录（视觉能力判定加固：声明 → 探测缓存 → 启发式 → 未知即尝试）
+
+> 实施于 2026-10-19（承接 §13.127）。名启发式天然随厂商改名/新档位漏判，且稳定别名会掩盖能力；本轮把「能不能视觉」从单一名字猜测改为四段判定链，pen 与 iOS 单源共用（`src/llm/vision-capability.ts`；`isVisionCapableModel` 迁入并保留 `src/design/vision.ts` re-export）。
+
+- **判定链**：`AOS_LLM_VISION`（`1/true/yes`、`0/false/no`；active 模型声明，权威）→ 探测结论缓存（`.artemis/llm-capabilities.json`，键＝`baseUrl|model` 归一；`AOS_VISION_CACHE_DAYS` 默认 7 天，`0` 关闭缓存＝每次都探测）→ 名字启发式（§13.127 名单，快速通道）→ **未知**。
+- **未知即尝试（fail-open）**：pen `vision:auto` 未知时照常渲染并调用（不再跳过；`vision-model-unverified` 提示按尝试处理）；iOS 主模型未知且未配置专用视觉模型时同样先附一次图（有 `AOS_IOS_VISION_LLM/MODEL` 时不浪费主模型调用）。
+- **结论学习**：只有「模型不接受图片」一类失败（HTTP 400/415/422 且措辞同时命中图片/视觉词与 not support/unsupported/仅支持/不支持，`classifyModalityRejection`）才记为无视觉——pen 首屏即中止（新增 `vision-model-rejected` + `vision-unavailable`「已记录」）并写缓存 no；iOS 当场 latch 纯文本（`visionDegraded=多模态决策被拒…`）并写缓存 no。成功（未知或 `vision:true` 强制来源）写缓存 yes。其余失败（鉴权/网络/格式/服务端）不写缓存，保持原有响亮降级。
+- **接线**：`runVisionPass` 结果新增 `rejected`（中止后屏幕计入 skipped）；iOS `resolveVisionTarget` 增 `activeVision` 参数（active 复用仅在判定为有视觉时发生——缓存 no 的模型不会被当视觉模型二次复用）；`src/ios/run-loop.ts` 捕获拒绝即 latch；`tool-entry` 按同一判定解析 vision target（启动响应 `vision` 与实际一致）。
+- **测试**：新增 `test/vision-capability.test.js`（7 例：声明解析/TTL/键归一/优先级/拒绝分类/缓存 IO 容错/启发式迁移）；pen 增 3 例（声明 0 不探测、未知被拒→缓存+中止、未知成功→缓存）；iOS 增 1 例（fail-open 附图被拒→latch+缓存）；既有纯文本场景用例显式钉 `mainVision:false` 保持原意图。全量 **1639 绿**；lint 0（2 条既有 warning 与本次无关）。
+- **边界/留档**：缓存是派生数据（可删可重建；多机不同步，探测成本＝一次可忽略的请求，TTL 过期自动重探）；`AOS_LLM_VISION` 作用于 active 条目，多条目细分声明留档；面板/`doctor` 展示判定与缓存状态留档。
+
+### 13.129 实施记录（`design_to_test` 生成参数透传：`maxFlows`/`maxDepth`）
+
+> 实施于 2026-10-19（提交 f72b125 ＋ 本记录）。动机＝一次真实复盘（starbuckstw 项目：`.pen` + `vision:true` 全量识别后探索到 38 条路径，生成步固定走默认 `maxFlows=10` → 28 条丢弃、生成报告 `truncated:true` → 覆盖闸按 fail-closed 判「流程未完整覆盖…路径截断」，响应 `failedStep:"check"`，用户无法在一条龙内调参过闸）。改法：与 `figma_generate_tests` 同口径，给 `design_to_test` 增两个可选生成参数并在编排层透传。
+
+- **工具与 schema（`src/tools/native-tools/workflow.ts`）**：`maxFlows`（生成条数上限，1..50，默认 10）、`maxDepth`（路径最大深度，1..50，默认 30）；字段描述注明「vision 全量探索路径多时可调大以避免覆盖闸『路径截断』」。
+- **编排（`src/workflow/design-to-test.ts`）**：`DesignToTestArgs` 增两字段；生成步与 `nextAction` 仅在显式提供（`typeof args.maxFlows/maxDepth === "number"` 守卫）时携带，未提供与旧行为完全一致（不产生 `undefined` 键）。
+- **测试**：编排透传 +2（显式键原样传给 generate；只给 `maxFlows` 时不出现 `maxDepth` 键）；`native-workflow-tool` schema 用例扩展（暴露两字段；`maxFlows:0/51`、`maxDepth:2.5` 拒绝；`{maxFlows:50,maxDepth:12}` 合法形态放行）。全量 **1641 绿**；lint 0（2 条既有 warning 与本次无关）。
+- **配套（脚本层）**：`scripts/mobile-testing-call.mjs`（原 `scripts/aos-call.mjs`） 增加每请求超时 `AOS_CALL_TIMEOUT_MS`（毫秒，默认 600000；上限 clamp 至 2^31−1，防 Node 定时器溢出；此前受 MCP SDK 默认 60 s 约束，长任务直跑会被截断）＋启动行 stderr 提示；README（`design_to_test` 参数）/AGENTS.md 与 docs/接入指南.md（`AOS_CALL_TIMEOUT_MS`）同步。
+- **评审修正（提交 9ee4b8c）**：`nextAction` 同步携带显式 `maxFlows`/`maxDepth`（否则 run:false 的续跑第二步回到默认 10、再次截断——评审发现的真实缺陷）；`CHECK_SUGGESTION` 补「路径截断可加大 maxFlows/maxDepth 重试」；zod/透传测试对称补强（`maxDepth:0/51`、`maxFlows:2.5` 拒绝；仅 maxDepth 透传 + nextAction 断言）；`maxDepth` 描述对齐 `figma_generate_tests`（边数/续段拆分）。全量 **1642 绿**；lint 0。
+- **边界**：默认值（10/30）与覆盖率口径、三闸判定均不变——「截断即 fail-closed」语义保留，只是入口可调参；`figma_generate_tests` 直调路径不受影响。（2026-10-19 修订：`maxFlows` 上限 50 → 1000，见 §13.132。）
+
+### 13.130 实施记录（pen 视觉识别全量屏：几何兜底 + 上限语义）
+
+> 实施于 2026-10-19。真实复盘（starbuckstw：`.pen` 23 屏）中 `vision` 只处理了 4 屏：`collectVisionScreens` 以 `numberProp(frame,"width"/"height")` 取尺寸，而该文件是 auto-layout 为主——绝大多数屏是 `width:"fill_container"`、`width:"fit_content(948)"` 或完全没有 `height`（由布局引擎解析），全部被当作「无可用屏幕几何」静默跳过。`AOS_VISION_MAX_SCREENS`（默认 20）根本没触发，`vision-screen-cap` 也就没出现，用户只看到 `screensRequested:4`。
+
+- **几何兜底（`src/pen/flows.ts`）**：`collectVisionScreens` 增 `sizeFor(screenId)` 兜底——frame 的数字宽/高缺失时取已渲染 PNG 的 IHDR 尺寸（`pngDimensions`，渲染为 scale 1，与设计坐标系一致，已用真实文件逐屏核对）。渲染在 vision 之前已完成（截图与 vision 共享一次渲染），因此兜底不增加渲染成本；`screens:false` 时仍会为 vision 渲染。逐屏读取结果缓存，避免重复读盘。
+- **静默跳过改为响亮降级**：新增 warning `vision-screen-no-geometry`——既无数字几何、又无渲染图的屏逐条计入并在响应/flows.json 中列出（≤5 个具名，其余「等」），不再无声消失。
+- **上限语义（`AOS_VISION_MAX_SCREENS`）**：默认 20 → **50**（覆盖常见设计文件全量屏，仍为多模态调用成本留闸）；`0` / `all` / `unlimited` 显式表示不限。`vision-screen-cap` 只在真实截断时出现。
+- **单源化（`src/design/screens.ts`）**：`pngDimensions` 从 `src/ios/vision.ts` 迁入设计截图模块（IHDR 读取与 PNG 校验同处），`ios/vision.ts` 保留 re-export，iOS 调用点零改动。
+- **测试**：`test/pen-vision.test.js` +6（`AOS_VISION_MAX_SCREENS=0`/`all` 解除上限；默认 50 放行 23 屏、仍截断 60 屏并告警；auto-layout 屏用 PNG 尺寸且 bbox 按渲染尺寸换算、grounding 命中设计节点；无几何无渲染的屏出 `vision-screen-no-geometry`；全屏皆无几何时跳过原因仍带该警告）；`test/design-screens.test.js` +1（`pngDimensions` 边界）。全量 **1650 绿**；lint 0（2 条既有 warning 与本次无关）。
+- **真实验证**：starbuckstw 23 屏 `screensRequested/Processed` 均为 23（改前 4），无 `vision-screen-cap`、无 `vision-screen-no-geometry`。
+- **边界**：无数字几何的子节点仍不参与 bbox→nodeId grounding（元素与探索边照常产出，`nodeId` 缺省）；成本随屏数线性上升，全量识别前应确认 active 模型的图片计费口径。
+
+### 13.131 实施记录（功能身份：碰撞消歧＋重复身份去重＋屏集口径修正）
+
+> 实施于 2026-10-19。真实复盘（starbuckstw）：`到店自取` 在 ledger 中出现两次（**同一 key**、各 30 条）、`到店自取-2` 与 `到店自取` 三件套**字节相同**、`再次訂購/結帳流程/選擇取餐時間` 等 0 用例、每次生成重复落盘。根因链（逐层复现，非猜测）：
+
+- **① 自愈/回填屏集放大**：`hydrate` 与 `suite backfill` 登记功能屏集时取「用例覆盖过的屏幕并集」（`collectScreens(flows)`/`uniqueScreens(flows)`），而归档 `features[0].screens` 才是功能组屏集。starbuckstw 的 genesis 功能真实 6 屏被登记成 23 屏 → 与所有组假重叠 1.0。
+- **② 假重叠 → 抢注 → 新建键碰撞**：`applyIdentity` 比例继承下，首个组（4 屏 cluster）借假重叠抢走 genesis key `K`；被 `assigned` 挡下的另一 `到店自取` 组（6 屏、name-prefix）走新建路径，而 `f-<slug>-<sha8(排序屏幕)>` 恰好重算回同一个 `K`——同一调用内两组同 key，`cases.filter(feature===key)` 对两组返回同一子集 → 三件套字节相同（`-2`）、ledger 双登记、身份复用失效。
+- **③ 历史键抖动**：被挡组每轮用「当前 LLM 命名 + 屏集哈希」重算 key（命名方差 → key 变）；且自身历史多键与假重叠项并列最高 → 永远判「新」，无法复用。
+
+修复：
+
+- **`applyIdentity` 碰撞消歧**：新建 key 与本次已产出 key 相同时确定性递增 `-2`/`-3`…，出 `feature-identity-collision` 告警（不变量：同一调用内各组 key 唯一）。
+- **`applyIdentity` 重复身份去重**：prior 中屏集与组完全相同的条目优先继承——取最近一份（prior 新→旧）且未被占用者；无精确匹配/全被占用才回退比例继承（唯一最高 ≥0.5），再回退新建。「并列最高但屏集不同」（真歧义）仍不合并、新 key + `feature-identity-new`。
+- **屏集口径**：`hydrate`/`backfill` 登记屏集优先取归档 `features[0].screens`（字符串去重），缺省才回退用例覆盖并集。
+- **测试**：`test/figma-features.test.js` 替换 1＋新增 2（同屏集并列继承最近一份；屏集不同并列仍新 key；碰撞消歧 `-2`、同调用 key 唯一）、`test/db-default.test.js` hydrate 增屏集优先/回退断言、`test/suite-backfill.test.js` +1；全量 **1653 绿**；lint 0 error（2 条既有 warning）。
+- **真实验证（starbuckstw，修复构建 stdio 重跑）**：vision `23/23` 屏（360 元素/215 导航边/0 失败，无 cap/no-geometry 告警）；`到店自取` 双组键分为 `f-到店自取-06f2c8a0` 与 `f-到店自取-06f2c8a0-2`（带 `feature-identity-collision`）、`行動點餐首頁` 组继承其最近历史键；case-set 仅 1 份（50 用例），不再有字节相同的 `-2` 双份；用真实 ledger 回放模拟下一轮，六组键完全稳定（同键复用）。
+- **边界**：既有 ledger 历史记录（含 genesis 23 屏）不回写——`-2` 键自本轮起稳定，`K` 名义屏集与 slug 归属的历史差异可见但无害。用例→功能归属仍按「屏幕多数归属」：全应用级长路径（平均 19 屏）下最大功能组恒胜，`再次訂購/結帳流程` 等 0 用例属分配口径现状（非身份缺陷；按功能生成/归属另立）。
+
+### 13.132 实施记录（生成上限：`maxFlows` 50 → 1000）
+
+> 实施于 2026-10-19（承接 §13.130/§13.131 的 starbuckstw 全量视觉复盘）。现象：23 屏全量视觉后（237 边，其中 215 条 vision 未决探索边 `to:null`——生成侧口径为「每条保留一次探索用例」），`design_to_test`/`figma_generate_tests` 的 check 报「路径截断」；而 `maxFlows` 已顶到 schema 上限 50。真实图纯函数探测（`linearizeFlowsWithStats`，不落盘不调 LLM）：50/100/200 均截断（探索 207/215 条即被 `maxFlows*4` 探索帽截停），**≥300 全量收敛**（kept=215、dropped=0、`truncated=false`）；`maxDepth` 30 已足够（depthSplits 0）。即「加大上限」的建议因 50 封顶实际不可用——上限本身是唯一堵点。
+
+- **工具与 schema**：`figma_generate_tests` 与 `design_to_test`（透传）两侧 `maxFlows` 上限 50 → **1000**（默认 10 不变；`maxDepth` 上限 50 不变）；描述注明「大体量流程/视觉未决探索边多时可调大以避免覆盖闸『路径截断』」。
+- **测试**：`native-workflow-tool` zod 拒绝点 `maxFlows:51` → `1001`（51 自此合法）、合法形态增 300/1000；新增 `test/native-figma-tool.test.js`（300/1000 通过；1001/0/2.5 拒绝；`maxDepth` 50/51 边界）。全量 **1654 绿**；lint 0 error（2 条既有 warning）。
+- **真实验证（starbuckstw，`reuseExistingFlows` 重生成，不重跑视觉）**：`maxFlows=300` → `explored=kept=215`、`dropped=0`、**check 通过**、`coverage.complete=true`（explore 类亦全绿）；用例分布 行動點餐首頁 73 · 到店自取 142（其余组 0，属归属口径现状，见 §13.131 边界）；case-set 两文件各自独立（500KB / 1.34MB），ledger 键唯一。
+
+### 13.133 实施记录（设计链路「不静默省略」P0：候选四态 + 变体 target + 守恒 + 警告可见面）
+
+> 实施于 2026-10-20（承接 §13.130–§13.132 的 starbuckstw 全量视觉复盘）。现象：pen 视觉只处理主屏，合并进主屏的状态变体（`screen.states[]`）从未成为独立 target；设计稿里的候选交互元素没有词表与核验，识别不全时无逐条交代；回复 >40 条、候选 >200、grounding >300 的截断只留内部计数；且设计警告只写 `flows.json`，生成/检查/执行/面板各层看不到。本阶段分 **P0-A（生产侧不静默）** 与 **P0-B（消费侧可见）** 两部分；P1（交互解析、状态路径生成等）不在本计划。
+
+**P0-A：警告管道与候选四态**
+
+- **统一形态**（`src/design/warnings.ts`）：`DesignWarning = {code, message, details?}`；`flows.json.warnings` 与 `tests.json.designWarnings` 同构。`normalizeWarnings` 逐条丢弃无 `code`/`message` 的条目；`readFlowsWarnings`/`readTestsWarnings` 缺文件、坏 JSON、顶层非对象均返回 `available:false` 而不抛；**字段缺失 ≠ 零警告**——缺 `warnings`/`designWarnings` 字段即不可用，回退另一来源；显式空数组才是「可用且 0 条」。`mergeWarnings` 按 `code + message` 去重并保留首次顺序（`bySource` 把每条唯一警告记给首个来源，各值之和 = 条数）；`summarizeWarnings` 出 `total/byCode/codes`（可选 `bySource/snapshotAt/stale`）；`resolveDesignWarnings` 默认 **tests 快照优先、flows 回退**；仅当采用 tests 快照且 flows.json 的 mtime 在**毫秒精度**上严格更新（`flows.mtimeMs > tests.mtimeMs`）时 `stale:true`，mtime 相等不算陈旧。
+- **候选词表与四态**（`src/design/element-coverage.ts`）：默认词表 13 个英文词（`Button`/`Tab`/`Link`/`Input`/`Toggle`/`Switch`/`Checkbox`/`Search`/`Menu`/`Cart`/`Bag`/`CTA`/`Sticky button`）＋ 11 个中文词（`按钮`…`关闭`）；名称按 `/` 分段匹配（英文按词序列连续命中、中文按子串），大小写不敏感；`AOS_VISION_CANDIDATE_TOKENS` 追加项目词（逗号/中文逗号/换行分隔，去空去重转小写；**项目 `.env` 优先、进程 env 回退**，`applyVision` 解析一次后贯穿候选采集）。候选判定除词表外还认 `type === "ref"` 与 `reusable === true`（组件实例），无名称时以 `type`（再回退 `component`）作候选名；`Flow/*` 子树排除、嵌套候选只保留最外层。
+- **四态判定**（按 target 隔离）：`covered`（nodeId 命中 → 几何命中：IoU ≥ 0.2 或元素中心落在候选 bbox → 文本 fallback）／`uncovered`（有几何但未命中）／`unverifiable`（无几何且无可匹配文本、`no-geometry`/`no-text`，或文本被同 state 多候选共享 `ambiguous-text`；后者 `details[].matches` 附匹配候选数）／`not-evaluated`（target 未进入 vision，带原因）。计数与 `details`（逐候选 nodeId/name/status/reason/bbox）写入 `FlowElementCoverage`；告警 `vision-candidate-uncovered`（逐屏×state 一条＋具名明细）、`vision-candidate-unverifiable`（整屏一条汇总，`message`/`details` 按主屏/状态分列，避免主屏与变体折叠）、`vision-candidate-vocabulary-unmatched`（有设计节点但零候选，提示词表不适配；未评估 target 不误报）。
+- **变体 target**（`src/design/vision.ts` + `src/pen/flows.ts`）：主屏与其状态变体都成为独立 target（`stateOf`/`stateName`），`collectVisionScreens` **主屏在前、变体在后**；上限先裁变体、主屏仅在自身超限时被裁。`screensRequested` 恒指主屏、`statesRequested` 指变体、`targetsRequested = 两者之和`（均只计进入 pass 的 target：`processed + skipped + failed`）；`screensInput`/`statesInput` 另计全部输入（含 capped/排除）。变体元素落 `screens[].states[].elements`，变体边只进 `stateEdges` 与 `counts.visionStateEdges`（审计专用，**不并入 `result.edges`/`unresolvedDestinations`**，生成侧边界不变，见「已知边界」）。`counts` 增 `visionMainElements`/`visionStateElements`（与总数 `visionElements` 对齐），避免只有合计时看不出主屏/变体构成。
+- **静默截断可见**：回复元素 >40 → `vision-response-truncated`（含屏名与条数）；每 target 候选 >200 → `vision-candidate-cap`（并记 `vision.accounting.candidatesTruncated`，含被排除/被 cap 的 target）；grounding >300 记 `groundingTruncated`（只进 accounting）；上限截断出 `vision-screen-cap`，`details` 逐 target 具名并区分主屏/变体，附 `AOS_VISION_MAX_SCREENS=0` 行动提示；缺帧/缺几何/重复 id 分别 `vision-screen-frame-missing`/`vision-screen-no-geometry`/`pen-duplicate-node-ids`（重复 id 按文档中最后出现的帧解析，last-wins）。
+- **grounding 行为变更（>300）**：节点选取不再是遍历先到先得，而是**候选优先 → 叶子优先 → 容器兜底**；候选子树继续下钻以统计 `designNodes`/几何，但不再采集嵌套候选。`designNodes` 改为计**全部访问到的非 `Flow/*` 节点**（含无完整几何的 auto-layout 子节点），零候选兜底 `vision-candidate-vocabulary-unmatched` 据此生效。大屏（>300 几何节点）的 `nodes` 排序与 `groundNodeId` 结果因此与旧版不同；`test/pen-flows.test.js` 用 309 节点 fixture 锁定排序、容器被挤出与 grounding 结果。
+- **未评估候选**：`vision:false`、`AOS_VISION=0`、无可用/无视觉能力 LLM、渲染通道失败都在早退前离线采集候选并落 `not-evaluated` 覆盖（原因 `vision-off`/`vision-unavailable`/`render-missing`；缺帧/缺几何保留 `frame-missing`/`no-geometry`），即使 vision 未激活也写入 `screens[].elementsCoverage`/`states[].elementsCoverage`，不伪造 `covered`。
+- **坐标空间**：`VisionScreenInput.width/height` 在 `renderScale !== 1` 时表示**渲染图像像素**；识别 bbox（归一化）先乘图像尺寸、再除以 `renderScale` 得到设计 px。`test/pen-vision.test.js` 以 780×1688 的 2× 图锁定换算与不换算的差异。
+- **守恒公式**（D7，`visionAccounting`）：`screensInput = processed + skipped + failed + capped + noGeometry + frameMissing`；states 同式；`targetsRequested = screensRequested + statesRequested`；`screensRequested = processed + skipped + failed`；states 同式；`elements = grounded + ungrounded`；`rawElements = elements + invalid + truncated`。任一不成立出 `vision-accounting-mismatch`（消息带全部数字，不静默）；`candidatesTruncated`/`groundingTruncated` 明确不参与公式。截图侧 `screens + states = rendered + skipped`，不成立出 `screenshot-accounting-mismatch`；`screenshots.accounting` 可见。
+- **env**：`AOS_VISION_MAX_TARGETS` 为首选名（上限覆盖主屏＋变体），`AOS_VISION_MAX_SCREENS` 保留为兼容旧配置；两者均为默认 50、`0`/`all`/`unlimited` 不限。`AOS_VISION_CANDIDATE_TOKENS` 追加候选词表（默认词表始终生效）。**优先级**：`AOS_VISION_MAX_TARGETS` 非空即生效，否则回退 `AOS_VISION_MAX_SCREENS`；同一变量先读项目 `.env`、再读进程 env（项目 `.env` 胜出，`visionMaxScreens` 实现如此）。
+- **flow-map**：每主屏/每变体一行覆盖摘要「识别 / 候选 / 覆盖 / 未覆盖 / 不可核验 / 未评估（未评估：原因）」，零候选的未评估 target 也能与「已评估但无候选」区分；视觉识别区补变体元素行。
+
+**P0-B：警告的消费面**
+
+- **`design_to_test`**：提取后响应带 `warnings[]` 与 `designWarnings` 摘要（`bySource` 含 `extract`/`flows`，提取响应与磁盘 `flows.json` 按 code+message 去重）；提取成功后合并 `generatePayload.warnings`（来源 `generated`，只计入去重后的新增条数），`warningsAvailable` 由实际可读来源推导（不再恒 `true`）；`steps[extract].warnings` 计数；`artifacts.flowMap` 在 check 之前计算，文件存在即返回（check 失败响应同样携带）。提取后的失败响应（生成 0 用例/检查失败/执行失败/needs-setup/needs-info）同样携带已收集警告；**提取前的 setup/no-flows 响应刻意保持原形状**（此时尚无设计源）。
+- **`figma_generate_tests`**：flows 警告与生成期警告（功能命名/身份、用例集登记、截图降级）按 code+message 合并，写入响应 `warnings`/`designWarningsSummary` 与 tests.json 的 `designWarnings`/`designWarningsSummary`（`bySource` 为 `flows`/`generated`）；tests.md 顶部增「警告（设计源与生成期，不阻断生成）」小节（覆盖 flows 与生成期警告，无警告不出现）。快照在 tests.json 落盘前定稿；登记失败等晚到警告只留在响应 `warnings`，不改写已登记指纹。
+- **`suite check` / `suite loop`**：preflight 经 `resolveDesignWarnings` 取一份快照，文本统一由 `renderDesignWarningLine` 渲染（`设计源警告: N 条（codes）· 来源 · 快照 · [stale-snapshot]`）；`check --json` 增 `designWarnings`/摘要/来源/快照/陈旧字段，`loop` 的 check 步骤与 markdown 同源；**退出码与门禁语义不变**（警告不阻断）。
+- **manifest / report / 回归 / Jira**：批次清单写入运行期 `designWarningSummary` 快照（历史清单缺字段 → `null`，面板显式「未记录」而非 0 条）；`suite report` 用当前快照，文本普通与 `--task` 两分支都打印 `设计源警告: N 条（codes）`（`null` → 未知、`available:false` → 不可用，不伪造 0）；`run_regression`/`verify_jira_issue` 跨 set 合并去重，并用 `missingSets` 披露「部分 set 无摘要」的覆盖缺口（全部缺失仍 `null`，不伪造 0）；两者的执行失败响应同样携带已收集的 `designWarnings`。
+- **面板 / 档案 / pipeline**：`/panel.json` 项目行、项目页「磁盘资产」、批次详情（清单冻结值）均显示设计源警告（无快照显式「不可用」）；`project_archive.design.warnings` 与面板/套件同源；`scripts/design-pipeline.mjs` 在提取后打印警告行（响应无 `warnings` 时打印不可用）。
+
+**测试与验收**：`npm run build && npm test && npm run lint` → build 0 error、**1727/1727 通过**、lint 0 error（2 条既有 warning 与本阶段无关）；覆盖 `test/design-warnings.test.js`、`test/design-element-coverage.test.js`、`test/pen-flows.test.js`、`test/pen-vision.test.js`、`test/workflow-design-to-test.test.js`、`test/figma-testgen.test.js`、`test/suite-command.test.js`、`test/suite-loop.test.js`、`test/suite-run-manifest.test.js`、`test/run-report.test.js`、`test/workflow-run-regression.test.js`、`test/workflow-verify-jira.test.js`、`test/panel-assets.test.js`、`test/panel-web.test.js`、`test/workflow-project-archive.test.js`。
+
+**已知边界**
+
+- **原始原因码**：flow-map 的 `not-evaluated` 原因直接用 `frame-missing`/`no-geometry`/`capped`/`render-missing`/`rejected`/`failed`，未另做中文映射；候选 `reason` 同样保留原始码（`no-geometry`/`no-text`/`ambiguous-text`/`vision-off`/`vision-unavailable`/`capped`/`render-missing`/`frame-missing`/`rejected`/`failed`）。
+- **变体仍为审计面**：变体元素/边只在 `states[]` 与 `stateEdges` 留证，不进入生成路径（`result.edges`/探索边仍是主屏边）；状态路径生成属 P1。
+- **手工回放延期**：本阶段**未执行** starbuckstw 真实项目回放（会写入外部项目）。待手工验收的期望是：23 主屏＋30 变体全部有 target 记录；默认 50 时 3 个变体具名 `capped`；`unverifiable` 有计数；`maxFlows=300` 下 215 条探索边全保留；一条龙响应含 design warnings。该项在真实项目验收时补记，不影响本阶段代码/测试结论。
+- **截图守恒的集成路径**：真实链路由构造保证 `screens + states = rendered + skipped`，不会自然触发不平；目前以 `screenshotAccounting` 纯函数单测锁定破坏路径，未做真实截图失败的端到端注入。
+- **候选判定是启发式**：词表不适配（尤其自定义命名）可能产生 `uncovered`/`vocabulary-unmatched`；同一归一化文本被多候选共享时保守判 `unverifiable`（不虚报覆盖）。宽松包含匹配（如 `结算` 命中 `去结算`）为既定行为。
+- **快照语义**：批次详情读清单冻结值，项目页/档案读当前快照；两者时间差会在详情中体现为「未记录/旧值」而不是自动刷新。
+
+### 13.134 实施记录（用例集归档命名 + 存储接入防静默）
+
+> 实施于 2026-10-20。`caseSetStem` 归档 basename 由 `<UTC YYYYMMDDTHHmmss>_<功能>` 改为 `<UTC YYYYMMDD_HHmmss>_<功能>`（示例 `20261019_105551_到店自取`；未指定 `excelTemplate` 时仍用内置工作簿，不套模版）；`suite backfill` 的 `createdAt` 解析同时接受新旧两种前缀（旧归档不迁移、不重命名）。`createProjectStore` 在仅配置已废弃 `AOS_DATABASE_URL` 时把原因写进 `store.reason`（明确旧名不生效、当前落文件台账），避免接入项目静默丢中心库记录。starbuckstw 接入配置已切换 `MOBILE_TESTING_DATABASE_URL`（`127.0.0.1:5432/mobile-testing`），`suite backfill` 回填 17 份 case sets；历史 usage_events（60 条，含当日 44 条）与 1 条 regression task 仍在文件台账，未自动回流。测试 +1（db-default 旧名提示；case-sets/backfill 断言随命名更新）；全量 1728 绿。
+
+### 13.135 实施记录（测试用例字段与 Excel 契约 P0/P1）
+
+> 实施于 2026-10-20（P0）/ 2026-10-26（P1/P2）。来源：人工用例 `v4.9.0- Test Case.xlsx` 的字段经验；设计见 `docs/superpowers/specs/2026-10-20-test-case-authoring-design.md`（P0/P1/P2 已实施；P2 见 §13.211/§13.212）。
+> 数据模型：`GeneratedTest` 增 `displayId/module/section/testData/openQuestions`（P1 字段 `relatedCases/designRefs/variant` 已预留类型）；`displayId` 取机器 `id` 后 6 位（`TC_xxxxxx`，冲突 `-2`），不替代既有机器 `caseId`；`tests.json` 增 `schemaVersion:2` 与 `summary`（live/每个功能归档子集分别计算）。
+> 生成规则：`module`＝功能名；`section`＝入口屏（acceptance `section` 可覆盖）；`testData/openQuestions` 只从 `acceptance.json` 的 `data/questions` 按用例屏幕收集（各上限 12/10），无来源显式 `n/a`，不臆造；设计警告不逐条挂用例（仍走 warnings 面）；`taskDesc` 在 `【真实数据】` 后注入 `【测试数据】`/`【待确认】`（空不注入）。
+> Excel/Markdown：`src/figma/case-view.ts` 统一预期结果/测试数据/待确认/设计引用/汇总派生；默认 `tests.xlsx` 保留前 6 列并追加 `用例编号/模块/Section/测试数据/关联用例/预期结果/设计引用/备注待确认` + `汇总` sheet（执行统计留空，不伪造结果）；模板新增 `{{case.displayId}}` 等占位符，未知占位符原样保留；`tests.md` 标题与新增小节同步；Excel 导入路径共用同一 14 列契约（缺字段 `—/n/a`）。
+> 验收文件：`acceptance.json` 兼容旧 `{screens}`，新增 `data/questions/section`；非法条目/超限出 `acceptance-details-invalid`/`acceptance-details-truncated` 警告，不阻断生成。
+> 测试：新增/更新 `test/figma-testgen.test.js`（acceptance v2 端到端、非法 acceptance、legacy 回退、模板占位符）；`npm run build && npm test && npm run lint` → 全量 **1732 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.136 实施记录（文件台账 usage/regression_task 一次性补 PG，已退役）
+
+> 2026-10-20。曾新增 `scripts/migrate-ledger-to-pg.mjs`（dry-run/`--write` 幂等补 `usage_events`/`regression_tasks`）。**同日判定退役并删除**：外部脚本可接受任意路径/DB URL、无审计，绕过服务边界；历史迁移改由 P1 服务内事件消费者承担。`suite backfill` 仍只覆盖 runs/case-sets。
+
+### 13.137 实施记录（P0）：项目事件入口
+
+> 实施于 2026-10-20。完整设计见 `docs/superpowers/specs/2026-10-20-project-event-ingress-design.md`。
+> **协议**：`src/events/payload.ts`（stable stringify/hash/bytes、`since` 归一）、`src/events/protocol.ts`（type/source/status allowlist、per-type 最小必填、payload ≤32 KiB、`at` 规范化）。
+> **存储**：`project_events`（PG `seq BIGSERIAL` + `payload_bytes` + `(project_id,event_id)` 唯一；文件态 `events.jsonl` + `events.meta.json` 启动索引判重、seq 持久化、裁剪不回收；内存同语义）。保留 30 天/5 万条异步裁剪；文件台账 P0 不做 fsync；事件不计入 `usage_events`。
+> **入口**：`POST/GET /events/<project>`（202 携带 `storage/degraded`；重复取既有 `serverId/receivedAt`；`since` 规范化后比较；列表默认不带 payload）；原生工具 `aos_event_report`/`aos_events`。轻量项目解析 `src/events/project-resolver.ts`（loadProject + store upsert，不建 Runtime；`.`/`..` 拒绝、rootPath 与 `getRuntime` 共用 realpath 归一）。
+> **安全/口径**：项目身份来自路由/runtime，无路径/DB URL 参数；审计异步且不记 payload；P0–P2 权威仍为 `suite_runs`，AOS runId 复用 manifest；中心 HTTP + PG 为推荐拓扑，file/memory 仅单实例兜底。
+> **删除**：外部迁移脚本与其测试（4 例）移除；历史 usage/regression task 迁移留 P1。
+> **测试**：新增 `events-protocol` 4、`events-store-memory` 2、`events-store-file` 2、`events-store-pg` 1、`events-project-resolver` 2、`events-ingress` 2、`events-http` 2、`events-tools` 1；`npm run build && npm test && npm run lint` → 全量 **1748 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.138 实施记录（P0 加固）：事件入口评审修复
+
+> 2026-10-20，对 `fae3f70..8b359c3` 评审发现的问题做修复；P0 范围与协议不变。
+> **并发**：`FileStore` 事件读写/裁剪按桶串行（`eventQueue`，读也入队），事件索引加载共享同一 Promise；并发同 `eventId` 只接受一次，`seq` 不重复。
+> **ack 诚实**：新增 `degradedReason(store, note)`，仅 `memory` 返回 `degraded`（无 note 时给显式原因）；file/postgres 不再把“未配置 PG / 回退文件台账”误报为降级，`storage` 仍如实返回。
+> **HTTP 映射**：项目配置损坏从 500 改为 400 `project-config-invalid`（`ProjectConfigError`）。
+> **路径归一**：HTTP workspace、`resolveProjectRoot`、`Runtime` 构造统一 `realpath`，symlink 项目根不再产生第二身份；测试夹具 `makeTempDir` 同步返回 canonical 路径（面板“待领取”邻近断言放宽以容纳更长路径）。
+> **裁剪写入**：文件事件压缩改用异步原子写，避免大文件阻塞事件循环。
+> **测试**：`events-http` +2（默认 FileStore ack 不误报、配置损坏 400）、`events-project-resolver` +1（symlink）、`events-store-file` +1（并发幂等/seq）；`events-store-memory`/`events-store-pg` 补秒级 `since` 断言；`npm run build && npm test && npm run lint` → 全量 **1752 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.139 实施记录：MCP initialize instructions
+
+> 2026-10-20。`src/server.ts` 的 `createServerForRuntime()` 在 `Server` 选项里返回 `instructions`，stdio 与 HTTP 两个入口共用同一份说明，客户端 `initialize` 后可直接向 agent 注入服务定位（此前只有 npm `package.json` description，客户端不可见）。
+> **内容**：AOS × ARTEMIS 统一服务；Android 设备/模拟器与 iOS 设备/模拟器；Figma/.pen 设计到用例、回归、Jira 验单、项目档案；`aos_status` 自检；`mobile_run_task`/`mobile_manage_task`/`mobile_get_device_state`/`mobile_inspect_trace` 的用途；`device_serial` 兼容 Android serial 与 iOS UDID；多设备先问用户、不猜测；工具异常先 `mobile_diagnose`；凭证项目级、不回显密钥；设计结论需真机核验。
+> **测试**：新增 `test/server-instructions.test.js`（in-memory initialize 断言说明非空且含 Android/iOS/workflow/mobile/.artemis 关键词）；`npm run build && npm test && npm run lint` → 全量 **1753 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.140 实施记录（P1 第 1 批）：seq 游标、长轮询与消费态
+
+> 2026-10-20。P1 的“无丢失轮询 + consumed_at 消费态”先落地；反馈规则/历史迁移/fsync 仍待实施。
+> **查询**：`ProjectEventQuery.afterSeq`（非负整数，`seq > afterSeq`）与 `consumed`（true=已消费/false=未消费）在 PG/file/memory 三实现一致；`EventList.nextSeq` 为本页最大 seq（空页回显 `afterSeq`），作为下一轮游标。
+> **长轮询**：`pollProjectEvents` 在无事件时每 250ms 重查，最长 `waitMs` 30s；`GET /events/<project>/poll?afterSeq=&waitMs=&consume=`（GET-only；客户端断开经 `res.close` 中止）与原生工具 `aos_event_poll` 共用。
+> **消费态**：`markProjectEventsConsumed` 幂等写入 `consumed_at`（PG 单条 UPDATE、file 原子重写、memory 就地）；`consume:true` 时返回事件带 `consumedAt`，重复消费返回 0。
+> **fsync**：`AOS_EVENTS_FSYNC=1` 时文件事件追加、消费态/裁剪重写后对 events json/meta 执行 fsync（默认关，保持 ack 延迟优先）。
+> **反馈口径（拉取式，2026-10-20 定）**：MCP 不生成反向指令队列；项目/执行器用 `aos_event_poll` / `GET /events/<project>/poll` 拉取未消费事件，按自身规则决定重试/补数据/停止，再以 `consume:true` 确认。幂等由 `(project,eventId)` 与 `consumed_at` 保证；服务端只提供游标、过滤与消费态。
+> **兼容**：`GET /events/<project>` 保持原语义，新增 `afterSeq/consumed` 参数与 `nextSeq` 字段；`since` 的同毫秒窗口仍只用于展示，游标轮询用 `seq`。
+> **测试**：三存储补 `afterSeq`/`consumed` + 非法值断言；ingress 补“空页→等待→新事件”与消费幂等；HTTP 补 `/poll` 长轮询、`consume` 与 400/405；file 补 `AOS_EVENTS_FSYNC=1` 写入；工具补注册与游标推进；全量 **1756 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.141 实施记录（P1 完成）：历史文件台账迁移工具
+
+> 2026-10-20。替代已退役的外部脚本 `scripts/migrate-ledger-to-pg.mjs`：`aos_ledger_migrate` 只读**当前项目** `.artemis/ledger/usage.jsonl` + `state.json`，项目身份来自 runtime，不接受路径/DB URL；默认 `dryRun:true`，`dryRun:false` 或 `write:true` 才写库。
+> **存储**：仅中心 PostgreSQL（`ProjectStore.importLegacyLedger` 可选方法；PG 用原 id `ON CONFLICT (id) DO NOTHING` 幂等插入并回填当前 project_id）；file/memory 显式返回不可用。
+> **口径**：返回 `found/existing/inserted`；坏 JSON/缺 id/重复 id 记 warnings 不阻断；只覆盖 `usage_events`/`regression_tasks`，`suite_runs`/`case_sets` 仍由 `suite backfill` 处理；审计域 `ledger-migrate`（preview/import，best-effort）。
+> **测试**：新增 `test/ledger-migrate.test.js` 2 例（dryRun/幂等/坏行 warning、非 PG 不可用）；全量 **1758 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.142 实施记录（P2 第 1 批）：异步 job
+
+> 2026-10-20。`run_regression` / `verify_jira_issue` / `design_to_test` 的 schema 新增 `async:true`；server 在参数校验后拦截（`src/jobs/async.ts`），先写 `run.started` 事件（jobId=`job-<ts>-<uuid8>`，source=`agent`）再返回 `{async:true, jobId, status:"running", pollWith:"aos_job_status"}`，后台 `setImmediate` 执行原 handler。
+> **状态/进度**：完成写 `run.finished`（passed/failed/error；`failedStep`/`ok:false` 记 failed，异常记 error），payload 含 `tool/durationMs/resultPath/resultBytes/resultPreview`；`aos_job_status` 按 `runId=jobId` 查 `project_events`，返回状态、起止、事件摘要与完整结果（`.artemis/jobs/<jobId>.json`，0600）。
+> **边界**：不新建 job 表，复用事件存储；`suite_runs` 仍是回归权威，异步化不改变门禁口径；进程重启后未完成 job 只能看到 `running`（结果文件不存在），不自动恢复；不提供取消。
+> **测试**：新增 `test/jobs-async.test.js` 2 例（成功/失败 + 结果落盘 + 未知 job）；workflow schema 断言含 `async`；`aos_job_status` 注册；全量 **1760 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.143 实施记录（P2 第 2 批）：面板轮询刷新
+
+> 2026-10-20。复用既有 `autoRefreshSeconds` 外壳（`src/console/shell.ts`）：总览与项目页 15s、运行中任务页沿用 10s；页面隐藏或焦点在表单内时暂停替换，支持 `prefers-reduced-motion` 关闭与“暂停/继续”按钮。面板仍是拉取式刷新，不引入 SSE/WebSocket。
+> **测试**：既有 `panel-web`/`console-pages` 42 例通过；全量 **1760 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.144 实施记录（P2 第 3 批）：事件驱动 task_stats
+
+> 2026-10-20。`src/events/consumer.ts`：终态事件（passed/failed/skipped/error）且 `payload.traceId` 为字符串时，`setImmediate` 调 `store.markTaskFinished(rootPath, traceId, status)`；仅新事件（非 duplicate）触发，失败忽略。30s `syncTaskStatuses` 轮询保留为 artemis 权威状态兜底。
+> **当时未实施**：`suite_runs` 事件映射（`SuiteRunRecord` 无 runId 字段）；第 4 批已补 `run_id` 列与回写，见 §13.145。
+> **测试**：`events-ingress` 增 1 例（traceId 事件 → task failed/finishedAt）；全量 **1761 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.145 实施记录（P2 第 4 批）：suite_runs 事件回写
+
+> 2026-10-20。`suite_runs` 新增 `run_id TEXT`（PG 建表 + `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` + `(project_id, run_id)` 索引）；`SuiteRunRecord.runId` 为 `string | null`，登记时由 manifest runId 填充（`buildSuiteRunInput` 可从 `manifestPath` 读取，backfill 直接取 manifest.runId）。
+> **回写**：`ProjectStore.markSuiteRunFinishedByRunId` 三实现；事件消费者在 `run.finished` 且 `runId` 非空时映射 `passed → completed`、其余终态 `→ failed`，与 task_stats 的 `payload.traceId` 桥并行；未命中返回 false，不伪造。
+> **测试**：`events-ingress` 增 1 例（run.finished → suite run failed）；`events-store-pg` 增 1 例（run_id 持久化 + 按 runId 回写 + 未命中）；全量 **1763 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.146 实施记录（品牌命名 + 项目显示名 + 文件台账自动回流）
+
+> 2026-10-20。**品牌**：用户可见名称统一为 `mobile-testing`（控制台标题/页脚、CLI 帮助、启停日志、README）；CLI 主名 `mobile-testing-mcp`，Docker 容器默认名同步为 `mobile-testing-mcp`，旧 `aos-mcp` bin 别名已移除。`AOS_*` 环境变量、`aos.config.jsonc`、`.artemis/` 保留（数据/配置契约），日志文件名改为 `mobile-testing-mcp.log`（旧日志文件不迁移）。实现集中：`src/brand.ts`（`PRODUCT_NAME`/`CLI_NAME`/`CONSOLE_NAME`）+ `src/console/shell.ts`、`src/cli.ts`、`src/server.ts`、`src/http-server.ts`、`src/log.ts`。
+> **项目显示名**：`aos.config.jsonc` 新增可选 `project.name`（去空白；非字符串拒绝）；`Runtime.initialize` 以它替代目录 basename 注册项目。`ProjectStore.upsertProject` 新增 `updateName?: boolean`（默认 true）；`upsertLlm`/`putModelCache` 等仅带 basename 的顺带写入传 `updateName:false`，避免覆盖显式显示名。服务仓库自身配置 `project.name = "mobile-testing"`，面板不再显示 `AOS-ARTEMIS`。
+> **自动回流**：存储为 PostgreSQL 时，`Runtime.initialize` 调用 `autoImportLocalLedger`（`src/ledger/auto-import.ts`）：读取 `.artemis/ledger/usage.jsonl` + `state.json` → `migrateLegacyLedger`（保留原 id，幂等）；扫描 `.artemis/design/runs` + `case-sets` → `runBackfill`（幂等登记）。成功后写 `.artemis/ledger/.pg-sync.json`（本地文件签名；未变化则跳过），失败仅 WARN 不阻断启动；`AOS_LEDGER_AUTO_IMPORT=0` 关闭。文件/内存存储不改动本地数据。
+> **当日数据修复**：`starbucks-ios-taiwan` 补 `MOBILE_TESTING_DATABASE_URL` 客户端配置；`suite backfill` 登记 1 个 run/4 份 case set，`aos_ledger_migrate` 导入 26 条历史 usage（保留原 id）。此后该项目的启动会自动回流新增本地记录，不再依赖人工提醒。
+
+### 13.147 实施记录（UI 核验状态与截图源保真）
+
+> 2026-10-20。功能通过不等于 UI 通过：`SuiteCaseResult` 新增可选 `ui: UiVerification`（`passed|failed|unverified|not-applicable`，含 `reason`/`contractRef`/`screenId`/`sourceFormat`/`lossless`/`detailThreshold`/`regions`/`evidence`）；`SuiteRunReport.ui` 为四态计数；`suite run` 逐例与汇总分别打印 `UI` 状态，**不改变现有功能门禁**。默认 `unverified`：有 `.artemis/design/ui-contract.json` 记 `ui-check-not-run`，否则 `no-ui-contract`；`isUiPass` 要求 `status=passed && sourceFormat=png && lossless=true`。批次清单同步写 `summary.ui` 与 `cases[].ui`（旧清单缺字段按缺省处理）。
+> **截图源**：iOS AOS trace 为 PNG；Android artemis 在 `accessibility_client.py` 将 adb PNG 以 JPEG quality 80 重编码（`pil_to_base64`，RGBA→RGB），data_engine 亦按 `.jpg` 落盘。`design_device_diff` 的 `unit.device` 新增 `sourceFormat`/`lossless`；`detail.deviceSource` 记录细节通道实际源。Android live 细节会二次抓 PNG；step 非 PNG 标 `lossy-source` 并降细节阈值到 0.1。JPEG 的 alpha 丢失对不透明设备截图通常非主因，主要风险是压缩振铃/块效应；`ui:passed` 只接受 PNG，JPEG 源最多 report-only。
+> **面板**：`PanelBatchSummary.ui` 读取清单 `summary.ui`；项目页最新批次与批次表新增 UI 徽标（`UI 未验证 N` / `UI fail N` / `UI pass N`），功能门禁色不变。`aos_status.vision` 与面板磁盘资产「视觉降级（iOS）」扫描最近 50 条 trace 的 `vision_degraded`，按原因聚合；只读、无 trace 即 0/0。
+> **UI 契约（P0 首版）**：`suite ui-contract` 从 `flows.json` + `.artemis/design/pen/screens/<screenId>.pen` 投影 `ui-contract.{json,md}`，共享 `screen.id` 与设计源指纹；逐屏 token（cornerRadius/colors/fonts/fontSizes/fontWeights/spacing）+ 几何四态（`extracted|partial|unverifiable|no-baseline`）+ `presentation`。缺逐屏 `.pen` 标 `no-baseline`，不猜 UI；Figma 源仍待；逐屏 PNG 适配器已落地（§13.219），但不产生契约几何。当前 iOS 样例 19 屏：4 partial、15 no-baseline。
+> **测试**：新增 `test/ui-verification.test.js` 3 例、`test/ui-contract.test.js` 3 例；`suite-command` 断言 `ui` 计数/清单字段；`design-device-diff`/`diff-detail-tool` 断言源格式。
+
+### 13.148 实施记录（多模态空响应：重试、内容分片与诊断）
+
+> 2026-10-20。iOS 一次真实 trace 在 step 4 出现 `LLM 响应缺少 choices[0].message.content`，step 5 起恢复 `image`——属瞬时 provider 空响应，不是模型永久不支持视觉。处理：
+> - `makeChatFn` 接受 OpenAI content parts 数组（`[{type:"text",text}]`）并拼接文本；仍拒绝空 content。
+> - 缺 content 的错误信息追加 `finish_reason`；若仅有 `reasoning_content` 显式提示（不把 reasoning 当最终答案）。
+> - `describeChatError` 输出 `message + status + body`（单行、≤200 字符），iOS 多模态警告/`visionDegraded` 使用它；不打印整段 prompt。
+> - `run-loop` 主决策与 `step-observe` 视觉感知对“空 content”**同一截图重试一次**；仍失败才 `text-degraded`。400/415/422 的 modality rejection 仍缓存 false 并停用附图。
+> - 回归：真实 trace 的 step 4 降级、step 5 恢复；单测覆盖 content parts、finish_reason/reasoning 提示、主决策重试成功/失败、视觉感知重试成功。
+>
+> **UI 自动比对（首版）**：`suite run --ui-diff` 对 `testCase.screens` 中能匹配到 `flows.json` 屏幕、且存在逐屏 `.pen` 与 trace 步骤的屏幕调用 `design_device_diff`（`--ui-diff-max` 默认 10）；blocker/major → `ui.failed`，无 blocker/major → `ui.passed`，JPEG/缺基线/未匹配屏保持 `ui-unverified`。功能门禁不变；跨源像素基线未验证前，结果作为 UI 门禁候选而非绝对结论。
+
+### 13.149 实施记录（字重检测切片 1–2 + 区域 textStyle）
+
+> 2026-10-20。设计见 `docs/superpowers/specs/2026-10-20-font-weight-detection-design.md`（rev 2）。**契约**：`ui-contract.json` 的屏幕新增 `texts[]`（全量收录；`content/fontFamily/fontWeight/fontSize/bbox/bboxSpace/geometryStatus`），字重归一 100–900（`normal=400/medium=500/semibold=600/bold=700`）；无几何文本保留并标 `unverifiable`，不再丢弃。iOS 样例 19 屏首頁 53 条文本，权重 400/600/700。
+> **测量**：`src/ui/text-weight.ts` 极性感知二值化 + `inkRatio`/`meanRunNorm`；内容/换行守卫用 row profile 相关（≥0.8）、平滑 column profile 相关（≥0.75）、ink extent 宽高比（0.70–1.40）——原始 maskIoU 会把 regular→bold 误判为内容变化，故不用；设备文本像素高 <10、JPEG/非无损源一律 `unverified`。输出 `lighter/similar/heavier` + `delta/confidence/designWeight`，全部 `experimental:true`。
+> **接线（切片 3 完成）**：`design_device_diff` 的 `regionDetails[].textStyle` 对与设计文本节点相交的区域计算字重；`detail.textStyles` 在能找到 `ui-contract` 屏幕时走 **契约全量 pass**（`scope:"contract"`，`textsTotal = checked + unverified`，`items[]` 逐文本给出 bbox/status/reason），找不到时回退 `scope:"text-regions"`。
+> **auto-layout 文本几何**：`suite ui-contract` 默认经 `pen interactive` 的 `Get((n,c)=>c.bounds)` 解析绝对文本 bbox（`src/pen/bounds.ts`，每屏一次 CLI，~4–5s；`--no-bounds` 关闭）。iOS 首頁由 52 条 `no-geometry` → **53/53 `extracted`**；实测契约全量 pass 53 条仍全部 `unverified`（`no-text-ink 30 / content-or-wrap 8 / out-of-bounds 15`），因为真机首頁与设计稿内容/布局本身不同——这是真实 UI 差异，不是测量伪造。
+> **真机文本 bbox（v1）**：iOS 执行器每步把可访问性文本及逻辑点 `rect` 写入 `run.json` 的 `steps[].texts`（≤300 条，去重）；`design_device_diff` 契约文本 pass 优先按文本内容精确匹配唯一设备文本，用该 rect × step.scale 直接裁设备截图，`localization:"device-text"`；匹配不到时回退 design-bbox。多义匹配标 `multiple-device-text`，不猜。**未开始**：baseline bbox、硬门禁。
+> **测试**：新增 `test/text-weight.test.js` 6 例（bold/heavier、same/similar、shifted/content、暗色反相、tiny/JPEG、contract 覆盖会计）；`ui-contract` 断言文本节点；`design-device-diff`/`diff-detail-tool` 断言 `detail.textStyles` 契约 scope 与覆盖。
+
+
+### 13.150 实施记录（Web 控制台 CSDC 强约束修正）
+
+> 实施于 2026-10-20。用户明确：控制台属于 CSDC 项目，关键元素必须与 CSDC 设计系统一致，而不是“参考”；此前宽屏 1320px 居中窄栏与系统暗色造成“UI 变形”。**修正**：`src/console/tokens.ts` 删除全部 `:root[data-theme="dark"]` 映射与暗色媒体查询，`color-scheme:light`＋`<meta name="color-scheme" content="light">`；`.c-layout` 去掉 1320 上限（全宽），侧栏 220px、主区白底 `20px 36px 80px`、页脚全宽；顶栏使用 CSDC 官方徽标（`src/console/logo.ts` 内联 data URI）＋产品名，侧栏增加「工作区」分组；区块/卡片标题改为 CSDC 黄色 Section Header（`#FFF9CC`＋`#FFE600`），按钮/徽章统一胶囊圆角，表格改为卡片外框＋浅灰表头＋14/22px 单元格，卡片 28px 内边距；`src/console/components.ts` 的 `cCard` 增加 `c-card-header` 包裹标题与动作。**文档**：`web-console/DESIGN.md` 同步亮色唯一/全宽/组件口径。**测试**：`console-shell` 断言官方徽标 data URI、全宽布局、220px 侧栏、白底主区、黄色卡片头、浅灰表头与胶囊圆角，并反向断言不再输出 `data-theme="dark"`；`npm run build && npm test && npm run lint` → 全量 **1794 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.151 实施记录（总览表格重排：去嵌套卡片 + 固定列宽）
+
+> 实施于 2026-10-21。用户反馈总览表格占比小、列设计不合理。`cTable` 新增可选 `columnWidths`（长度与列数一致时渲染 `<colgroup>` 并启用 `.c-table--fixed{table-layout:fixed}`）；总览按项目 20% / 接入健康 30% / 栈 13% / 最后活跃 10% / 最新批次 22% / 备注 5% 固定列宽。区块内表格（`#console-main > section... .c-table-wrap`、`.c-card .c-table-wrap`）去掉自带卡片边框/阴影，消除“卡片套表格”；总览删除每行重复「进入项目」按钮，项目名改为 `.c-project-link`（带箭头，title 说明），首屏 CTA 保留。批次列改为「状态 + 相对时间」一行、run id 一行；`.c-run-id` 单行省略并保留 title 全文，避免 1440 四行折行。`web-console/DESIGN.md` 同步。测试：`cTable` 固定列宽/列数不匹配回退、总览列宽与项目链接、区块内表格 flush；`npm run build && npm test && npm run lint` → 全量 **1794 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.152 实施记录（多主机中心 CLI：host 命令与远端回归任务）
+
+> 实施于 2026-10-21。中心 CLI 只连 PostgreSQL：`src/center/store.ts` 的 `openCenterStore(env)` 要求 `MOBILE_TESTING_DATABASE_URL`，缺失抛 `host/queue 命令需要 MOBILE_TESTING_DATABASE_URL`，**不回落文件台账/内存**，不会构造本机 Runtime 或写本机 `.artemis`。`--host` 解析统一经 `resolveHostReference`：精确 id 优先，否则按 hostname 唯一匹配；重名返回候选 id 列表并报错（不猜）。
+> **`host` 命令**（`src/host-command.ts`，CLI `host`）：`list`/`show` 读取 `listHosts`/`getHost`；`register <id|hostname>` 经 `resolveHostReference` 解析（精确 id 优先、hostname 大小写不敏感且须唯一）后 `updateHostRegistration` 写 label/owner/expectedOs/expectedHostname（`registeredBy=cli`），未知/歧义 exit 2；`adopt-legacy` 认领 legacy（`host_id IS NULL`）项目到主机——`--local` 取 `MOBILE_TESTING_HOST_ID`（缺省本机身份）且仅认领 `fs.existsSync(rootPath)` 的行，`--host <id|hostname> --path <rootPath>` 先经 `resolveHostReference`（歧义 exit 2 列 id；未登记 exit 2，只有显式 `--allow-unknown-host` 才按给定 id 原样写入，用于「先迁移、后接入」）；缺省 dry-run，`--apply` 才写库，每成功一行记审计 `domain=host/action=adopt-legacy`。子命令/必填参数在开库前校验（`host bogus` 不会报 PG 错误）。JSON 输出只含 `id/hostId/rootPath/name/lastSeenAt`（不含 `figmaToken`）。`ProjectStore.adoptProjectHost({projectId,hostId})`：PG 单语句 `UPDATE … WHERE host_id IS NULL AND NOT EXISTS(同 host 同路径)`（目标已存在时不重复建行，返回 false），Memory 重键并改 hostId，File 台账无跨主机行返回 false（中心命令仅 PG）。
+> **远端套件任务**：`suite task create|list --host <id|hostname>` 在 `runSuiteCommand` 中**先于** `buildRuntime` 分流（测试注入的 `buildRuntime` 不会被调用），打开中心 store 后 `scopeHost(hostId)`；`create` 必须 `--project <rootPath>`（去尾部斜杠；该主机未登记该路径 exit 2 并列出已登记路径），引用取 `latestFeatureRefs(await scoped.listCaseSets(rootPath))`，平台/基线校验与本地同口径，写入 `targetHostId=createdHostId=hostId`；`list` 带 `--project` 时校验归属，省略时汇总该主机所有已登记项目（`listProjects().filter(hostId)`）的任务（各取 50 条、按 createdAt 倒序，不猜路径）。`center.openStore` 打开的存储由命令关闭，注入的 `center.store` 归调用方。`show/release` 带 `--host` 明确 exit 2（仍走本机台账）；`suite task cancel` / `suite queue` 后续已实现（中心取消见 §13.158，队列暂停/租约见 §13.162）。
+> **测试**：`test/host-command.test.js`（无 PG 文案、register 字段/hostname、hostname 唯一/歧义/大小写、adopt-legacy dry-run/apply/显式/未知/歧义/逃逸口、JSON 不泄露 token、`adoptProjectHost` 冲突、未知子命令不开库，Memory+PG 双实现）、`test/suite-task-host.test.js`（host 定向创建/列表、未知主机/项目、缺 `--project`、无 PG、尾斜杠、openStore 关闭）；全量 1879 绿。
+
+### 13.153 实施记录（面板定向下发与主机登记，Task 12a）
+
+> 实施于 2026-10-21。**预览**：`DispatchPreview` 增 `hosts[]`（id/label/hostname/kind/online/capabilities/queueDepth）与 `selectedHostId`，保留 `runnerCandidates`；`computeDispatchPreview` 读 `host`（缺省本机 `store.localHostId`），`listHosts()` 出列表，选中主机置首；用例份/执行机读取走目标主机作用域 store（`storeForHost` → `scopeHost`），跨主机同名项目不串。**能力预检**（`precheckTask`）：`ios` 需 macOS/darwin＋`ios-*` 能力，`android` 需 `android` 能力（不满足 ok:false）；主机离线只给「目标主机离线，任务会排队等待」告警，仍可入队；显式未知主机给告警且不选中；目标主机未登记项目亦告警。
+> **任务创建**：`POST /panel/api/tasks` 读 `host`（缺省本机）；显式未知主机 → 404；目标主机未登记项目 → 404；能力不满足 → 400＋`reasons`（不建任务）；能力满足时写入 `targetHostId=createdHostId=host.id`、`createdBy=panel`，任务行落在目标主机项目；本机调用保留旧形状（`localHostId` 可用则写入，否则 null）。预览刷新校验同源携带 host。**主机登记**：`POST /panel/api/hosts/register`（`{host,label?,owner?,expectedOs?,expectedHostname?}`）→ `updateHostRegistration(registeredBy=panel)`，`expectedOs` 仅 `darwin|win32|linux`（否则 400）、未知主机 404；审计 `action.hosts.register`（语汇「登记主机」），审计根优先请求 `project`，否则该主机最近活跃项目。**页面**：下发表单新增「⓪ 主机」下拉（选项来自 `preview.hosts`，展示 label/hostname/kind/在线/队列），主机变更即判预览过期；无主机台账显示「单机模式」空态。矩阵/项目表格去重与链接打磨留给 Task 12b；本批不含取消/队列控制。
+> **测试**：`test/panel-dispatch-hosts.test.js` 7 例（目标主机能力预检与作用域份、能力不足 400 不建任务、跨主机 targetHostId/项目归属、离线仍入队、登记字段/审计/非法 expectedOs/未知主机、未知主机下发、主机下拉与单机空态）；`npm run build && npm test && npm run lint` → 全量 **1886 绿**，lint 0 error（2 条既有 warning）。
+> **评审修复（四缺陷）**：① 派发成功跳转/任务重派跳转/审计 flash 均携带 `host`（远端任务不再落回本机/歧义项目）；② 解析到的项目 `hostId === null` 且已有主机登记时返回 409＋`reasons`（`host adopt-legacy --local --apply` 指引），不隐式认领；③ 前端回显服务端 `reasons`/成功 `warnings`，能力不满足时静态禁用确认（`hostBlocked`），离线仍仅告警可提交；④ 主机登记非空时 `payload.host` 缺失 → 400 `缺少 host（已登记主机时必选）`，页面主机为空时禁用确认，空登记仍保留本机回退。目标主机未登记项目仍 404。测试补充：未知主机预览告警、目标主机无项目 404、历史 NULL-host 409、缺 host 400、能力不足页面禁用/原因回显/跳转与审计链接含 host；全量 **1890 绿**。
+
+### 13.154 实施记录（下发页项目选择与优先级，Task 12b）
+
+> 实施于 2026-10-21。**项目选择**：`DispatchPreview` 增 `projects[]`（`{hostId,rootPath,name}`）与 `priority`；`computeDispatchPreview` 读选中主机作用域 `listProjects()` 并按 `hostId` 精确过滤（不再对 `localHostId` 做 `hostId === null` 回退；文件台账无主机台账时仍回显当前项目，单机行为不变，见 §13.155）；无主机台账/未选主机时仅回显当前项目；选中主机无项目 → `hostBlocked=true`。**页面**：下发表单「⓪ 主机与项目」新增 `select[name="project"]`（当前路径选中），变更即按 `host + project + section=dispatch` 重载（GET 表单仍可刷新预览，两段确认与预览过期判定不变）；无项目显式提示「该主机尚未登记项目」并禁用确认。**优先级**：`priority` 参数解析为整数（缺省 0、越界钳制 0–100、非整数告警回落 0），预览统计、确认摘要与隐藏 island 均回显 `P<n>`；`AOS_PANEL_PRIORITY=1` 才渲染 `input[type=number][name=priority]`（默认只读文案，防止误操作插队）。`POST /panel/api/tasks` 读 `priority`（0–100 整数，缺省 0，非法 400 不建任务）并写入 `createRegressionTask`；`PanelTaskRow` 增 `priority`，任务列表/详情显示 `P<n>` 徽章。**边界**：总览行去重/对比/库/检索/壳层链接与动作层 host 传播仍归 Task 12c；本批不含取消/队列控制。
+> **测试**：`test/panel-dispatch-project-priority.test.js` 7 例（projects 按主机过滤、无台账回显当前项目、优先级解析/钳制/告警、项目下拉选中与优先级默认只读/开关可编辑、主机无项目禁用提交、createTask 写 priority 与列表/详情徽章、非法优先级 400）；全量 **1897 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.155 评审修复（下发项目切换与优先级排序）
+
+> 2026-10-21。**项目切换**：主机下拉新增 `change` 导航 `/panel?host=<new>&section=dispatch`（显式丢弃 `project`）；`buildView` 在 `section=dispatch` 且只有 `host` 时取该主机 `lastSeenAt` 最新的已登记项目渲染下发页，无项目则直接渲染空态（「该主机尚未登记项目」＋确认禁用），不再 404。**legacy 隔离**：下发预览的项目列表改为仅 `project.hostId === targetHost.id` 精确匹配，删除对 scoped store `localHostId` 的 `hostId === null` 回退——legacy NULL-host 行本就不可定向下发（12a 返回 409），不再出现在任何主机的项目下拉；文件台账单机仍走「无主机台账 → 当前项目」回退（文件台账 `listProjects` 行恒为 NULL：一旦登记主机将不再列出项目，故文件台账仅推荐单机使用）。**优先级排序**：`claimRegressionTask` 候选序改为 `priority DESC, created_at ASC`（PG 候选查询；Memory/File 同序 sort），全匹配与部分领取共用同一候选序，P10 新任务先于 P0 旧任务。**配套**：重跑继承源任务 `priority`；只读面板模式（`capabilities.actions=false`）任务详情仍显示 P 徽章；项目选项同名时追加路径尾（`name（tail）`）消歧。**口径**：`AOS_PANEL_PRIORITY` 只控制面板是否可编辑（默认只读防误操作），API/CLI 调用方可直接传 `priority`；领取排序已接线。
+> **测试**：`test/panel-dispatch-project-priority.test.js` 扩到 10 例（主机切换导航丢弃 project/缺 project 取最近项目、仅主机空态非 404、legacy NULL 不挂任何主机、rerun 继承优先级）；`test/task-targeting.test.js` +1（priority DESC 优先于 FIFO，Memory+PG 双实现）；全量 **1901 绿**，lint 0 error（2 条既有 warning）。
+> 2026-11-04 §13.296 调整：host 切换改为**保留显式 project**；目标主机未登记时保留当前项目并提示，不再静默清空。
+
+### 13.156 评审修复（面板跨主机链接/动作与项目表去重，Task 12c）
+
+> 2026-10-21。**总览去重**：`buildPanelOverview` 行键改为 `(hostId, rootPath)`，同路径两主机各占一行（工作区目录仍只补未登记路径）；项目表新增「主机」列（label → hostname → hostId 前 8 位，NULL 显示「未归属主机」），行链接均带 `&host=`。**链接传播**：`projectHref`/`dispatchHref`/`batchHref`/`taskHref`/`reviewHref`/`statsHref`/`artifactHref` 接受可选 `hostId`；壳层导航（`projectHostId`）、用例库/档案/审计/运维页、搜索、对比单元格与证据/产物链接均保留当前 host；搜索按项目所属主机取作用域 store。**动作**：任务详情 stop/release/rerun POST body 带 `host`（同路径两主机不再 409），rerun 跳转带 host；`rerunTask` 继承源任务 `targetHostId`/`createdHostId`（及 priority）。**切换器**：当前项按 `(hostId, rootPath)` 判定，只高亮当前主机；同主机同名项目在项目选项/切换器中追加完整路径消歧。**legacy 指引**：解析项目 `hostId === null` 且存在主机登记时，下发页首屏即显示「未归属主机的历史数据」提示并静态禁用提交（不再只给通用平台文案）。对比聚合按行主机作用域读取（同路径两主机不串数据）。**测试**：`test/panel-host-links.test.js` 6 例；全量 **1907 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.157 评审修复（对比主机列/功能对齐身份/总览作用域读/其余动作 host，Task 12c 复审）
+
+> 2026-10-21。**对比矩阵**：`PanelCompareProject` 增 `hostLabel`（`hostDisplayLabel` 由 `overview.ts` 导出，总览/对比同源：`label（hostname）` → hostname → hostId 前 8 位，NULL＝未归属主机）；对比表新增「主机」列，同路径两主机行可区分。**功能对齐身份**：`FeatureAlignmentInput` 增 `hostId`/`hostLabel`；逻辑项目身份改为 `(name, rootPath)` 去重（同路径跨主机不虚报 2 个项目），条目展示 `name · hostLabel`（hostId 非空时才追加），代表条目按 `hostId` 升序稳定选取（NULL 在前、同 id 按项目键），真正的不同项目仍成组。**总览作用域读**：`buildProjectRow` 将 `record.hostId` 传入 `softReadProject`，LLM/台账读取经 `storeForHost` → `scopeHost`；作用域不可用或读取失败时写入 `warnings` 并抬升 lamp（显式告警，不再静默当空）。**其余动作 host**：verdicts、issues、issues/evidence、schedules、quarantine、import 的 POST body/FormData（import 另加 `?host=`）均携带当前 `hostId`；任务动作 island 的 hostId 按 `replace(/</g, "\\u003c")` 转义。**legacy 判定**：仅当解析路径在台账中确有 `host_id IS NULL` 记录时提示；未登记工作区目录不误报。文案常量上移 `src/host/legacy.ts`，动作层与下发页同源，提示只在「⓪ 主机与项目」卡片渲染一次（按钮 title 仍保留）。**延迟项**：机器区块队列统计与 `aos-last-project` 仍按 rootPath，统一留待后续。**测试**：`test/panel-host-links.test.js` 扩到 12 例（对比主机列、功能对齐同路径折叠、总览作用域成功/失败告警、verdicts/schedules/quarantine/import host、工作区非 legacy）；`test/panel-web.test.js` 对比列数 6→7；全量 **1913 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.158 实施记录（cancelled 终态、取消来源与审计，Task 13）
+
+> 2026-10-21。**状态机**：`RegressionTaskRecord.status` 增 `cancelled`（terminal）；`stopped` 仅保留类型/DDL 读兼容。`ProjectStore.cancelRegressionTask({rootPath,taskId,source,actor,actorHostId,note?,at?})` 先写先赢：`pending` → `cancelled`（`cancelledAt=cancelRequestedAt=at`）；`claimed/running` → `stopping`（只写 `cancelRequestedAt` 与取消元数据，不写 `cancelledAt`）；`stopping/cancelled/终态` 原样返回，不覆盖首次来源/操作人/备注；未知任务 null。执行机确认走新 `ackCancellation`（`stopping` → `cancelled`，`COALESCE` 补 `cancelledAt/cancelRequestedAt`，保留元数据；幂等）。`CancelSource = panel|local-cli|local-mcp|runner|admin`；新列 `cancel_source/cancelled_by/cancelled_host_id/cancelled_at/cancel_note/cancel_requested_at`（PG DDL+MIGRATIONS、Memory/File 克隆与导入同源）。
+> **读取兼容**：`mapRegressionTask`/`cloneRegressionTask` 统一经 `normalizeRegressionTask`——旧 `stopped` 行对外读作 `cancelled`，`cancelSource=panel`、`cancelNote="legacy stopped"`、`cancelledAt=null`（不臆造取消时间）；新代码不再写 `stopped`。
+> **审计**：`audit_events` 增 `actor/actor_host_id/channel`（`AuditEventInput` 可选，`buildAuditEvent` 缺省 null）；面板 `POST /panel/api/tasks/cancel {project,host,taskId,note?}` 按 host 作用域解析项目与 store，`source/actor=panel`、`actorHostId=host`，审计 `action.tasks.cancel`（缺 `taskId` 400、未知项目/任务 404、已取消/终态 200 原样回显）。`stop` 路由改用 `cancelRegressionTask`（同样记来源）。**CLI**：`suite task cancel <id> [--note]`（`source=local-cli`、`actor=AOS_ACTOR||用户名`、`actorHostId=runtime.hostIdentity.id`、审计 channel=cli）；`--host H --project P` 走中心 store/scopeHost（`source=panel`，不建本机 Runtime）。`suite run --task` 对 `cancelled`（及 `stopping/stopped`）exit 2。runner 停止轮询/收尾改为 `ackCancellation`；面板/控制台状态文案增「已取消」。
+> **测试**：`test/task-cancel.test.js` 6 例（pending/重复幂等、claimed+running→stopping→ack、legacy stopped、终态与未知、审计 actor/channel、FileStore 重启保留，Memory+PG 双实现）；`test/panel-cancel.test.js` 6 例（面板取消/审计、host 作用域、400/404/幂等、CLI 本地/中心、run --task 拒绝）；`test/runner-agent.test.js`/`test/panel-console-actions.test.js` 同步改为 cancelled。全量 **1925 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.159 评审修复（取消终态完整性：回收/领取窗口/守卫写/面板 UI，Task 13 复审）
+
+> 2026-10-21。**失联回收**：`releaseStaleClaims` 的回收范围收紧为 `claimed|running`（PG/Memory；File 委托同源）——`stopping` 不再被回收到 `pending`，避免离线取消被重新领取执行；确认由执行机 `ackCancellation` 或后续离线 sweeper（Task 16）CAS 为 `cancelled`。**领取窗口**：runner 在 `beginExecution` 返回 null 时先 `ackCancellation`（非 stopping 时无副作用）并重读：`cancelled/stopped` → 记录并继续（不执行、不释放），`stopping`（确认失败）→ 留给心跳/收尾兜底，仅非停态才释放回 `pending`。**守卫写**：`ProjectStore.updateRegressionTask` 增可选 `expectStatuses`（PG `AND status IN (...)`、Memory 前置判定、File 透传），不满足返回 false；`suite run --task` 的 `running` 写入守卫 `claimed|running`（`pending` 手动执行走单独 `pending` CAS 兜底，保留既有契约），最终 `completed|partial|failed` 写入守卫 `running`；面板 release 守卫 `claimed|running`。守卫失败一律重读、不覆盖；取消落在运行中时保留 `stopping/cancelled` 与取消元数据。**面板 UI**：任务卡对 `pending/claimed/running/stopping` 渲染「取消任务」按钮与可选备注输入，POST `/panel/api/tasks/cancel`（body 带 `note`），状态行显示 `cancelSource/cancelledBy/cancelledAt/cancelNote`；终态不再显示取消入口。**兼容**：旧 `stopped` 映射 `cancelledAt=null`（不再用 `startedAt` 臆造取消时间）；DESIGN 中 `ackCancellation` 范围更正为 `stopping`。
+> **测试**：`test/task-cancel.test.js` +4（stopping 不被回收、legacy 有 startedAt 仍 null、ack 幂等、FileStore ack 重启保留）；`test/runner-agent.test.js` +1（领取→beginExecution 窗口取消）；`test/suite-task.test.js` +1（运行中取消不被终态覆盖）；`test/panel-cancel.test.js` +1（release 不复活 cancelled）；`test/panel-web.test.js` +1（取消 UI/元数据展示），`test/panel-host-links.test.js` 同步新 body。全量 **1932 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.160 修复（面板释放恢复与空 patch 守卫，Task 13 fix round 2）
+
+> 2026-10-21。**面板 release 恢复**：去掉对 `claimed/running` 的前置拒绝，允许直接释放回 `pending`（`expectStatuses:["claimed","running"]`，成功返回重载后的 `task`）；`stopping` 仍 409（等执行机确认），`cancelled` 终态 409 不复活，`completed/failed` 仍 400。任务详情页文案改为「运行中可直接释放回队列，或先取消等待确认」。**PG 空 patch 守卫**：`updateRegressionTask` 仅在无 `expectStatuses` 时沿用“存在即 true”的 no-op；带守卫时读取当前行并返回 `status ∈ expectStatuses`（不存在 false）。**面板取消缓存**：`cancelTask` 成功后直接清空面板缓存（与 stop/release 一致）。**UI 断言**：claimed/running/stopping 均渲染「取消任务」与备注输入。**文档**：§13.158 旧 `stopped` 映射 `cancelledAt=null` 与代码一致。
+> **测试**：`test/panel-cancel.test.js` +1（claimed → release 200 pending + cancelled 409 不复活）；`test/task-cancel.test.js` +1（空 patch `expectStatuses` 守卫，Memory+PG）；`test/panel-web.test.js` 增 claimed/running/stopping 取消入口断言；`test/panel-console-actions.test.js` 同步 release 语义。全量 **1934 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.161 实施记录（本地 MCP 取消工具与手动执行守卫，Task 14）
+
+> 2026-10-21。**MCP 工具**：新增 `regression_task_cancel { taskId, note? }`（`src/tools/native-tools/tasks.ts` 的 `TASK_NATIVE_TOOLS`，`src/server.ts` 统一装配）。作用域＝本机＋本项目：先经 `store.getRegressionTask(project.rootDir, taskId)` 解析，未知任务返回 `{ok:false,error}`＋`isError`；`targetHostId`/`claimedHostId` 非空且不等于 `runtime.hostIdentity.id` 时拒绝（`不属于本机`），任务保持原状。成功后调 `cancelRegressionTask({source:"local-mcp", actor:AOS_ACTOR||用户名, actorHostId:hostId, note})`，返回 `{ok:true,task}`；审计 `task/task.cancel`（`refs:{taskId,source:"local-mcp",hostId}`、`actor/actorHostId`、`channel:"mcp"`，best-effort；本机未绑定 host 时 summary 标「未绑定主机」）。**手动执行守卫**：`suite run --task` 读取任务后校验 `targetHostId`/`claimedHostId`——他机定向/认领 → exit 2「不属于本机（目标/认领主机 …），拒绝执行」；本机身份未知且任务定向/已认领 → exit 2「本机身份未知」；任务不变更。runner 与手动执行共用该守卫（runner 领取时 targetHostId 已与本机 host 匹配）。
+> **测试**：`test/task-cancel-tool.test.js` 8 例（InMemoryTransport 工具注册与 local-mcp 来源/用户/host/审计 channel=mcp、缺省 actor＝系统用户名、未知任务、他机定向拒绝、他机认领拒绝；`suite run --task` 他机拒绝、未定向正常执行、身份未知拒绝）。全量 **1942 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.162 实施记录（队列暂停、设备租约与统一 tick，Task 15）
+
+> 实施于 2026-10-21。**队列暂停**：`hosts.queue_paused`（Task 3 已建列）成为领取闸门——`claimRegressionTask` 在 `hostId` 非空时先读主机行，`queue_paused=true` 直接返回 null（目标主机/能力门禁仍在之后执行；主机行不存在按未暂停处理，保持历史调用方行为）。暂停只阻断 runner 自动领取，手动 `suite run --task` 与已领取/执行中任务不受影响。
+> **设备租约**：新增 `device_leases(host_id, serial, task_id, project_id, acquired_at, renew_at, expires_at, PRIMARY KEY(host_id, serial))`（PG SCHEMA；Memory/File 同源；File 随 host 状态写入 `.artemis/ledger/state.json` 并按 `renewAt` 合并）。`ProjectStore` 新增 `acquireDeviceLeases`/`renewDeviceLeases`/`releaseDeviceLeases`：`acquire` 单事务全有或全无（`expires_at <= at` 视为过期可抢占；同任务重入幂等；冲突返回 `{ok:false,busy:[serial…]}`，PG 并发主键冲突回退为 busy）；`ttlMs` 缺省 `AOS_DEVICE_LEASE_MS`（90000，续租周期 30s），`projectId` 可选。
+> **agent 顺序**：`claim → 毒丸 → devices（任务端 ∩ 本机库存）→ acquireDeviceLeases → beginExecution → suite run`。设备忙/租约异常：先 `ackCancellation` 并重读，`cancelled/stopped/stopping` 记录后继续（不落回 pending），其余释放回 `pending`、日志 `device-busy`、**attempts 不增加**、按 poll 间隔重试；`beginExecution` 失败共用同一取消确认/守卫释放路径；执行结束（含取消/异常/`--once` 返回）在 `finally` 释放租约并清空 active。
+> **统一 30s tick**：心跳循环从「仅 upsertRunner」扩为一次 tick 同时更新四个信号——`runners.last_seen_at`＋`hosts.runner_seen_at`（既有 `heartbeat`）、`regression_tasks.last_progress_at`（`updateRegressionTask` 新增可选 `lastProgressAt`）、`renewDeviceLeases`（本任务持有的 serials）。续租条数少于持有 serials（或抛错）→ `leaseLost`，`executeSuite.shouldAbort` 立即中止并释放领取；tick 间隔收敛到 `AOS_DEVICE_LEASE_MS/3`（默认 30s，超限启动日志提示）。
+> **CLI**：`suite queue status|pause|resume [--host H] [--note <text>] [--json]`。本地（无 `--host`）：按 `runtime.hostIdentity` 定位主机；status 只读（不自动登记主机），输出 paused/by/at＋待执行数；pause/resume 缺主机行时按身份补登记，写 `setHostQueuePaused` 并审计 `action.queue.pause|resume`（`domain=suite`、`channel=cli`、可选 note）。中心（`--host`）：只连 PG（`openCenterStore`/注入 store + `resolveHostReference`），不构建本机 Runtime，待执行数按主机作用域项目汇总，未知/歧义主机 exit 2。
+> **面板**：`POST /panel/api/queue/pause|resume {host, note?}` 为 host 级路由（在 project 路由之前分流、不要求 project），host 经 `resolveHostReference`（id 优先、hostname 唯一匹配；歧义 400、未知 404、缺 host 400；存储异常不被吞成 404）；成功清缓存；审计 `action.queue.pause|resume`（`actor/channel=panel`，refs 含 hostId 与可选 note）。
+> **测试**：`test/queue-lease.test.js` 16 例（租约全有或全无/过期抢占/续租/释放，Memory+PG 双实现；FileStore 随主机状态持久化与暂停 claim；设备忙 attempts 不变；设备忙期间取消确认 cancelled；beginExecution 失败释放租约；续租丢失中止执行；心跳间隔收敛；长执行假时钟 300s tick 断言续租≥2 次、lastProgressAt/runnerSeenAt 前进、attempts=1、收尾释放；CLI 本地/中心 status/pause/resume；面板 id/hostname、200/400/404 与审计）。全量 **1958 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.163 实施记录（离线取消清扫器与多宿主幂等终结，Task 16）
+
+> 实施于 2026-10-21。**CAS 终结**：`ProjectStore.finalizeCancellation({rootPath,taskId,at?,note?,source?})` 仅 `status='stopping'` → `cancelled`（PG `UPDATE … WHERE … AND status='stopping' RETURNING *`；Memory 前置判定；File 委托同源并落盘）。`cancelled_at`/`cancel_source` 仅在缺失时补齐（`COALESCE`，保留首次取消元数据）；`cancel_note` 由调用方传入**合并后的文案**（传值即覆盖、缺省保留原值；清扫器在原文后追加标记，见 §13.164）。任务不存在或 CAS 未命中 → null（返回行即“本次完成转移”，供多清扫器精确计数）。`ackCancellation` 保持原语义（幂等返回当前行）。
+> **清扫器**：`src/tasks/sweeper.ts` 的 `sweepStaleTasks({store,rootPath?,now?,graceMs?,runnerTtlMs?})` → `{cancelled,released}`。按 `listProjects` 遍历，`rootPath` 限定单项目；绑定本机的 store 仅处理 `hostId` 为本机或 NULL 的项目（同路径跨主机互不越权），未绑定 store 按项目 `hostId` 逐项 `scopeHost`。候选＝`stopping` 且 `cancelRequestedAt <= now-graceMs`（legacy 无 `cancelRequestedAt` 且无 `cancelSource` 也纳入）；领取执行机在 `listRunners` 中且 `isRunnerOnline(lastSeenAt,now,runnerTtlMs)` → 保持；`claimedBy` 为空、runner 行缺失或离线 → 终结。legacy 补 `source=panel`、备注追加 `; legacy-stopping`（空备注只写标记）；其余保留来源并追加 `; runner-offline`。`released` 恒 0（绝不回退 `pending`，与 `releaseStaleClaims` 排除 `stopping` 一致）。`graceMs` 缺省 `AOS_CANCEL_GRACE_MS`（90000），`runnerTtlMs` 缺省 `runnerTtlFrom`。
+> **接线**：runner 主循环每 30s（`SWEEP_INTERVAL_MS`，首轮立即）在领取前清扫本机项目；HTTP 服务与独立 `panel --web` 各起 30s 后台循环（`unref`，关闭时清理）。无 leader 选举，CAS 保证多实例幂等。
+> **测试**：`test/task-sweeper.test.js` 5 例（离线 runner 超宽限→cancelled/runner-offline、在线与宽限内保持 stopping、legacy→panel/legacy-stopping、并发两清扫器仅一次、cancelled 不被 releaseStaleClaims 复活且 stopping 不回收、h-a 不扫 h-b 同路径；Memory+pg-mem 双实现）。全量 **1963 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.164 修复（重启遗留 stopping、中心 allHosts 与按状态清扫，Task 16 复审）
+
+> 2026-10-21。**重启遗留**：runner 行按 `(project, host)` 复用 id、重启只换 `instance_id`，旧逻辑会把该行判为在线而永不终结。清扫器新增实例守卫——`task.claimedInstanceId` 与 runner 行 `instanceId` 均非空且不等 → 视为缺失/离线（旧行任一为 NULL 时退回在线判定）；runner 启动在释放未完成领取后、主循环前用 `listStoppingTasks` 取本机 `stopping` 且 `claimedBy=me.id` 的任务，逐个 `finalizeCancellation` 并补 `runner-restart` 标记、日志计数。
+> **中心作用域**：`sweepStaleTasks` 增 `allHosts?: boolean`。true 时忽略本机过滤，逐项目 `scopeHost(project.hostId)`（`scopeHost` 参数放宽为 `string|null`，NULL 返回未绑定视图）——HTTP/服务与独立 `panel --web` 传 true，runner 默认 false；修复 `Runtime.initialize` 的 `bindHost` 使共享 store 变成本机作用域后中心循环只扫本机的问题。两处后台循环也改为启动即扫一次、随后每 30s。
+> **按状态读取**：`ProjectStore.listStoppingTasks({rootPath,deadline?,limit?})` 只取 `status='stopping'` 且（deadline 给定）`cancel_requested_at <= deadline OR IS NULL`；PG 单条 SELECT、Memory 过滤、File 委托同源，缺省 limit 1000。清扫器改用它，不再 `listRegressionTasks(100000)`。`withinGrace` 更名 `isPastGrace`；无 `cancelRequestedAt` 仅 legacy（`cancelSource=null`）视为超宽限，有来源但缺时间为畸形数据不清扫。**备注/审计**：终结备注改为追加标记（`原备注; runner-offline`／`原备注; legacy-stopping`），每笔成功终结 best-effort 写审计 `task/task.cancel.sweep`；`AmbiguousProjectError`（legacy 同路径歧义）静默跳过，不再每 30s WARN。
+> **测试**：`test/task-sweeper.test.js` 扩到 9 例（+重启 instance 轮换、+allHosts 跨 h-a/h-b、+listStoppingTasks deadline、+既有备注追加）；`test/runner-agent.test.js` +1（启动终结自己遗留 stopping、不执行、不回 pending）。全量 **1968 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.165 多机部署与迁移（主机身份、定向下发、队列控制）
+
+> 汇总 Task 1–16 的现行口径，作为**部署/升级的操作事实源**；逐批实现细节与测试计数见 §13.152–§13.164。本期形态：中心 Mac 提供 PG、面板与中心 CLI；每个项目目录留在**项目机**，由该机的本地 MCP（stdio/HTTP）与 `suite runner` 执行。
+
+**主机身份与三层信号**
+
+- 身用例集解析 `resolveHostIdentity`（`src/host/identity.ts`）：`MOBILE_TESTING_HOST_ID`（`identitySource=env`）→ `AOS_HOST_DIR` 下 `host-id` 文件（`file`，默认 `~/.aos`，`randomUUID` 原子写 0600）→ 派生 ID（`derived`，硬件/主机名/用户名哈希；目录不可写时稳定但**不可迁移**，序列化/换机前须显式指定 `MOBILE_TESTING_HOST_ID`）。
+- `hosts` 行由 runner 心跳、本地 MCP 接入心跳（`startClientSession` 起即 upsert `hosts`）、`suite queue pause/resume` 与面板 `hosts/register` 创建/更新；**仅开本地 MCP（无 runner）也会出现主机视图**（IDE 在线、能力为空）。任何路径都**不自动认领**历史 `host_id IS NULL` 数据（认领只走显式 `host adopt-legacy`）。IP 历史写 `host_addresses`（按 `(source, iface, family, address)` upsert，变更不产生新主机；共享 IP 仅告警），`ip_primary` 只做展示。
+- 三层信号独立建模，不互相代替：
+  - **接入层**＝MCP 客户端会话：`host_sessions` + `hosts.client_seen_at`；stdio `initialize` 登记、进程内 `AOS_CLIENT_PRESENCE_MS`（默认 30s，`unref`）空闲心跳 + 工具调用节流刷新、退出写 `ended_at`；`AOS_CLIENT_TTL_MS` 内为「IDE 在线」。只回答「谁在本机开着客户端」，**不参与领取/下发**；接入心跳不写 `capabilities`/`env`，避免把「IDE 在线」误当「可执行」。
+  - **执行层**＝runner 心跳：以 `runners.last_seen_at` 经 `isRunnerOnline` + `AOS_RUNNER_TTL_MS` 判定；`hosts.runner_seen_at` 仅展示投影，不作为判定源。回答「这台机器现在能不能跑」。
+  - **期望层**＝登记画像：`expected_os`/`expected_hostname` 与实际不符 → `drift` 文案；只提示、不拒绝任务。
+  - 面板同时显示「IDE 在线」「执行机在线」，两者都离线才显示「离线」；下发预检只看执行层与能力/设备清单。
+
+**项目身份与作用域**
+
+- `projects` 唯一身份＝`(host_id, root_path)`（旧全局 `root_path` 唯一约束已删除）。`host_id IS NULL` 为 legacy 历史行，面板显示「未归属主机」，**不参与定向下发**。
+- 作用域读写的唯一入口是 `ProjectStore.scopeHost(hostId)`（`null` → 未绑定视图）；跨主机同路径/同名项目互不串数据。`Runtime.initialize` 用 `baseStore.scopeHost(identity.id)` 生成本 Runtime 视图，**不改写注入的共享 store**（HTTP 多项目共享同一 store 时中心读/清扫仍以未绑定视图工作）。
+- 面板/动作层项目解析顺序：显式 `host`（缺省本机 `store.localHostId`）时先在该主机作用域内 `byPath` → `name`（路径须存在）；显式 `host` 仍未命中才回退 workspace 目录（结果附该 `host`）；仅本机 host 时作用域内未命中再走跨主机 unbound 匹配；**完全无** `host` 时才跨主机匹配（路径 → workspace → 名称），多行命中抛 `AmbiguousProjectError`（409 并列候选），**绝不取任意一行**。
+- 定向下发：任务写 `target_host_id`/`created_host_id` 与 `priority`（0–100）；`created_host_id` 记**派发方**本机（中心/本地 CLI/面板所在主机，未绑定则为空），`target_host_id` 缺省由项目 `host_id` 派生。领取顺序 `priority DESC, created_at ASC`。派发前 `precheckTask` 校验目标主机的 OS/工具/设备覆盖（iOS 需 darwin + `ios-*`）；能力为空的主机（尚无执行机上报）只告警「任务会排队等待」而不硬拒绝，主机离线只告警、仍可入队等待。legacy NULL-host 项目不出现在任何主机的项目下拉；显式下发返回 409 并指引 `host adopt-legacy --local --apply`。
+- 远端任务：`suite task create --host <id|hostname> --project <rootPath>` 只连中心 PG、在目标主机作用域建任务；`list` 可汇总该主机已登记项目。手动 `suite run --task` 读取任务后校验 `targetHostId`/`claimedHostId` 必须匹配本机，否则 exit 2（任务不变更）。
+
+**队列控制**
+
+- 状态机：`pending → claimed → running → completed|partial|failed`（`attempts` 只在 `beginExecution` 递增，设备忙不算尝试）；取消：`pending → cancelled`（即时），`claimed|running → stopping`（只写 `cancel_requested_at` 与来源/操作人/宿主/备注，不写 `cancelled_at`），由执行机 `ackCancellation` 或清扫器 `finalizeCancellation` CAS 终结为 `cancelled`。`cancelled` 为终态、不可复活；`stopped` 仅读兼容（映射 `cancelled`、`cancelledAt=null`）。
+- 取消入口：面板 `POST /panel/api/tasks/cancel`、CLI `suite task cancel`（本地 `source=local-cli`；`--host --project` 走中心、`source=panel`）、MCP `regression_task_cancel`（`source=local-mcp`，仅限本机本项目）。任务行写 `cancel_source/cancelled_by/cancelled_host_id/cancelled_at/cancel_note`，审计带 `actor/actor_host_id/channel`。
+- 清扫器 `sweepStaleTasks`：`stopping` 超过 `AOS_CANCEL_GRACE_MS` 且领取机 runner 离线/行缺失/实例已轮换 → CAS `cancelled`（备注追加 `; runner-offline` 或 `; legacy-stopping`）；在线且实例一致则保持；**绝不回退 `pending`**。runner 每 30s 扫本机项目；HTTP 服务与独立 `panel --web` 每 30s 以 `allHosts=true` 扫全部主机。无 leader 选举，CAS 幂等（中心先终结时 runner 的后续 CAS 返回 null）。
+- 队列暂停（Task 15）：`hosts.queue_paused` 为**整机**闸门，`claimRegressionTask` 在主机行暂停时直接返回 null；只阻断 runner 自动领取，手动执行与已领取/执行中任务不受影响。入口 `suite queue status|pause|resume` 与 `POST /panel/api/queue/pause|resume`。
+- 设备租约（Task 15）：`device_leases(host_id, serial)` 主键；领取顺序固定 `claim → 毒丸 → devices（任务端 ∩ 本机库存）→ acquireDeviceLeases → beginExecution → 执行`。租约单事务全有或全无（过期可抢占、同任务重入幂等），冲突返回 `{ok:false,busy}` → 任务释放回 `pending`、`attempts` 不增加、按 poll 间隔重试；执行 `finally` 释放。统一 30s tick 同时心跳、写 `last_progress_at`、续租本任务 serials；**心跳失败仍继续续租**，续租丢失/抛错即中止执行并释放领取。TTL `AOS_DEVICE_LEASE_MS`（默认 90000），心跳间隔自动收敛到 TTL/3。runner 优雅退出（SIGINT/TERM、`--once` 结束）把本实例行标记为陈旧（`last_seen_at` 置纪元），下一次启动可立即接管而不会被 90s 双启保护误挡；进程崩溃仍按 TTL 接管。**手动 `suite run --task` 同口径占租约**：主机守卫通过且 `--device` 非空、本机有主机身份时，执行前 `acquireDeviceLeases({hostId, taskId, projectId, serials: devices})`；冲突 → exit 2「设备被占用：<serial>（先等待或释放租约）」且不执行、不改任务状态；执行（含失败/异常）在 `finally` 释放（§13.166）。
+
+**部署与迁移顺序（从单机/旧版本升级）**
+
+1. **先升级中心 PG**：任意进程正常启动一次即执行 `MIGRATIONS`（`ADD COLUMN IF NOT EXISTS`、去重后建唯一索引），全程 `pg_advisory_lock` 串行化，拿不到锁等待而非并发执行；首次升级选低峰窗口，DDL 幂等可重试。
+2. **在每台项目机上、启动新版 MCP/runner 之前**执行：
+   ```bash
+   node dist/cli.js host adopt-legacy --local --dry-run   # 只列本机磁盘存在的 NULL-host 项目
+   node dist/cli.js host adopt-legacy --local --apply     # 确认后写归属 + 审计
+   ```
+   **禁止**在中心对所有 NULL 行做一次性认领（`--local` 以本机路径证据为界）。确需跨机指派时逐项执行 `host adopt-legacy --host <id|hostname> --path <rootPath>`（未登记主机须显式 `--allow-unknown-host`，用于「先迁移、后接入」）。
+   - 顺序很关键：新版 MCP/runner（以及本地 `suite queue`/`suite task` 等会构建本机 Runtime 的命令）首次启动会按本机身份新建 `(host_id, rootPath)` 项目行；一旦同路径新行存在，`adopt-legacy` 会「跳过（目标主机已有同路径项目）」，legacy 历史行不再可认领（只能留作归档或人工合并）。
+3. 按需登记期望画像：`host register <id|hostname> --label <名> --owner <人> --expected-os mac|pc|linux --expected-hostname <名>`；漂移只提示。
+4. 启动项目机**本地 MCP**（stdio/HTTP）与 `suite runner`（runner/定时回归需中心 PG）。`MOBILE_TESTING_HOST_ID` 在集群内必须唯一（或用互不共享的 `AOS_HOST_DIR`）；不要两台机器共用同一 `host-id`。
+5. 面板核对：主机视图「IDE 在线/执行机在线」、项目归属、无「未归属主机」残留，再开放定向下发与自动领取。
+- `host`/`adopt-legacy` 只连 PG（缺 `MOBILE_TESTING_DATABASE_URL` exit 2），不构建本机 Runtime、不写本机 `.artemis`、也不创建项目行；`suite queue --host` 同为纯中心。**本地** `suite queue`/`suite task`/`suite runner` 会构建本机 Runtime（沿用项目行创建/心跳），故认领应在它们首次运行前完成。
+
+**环境变量**
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `MOBILE_TESTING_HOST_ID` | 无 | 显式主机 id（最高优先级；集群内每机唯一） |
+| `AOS_HOST_DIR` | `~/.aos` | `host-id` 文件目录（`MOBILE_TESTING_HOST_ID` 缺省时）；不可写则退化为派生 ID |
+| `AOS_HOST_ENV_REFRESH_MS` | 600000 | runner 主机环境快照刷新周期（心跳只带缓存快照） |
+| `AOS_CLIENT_TTL_MS` | 120000 | 接入会话在线判定窗口（`host_sessions`/`client_seen_at`） |
+| `AOS_CLIENT_PRESENCE_MS` | 30000 | stdio 空闲接入心跳间隔与工具调用刷新节流；`0` 关闭 presence（不写会话/主机心跳） |
+| `AOS_CLIENT_SESSION_RETENTION_DAYS` | 7 | 已结束 `host_sessions` 保留天数（30s 清扫器清理；非法回退 7，`0` 关闭；进行中会话永不删除） |
+| `AOS_HOST_ADDR_HISTORY` | 1 | `=0`/`=false` 时每来源只保留最新地址；缺省每来源最多 20 条历史 |
+| `AOS_DEVICE_LEASE_MS` | 90000 | 设备租约 TTL；续租周期为其 1/3，runner 心跳同时收敛到该间隔 |
+| `AOS_TASK_MAX_RUNTIME_MS` | 0（关闭） | runner 单任务执行上限（协作式中止，`executeSuite` 轮询 `shouldAbort`）；超时按“取消（source=runner）”终结（`attempts` 不增、不释放重试、租约照常释放）；超过 32 位毫秒上限收敛并 WARN |
+| `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限；非法/≤0 回退默认 |
+| `AOS_HOST_STRICT` | 0 | `=1`/`=true` 时严格主机模式：`claimRegressionTask` 拒绝缺 `hostId` 的调用（返回 null），本地 `suite run --task` / `suite task cancel` / MCP `regression_task_cancel` 在本机身份未知时拒绝。**仅约束本版本**；旧 runner 二进制自跑旧 SQL，不会被拦截（需停用/升级） |
+| `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板下发开放优先级编辑；API/CLI 始终可传 `priority` |
+
+**已知限制**
+
+- **手动 `suite run --task` 占设备租约**：与 runner 自动领取同口径（§13.166）；同机多进程争用同一设备时后到者 exit 2，需等待或释放租约。队列暂停仍不阻断手动执行（暂停只作用于自动领取）。
+- **文件台账是单主机视图**：`adoptProjectHost` 恒 false、项目行恒 `host_id=NULL`；`host`/`queue` 命令、主机/地址/会话/租约表均为 PG 专属（无 PG exit 2）；runner、定时回归、中心清扫同样要求中心 PG。文件台账只推荐单机使用。
+- **中心清扫跨主机**（`allHosts=true`）而 runner 只扫本机；中心可能先于离线 runner 终结任务（符合预期，CAS 保证只计一次）。
+- **旧 runner 行 `host_id NULL`**：保留旧唯一索引兼容，不参与定向领取；主机视图按 `runner.host_id` 分组，NULL 行被跳过（不归入任何主机）。需在该机升级并重启 runner 后由心跳补齐身份。缺省 `AOS_HOST_STRICT=0` 仍允许旧调用方领取非定向任务；设 `AOS_HOST_STRICT=1` 后**本版本**的无 `hostId` claim 返回 null，本地手动执行/取消与 MCP 取消拒绝无主机身份。**注意作用域**：旧 runner 二进制用自己的旧 SQL 连 PG，不读取本开关，也不会被服务端拒绝；严格模式只约束本版本的 claim 与本地命令，旧 runner 必须停用/升级（见 §13.166）。
+- **仅开本地 MCP 的机器已可见但不可执行**：接入心跳会创建 `hosts` 行并刷新 `client_seen_at`/IP，面板显示「IDE 在线」；`capabilities` 仍为空，下发只告警「任务会排队等待」，需 runner 上报后才进入执行。无 PG 时接入心跳静默跳过（文件台账仅单机语义）。
+- 队列暂停为**整机**粒度（无项目级/单任务暂停、无整机串行开关）；P4 的跨主机逻辑项目分组（`project_key`）与 HTTP 客户端记录（`project_clients`）未实现。
+- **面板 HTTP multipart 导入**：`http-server` 只传 `rawBody`（不解析 JSON）；动作层现允许无 JSON body 的 multipart 请求通过入口检查，`project`/`host` 由查询参数携带（面板页导入表单已带 `?project=<rootPath>`），`runImport` 收到 `rawBody`/`contentType` 后解析上传文件。独立 `panel --web` 同样转发 multipart 原始体并按项目根懒建 Runtime（缺省复用本进程 store，退出时释放），导入在两种承载模式均可用（§13.169）。
+- 同路径 legacy 行一旦被本机新版进程新建的行「占位」，`adopt-legacy` 将跳过（见迁移顺序第 2 步的注意事项），历史数据保留在 legacy 行、不并入新行。
+
+### 13.166 修复（严格主机模式接线与手动执行设备租约）
+
+> 2026-10-21。补齐设计稿 §6.4/§13.6/§8.3 的两处缺口，均为**默认关闭/向后兼容**的收紧。
+> **`AOS_HOST_STRICT`**：`hostStrictFrom(env)`（`src/host/strict.ts`）仅对字面 `1`/`true`（trim 后）返回 true，其余（含未设置、`0`、`yes`）一律 false。四处接线——① `PostgresStore`/`MemoryStore` 的 `claimRegressionTask` 在解析项目之前，若 strict 且 `input.hostId == null` 直接返回 null（无主机调用方领不到任何任务，含非定向任务）；`FileStore` 委托同源内存实现。② 本地 `suite run --task` 在读到任务后、主机归属守卫之前，strict 且 `runtime.hostIdentity?.id` 为空 → exit 2「AOS_HOST_STRICT=1：本机主机身份未知，拒绝执行回归任务」。③ 本地 `suite task cancel` 在任务存在性检查之后同样检查 → exit 2（不写取消元数据）。④ MCP `regression_task_cancel` 在任务存在性检查之后、归属校验之前返回 `{ok:false,error:"AOS_HOST_STRICT=1：本机主机身份未知，拒绝取消回归任务…"}`（`isError`）。中心 `--host` 路径不经过这些守卫（它们显式指定目标和操作主机）。**作用域限制**：旧 runner 二进制用自己的旧 SQL 直接连 PG，不读取本开关也无法被服务端拦截；strict 只约束**本版本**的 claim 与本地命令入口，旧 runner 必须停用/升级（文档与 README 同口径）。仓库构造 `MemoryStore`/`PostgresStore` 时可选注入 `env`（缺省 `process.env`），`scopeHost` 原样传递，便于测试不污染进程环境。
+> **手动设备租约**：`suiteRunTask` 在设备清单解析与任务取消预检之后、置 `running` 之前，若本机有主机身份且 `devices` 非空，以独立租约身份 `manual:<taskId>` 调用 `acquireDeviceLeases({hostId, taskId: "manual:"+task.id, projectId: runtime.projectSummary()?.id ?? null, serials: devices, ttlMs, at: now()})`；`{ok:false}` → `errorLog("设备被占用：<busy 逗号分隔>（先等待或释放租约）")` + exit 2，获取抛错 → `errorLog("设备租约获取失败：…")` + exit 2（均不调用 `mobile_run_task`、不登记 `suite_runs`、任务保持原状态）。独立命名空间保证：runner 已持 `task.id` 租约时手动执行看到 busy 而不是幂等重入，手动收尾只删 `manual:*`，绝不删除 runner 的租约。执行期间以 `setInterval`（`unref`）按 `deviceLeaseTtlMs(env)/3` 调用 `renewDeviceLeases`（缺省 30s；不足条数/WARN），时钟与调度可经 `SuiteCliDeps.leaseTimers` 注入；执行主体包在 `try/finally`，先清续租定时器，再用同一 `manual:*` 身份释放（含成功、用例失败、异常与提前 return）；释放失败只 WARN，不影响退出码。**runner 内嵌调用不重复管理**：`suite runner` 的默认 `executeSuite` 以 `SuiteCliDeps.leasesHeld=true` 调用 `suite run --task`（租约由 runner 领取/续租/收尾释放），内层跳过获取、续租与释放。runner 自动领取的租约路径不变（仍为 claim→acquire→beginExecution→执行→finally 释放）。
+> **测试**：`test/host-strict.test.js` 9 例（helper 字面值、Memory/Postgres strict claim 无 hostId→null / 有 hostId→claimed、缺省兼容、FileStore 委托、suite run / suite task cancel / MCP regression_task_cancel 无身份拒绝、缺省保持旧行为）；`test/suite-task-leases.test.js` 6 例（设备被占 → exit 2 且未执行，释放后成功并回收租约；失败执行也在 finally 释放；`leasesHeld` 内嵌不重复释放；超 TTL 续租且竞争仍 busy；runner 同任务租约 → 手动 busy 且保留；手动只释放 `manual:*`）。全量见本次提交报告。
+
+### 13.167 修复（多机遗留：usage 主机过滤/409、面板 multipart 导入、清扫按 id 取 runner）
+
+> 2026-10-21。收口 follow-up 遗留；行为变更同步 README 与多机规格 §17。
+
+- **CLI `usage --host`**：`src/usage-command.ts` 不再用未绑定 store 直接按 `rootPath` 读事件（同路径两台主机会抛 `AmbiguousProjectError`）。选择项目时带出 `hostId`，读取用 `store.scopeHost(hostId)`，仅 `hostId === null` 的 legacy 行走未绑定 store；`UsageProjectView`/JSON 增加 `hostId`，`--all` 文本行附「· 主机 <id>」。
+  - `--host <id|主机名>`（文本/JSON/`--all`）经 `resolveHostReference` 解析：id 精确优先，主机名需唯一；重复主机名 exit 2 并列出候选 id，未知主机 exit 2 提示中心 PG/`host register`。过滤在 `listProjects` 之后、选择之前，`--all`/`--project`/默认当前项目都只包含该主机项目。
+  - 选择歧义显式化：默认当前项目路径命中多台主机、或 `--project` 命中多行 → exit 2 并列出候选主机；选中 legacy 行后仍歧义（同路径已有主机行、且没有 `--host`）→ exit 2「未绑定主机…请用 --host <id> 指定（或先 host adopt-legacy）」，不再抛栈。**`--all` 是总览**：单个 legacy 歧义项目按项目降级——stderr 打印 `未能读取（候选主机…）`，其余项目照常聚合/输出、exit 0；显式 `--project`/默认当前项目仍 exit 2。默认当前项目配 `--host` 但该主机下未登记该项目 → exit 2（不输出零统计）。
+  - `usage --web` 的 `--host` 保持现有语义（监听地址）；`--web` 在项目选择前已返回，过滤只作用于文本/JSON 路径。
+- **`/usage` 未归属 legacy 路径**：`src/usage/web.ts` 捕获 `AmbiguousProjectError` → **409** `{error, candidates:[{hostId,rootPath,name}]}`（与面板同形），同一路径先按 `hostId` 作用域读取的既有行为不变；HTTP/独立看板不再 500。显式 `?project=<名称|路径>` 命中多行（同名不同路径 / 同路径多主机）同样 409 列候选，不再静默取第一行；缺省项目（无 `project` 参数）仍取 `listProjects` 首行。
+- **面板 multipart 导入**：`src/panel/actions.ts` 入口在缺少 JSON body 但带 `rawBody` 时允许通过（payload 置空），`project`/`host` 从查询参数读取——**查询参数 `project` 仅在 `POST /panel/api/import` 且带 `rawBody` 时生效**，其余动作仍只认 JSON body；JSON body 路径保持原优先级（既有「body + rawBody」测试不回归）。`src/console/pages.ts` 导入表单提交到 `/panel/api/import?project=<rootPath>[&host=<id>]`。HTTP 级测试用真实工作簿断言 200 与登记条数。
+- **清扫器 runner 行**：新增 `ProjectStore.getRunner(rootPath, runnerId)`（Postgres/Memory/File；File 委托同源内存视图）。`sweepStaleTasks` 改为按 `claimedBy` 精确取行（同一任务集内缓存），不再 `listRunners(rootPath, 100000)` 全量扫描；语义（在线/实例轮换/行缺失）不变。
+
+### 13.168 修复（usage 主机贯穿与面板主机列表 API）
+
+> 2026-10-21。多机收口遗留：`/usage` 自身链接不带 host、`usage --all --json` 缺口不可见、设计稿 §12.2 的 `GET /panel/api/hosts` 未接线。
+
+- **`/usage` 主机贯穿**：`handleUsageRequest` 解析 `?host=<machine_id>`，`UsageWebProjectView` 与 `UsageWebFiltersView` 增 `hostId`。传 host 时项目库按 `project.hostId === host` 过滤后再按路径/名称解析（同路径多主机不再误判 409）；未传 host 保持原规则（跨主机唯一匹配、多行 409 + 候选）。事件读取用 `store.scopeHost(project.hostId)`；`hostId === null` 的 legacy 行回退未绑定 store。选择器/筛选表单的隐藏 `host`、重置链接、`eventsPageHref` 上一页/下一页均保留 `host`，翻页与筛选不再丢失作用域。`/usage.json` 的 `filters.hostId` 与 `projects[].hostId` 同源暴露。
+- **`usage --all --json` 的 `readErrors`**：新增 `UsageReadError[]`（`projectId?/name/rootPath/hostId/error/candidates?`）。`--all` 中单个 legacy 未绑定主机且同路径歧义时，仍写 stderr 降级、其余项目照常聚合、exit 0，同时在 JSON 明确列出被跳过项目与候选主机；无降级时为 `[]`（显式 `--project`/默认当前项目仍 exit 2）。
+- **`GET /panel/api/hosts`**：`src/panel/web.ts` 新增 `handlePanelHostsRequest`/`panelHostApiRow`，HTTP 与独立 `panel --web` 在动作层之前路由（只读、无需 `AOS_PANEL_ACTIONS`；受 `AOS_PANEL_WEB` 与 HTTP 静态令牌闸门约束）。响应 `{ok:true,hosts:[...]}`，投影仅含 `id/label/owner/hostname/kind/osPlatform/osVersion/arch/capabilities/clientSeenAt/runnerSeenAt/lastSeenAt/queuePaused/registeredAt/expectedOs/expectedHostname`（不含 `env`、`hardwareId`、`username`、`ipPrimary`、工具路径与完整行）。文件台账/会话内存同样返回 `listHosts()`（空台账为 `hosts:[]`；读取失败 503），不再强制空列表。
+- **测试**：`test/usage-web.test.js` 新增 host 作用域分页/筛选/重置与 409 回归；`test/usage-command.test.js` 校验 `readErrors` 与空数组；`test/panel-hosts.test.js` 校验安全投影、单机空列表、动作开关无关；`test/panel-command.test.js` 与 `test/http-server.test.js` 覆盖独立/HTTP 路由。
+- **复审加固**：`/panel/api/hosts` 在 PostgreSQL 读取异常时返回 **503** `{ok:false,error:"主机台账读取失败"}`（不再把故障伪装成空主机表）；`AOS_PANEL_WEB=0` 对该 API 返回 JSON 404（而非 HTML）。`/usage` 的显式 `?host=` 在 PostgreSQL 下先校验 `listHosts`：未知主机 id → 404 `未知主机 "<id>"`（文件/会话内存保持宽松，读取失败不拦截）。面板导航「使用统计」在项目上下文携带 `?project=<rootPath>[&host=<hostId>]`；README 标注该端点同样受 `AOS_PANEL_WEB` 约束。
+
+### 13.169 修复（独立面板 multipart 导入与 runner 任务执行上限）
+
+> 2026-10-21。收口多机规格 §8.4/§12.2 的两项遗留；默认关闭/向后兼容。
+
+- **独立 `panel --web` multipart 导入**：`src/panel-command.ts` 在构造 `PanelActionRequest` 时按 `content-type` 分派——仅 `POST /panel/api/import` 且 `multipart/form-data` 读取原始体（共享 `src/panel/limits.ts` 的 20MB＋256KB 上限）并转发 `rawBody`/`contentType`；其余 POST 仍走 JSON 解析。超限统一 **413**（不再伪装成 400 解析失败）。独立面板新增 `runtimeFor`（`PanelCliDeps` 可注入）：缺省按项目根 `loadProject` 懒建 `Runtime`（复用本进程 store、`initialize()` 登记项目行并解析配置目录），同项目缓存复用，面板 `close()` 时 `proxy.disposeSync()` 释放；**失败（null）不缓存**，下次导入可重试。该 `runtimeFor` 同时启用依赖运行时的「一键建单/证据重试」动作。**跨主机保护**：`runImport` 接收解析后的 `hostId`；非空且与本机身份（`PanelWebDeps.localHostId`）不同时直接 **400**「跨主机导入请在该项目机上执行，或使用 HTTP 模式」，不建 Runtime、不写项目行/用例文件。
+- **`AOS_TASK_MAX_RUNTIME_MS`（§8.4 执行上限，协作式中止）**：`src/runner/agent.ts` 读取该变量（缺省/非法/≤0 关闭），在 `beginExecution` 之后、`executeSuite` 之前用可注入 `scheduleTimeout` 起 `unref` 定时器（测试可注入调度/时钟）；触发后置 `runtimeExceeded`，并纳入 `shouldAbort`。**不是强杀**：执行器需轮询 `shouldAbort` 才会提前结束。执行返回后（且未被面板取消抢先终结）调用 `cancelRegressionTask({source:"runner", actor:"runner", actorHostId:<本机>, note:"任务超过 AOS_TASK_MAX_RUNTIME_MS（<ms>）"})` → `ackCancellation`；**仅在确认 `cancelled`/`stopped` 时**记录成功日志与 `task.cancel` 审计（`channel=runner`），否则记失败日志交由面板/清扫器兜底。**不走失败/重试路径、不释放回 pending**，`attempts` 仅 `beginExecution` 的一次增量；设备租约仍在任务块 `finally` 释放，定时器同步清理。上限超过 setTimeout 32 位毫秒上限（2,147,483,647）时收敛并打 WARN。
+- **测试**：`test/panel-command.test.js` 覆盖独立面板导入 200/登记、跨主机 400（无项目行/无文件）、超限 413；`test/runner-agent.test.js` 覆盖超时取消（cancelled/来源/操作者/宿主/备注/attempts/租约释放/审计/日志/`unref`）、上限收敛告警、`0`/非法值关闭。
+- **文档**：README（动作层/独立导入/跨主机保护）、`panel help`、DESIGN 环境变量表、`.env.example`、AGENTS 环境变量清单、多机规格 §17 同步。
+
+### 13.170 修复（多机数据卫生：会话保留、地址历史、迁移后置校验、host 首写竞态）
+
+> 2026-10-21。收口多机规格 §6.2/§6.7/§13 的数据卫生活项；默认行为兼容，新增两个环境变量。
+
+- **`host_sessions` 保留**：新增 `ProjectStore.pruneHostSessions({now?,retentionDays?,hostId?})`（Postgres/Memory/File）——删除 `ended_at IS NOT NULL AND max(last_seen_at, ended_at) < now - retentionDays` 的行，**进行中会话永不删除**；`retentionDays` 缺省读 `AOS_CLIENT_SESSION_RETENTION_DAYS`（默认 7，非法/小数/溢出回退 7，`0` 关闭）。作用域跟随 store：项目机 runner 的主机作用域视图只清自己的会话；中心未绑定 store（`hostId === null`）清全台账。`sweepStaleTasks` 在任务清扫后以 `{now}` best-effort 调用（失败仅 WARN，不阻断取消清扫）；File 实现仅在有删除时落盘。FileStore 语义仍是单机状态文件（不跨机共享），但保留策略同源。
+- **`AOS_HOST_ADDR_HISTORY`**：新增 `hostAddressHistoryFrom(env)`（`src/host/online.ts`，仅字面 `0`/`false` 关闭，缺省开启）。关闭时 runner 心跳、本地 MCP 接入心跳与 PG 观测地址（`inet_client_addr()`）都传 `maxPerSource: 1`，每来源只保留最新一条；缺省沿用每来源最多 20 条。runner 地址写入同时显式带心跳时间 `at: seenAt`，保证“最新”判定与心跳时钟一致。多网卡同一时间戳时按 `address ASC, iface ASC` 取第一条（PG `ORDER BY` 与 Memory/File 排序一致），避免后端差异。
+- **迁移后置校验**：`MIGRATIONS` 仍逐条 best-effort（fresh schema 已含列/索引），但随后 `assertRequiredIndexes` 检查 `projects_host_path_idx`/`runners_project_host_idx`：`pg_indexes` 查询不受支持（pg-mem / 无权限以外的不存在错误）→ WARN 跳过；可查询且缺失 → 抛 `MigrationIncompleteError`（`code=AOS_MIGRATION_INCOMPLETE`），`createProjectStore` **不得把该错误降级为文件台账**；`suite` 命令识别该 code 后直接打印可操作消息并 exit 2。真实 PG 权限错误（42501）照常抛出。
+- **`upsertHost` 首写竞态**：先查再插的窗口内两个并发心跳可能同时 INSERT；现在捕获 `23505` 后**重跑合并更新分支**（重新 SELECT 当前行 → 计算 `client_seen_at`/`runner_seen_at` max → UPDATE），不再把异常抛给 runner 导致退出 2。正常路径仍为首查命中直接更新，无额外写入。
+- **测试**：`test/db-hosts.test.js` 覆盖保留/关闭/进行中保留、File 落盘与重启、地址历史默认/关闭、helper 边界、`upsertHost` 23505 合并更新；`test/task-sweeper.test.js` 覆盖清扫器顺带清理与清理失败不阻断；`test/db-init-tolerance.test.js` 覆盖索引缺失失败、pg_indexes 不支持跳过、建表竞态；`test/runner-host-heartbeat.test.js` 覆盖 `AOS_HOST_ADDR_HISTORY=0` 连续心跳只留最新地址。
+- **文档**：README 多机环境变量表与在线口径、DESIGN 环境变量表、`.env.example`、多机规格 §6.2/§6.7/§13 同步。
+
+### 13.171 修复（面板产物路由：证据链目录浅索引）
+
+> 2026-10-21。批次用例证据把 `trace`/`notes` 指向**目录**（`src/panel/overview.ts` 的 `evidenceLinks`），但 `/panel/artifact` 只接受白名单扩展名的**文件**——目录命中「不支持的产物类型 (无扩展名)」→ 400，证据链在面板里点不开。
+
+- **行为**：`src/panel/artifact-route.ts` 在 `.artemis` 范围校验后先 `stat`：目录 → 浅索引（HTML，条目排序、名称转义、目录尾 `/`、`← 上级`、>500 截断），文件 → 原白名单 MIME；不存在/非普通文件 → 404（此前「未知扩展名且不存在」先报 400，现统一 404）。索引内链接续带 `project`/`host`，可逐级下钻与返回。
+- **口径**：与 runner 产物服务 `/artifact/<rel>` 的目录浅索引一致（不递归、转义、截断）；仍只读、仅 `.artemis` 范围、无目录穿越；不新增鉴权（面板沿用 `serve --http` 的 `MOBILE_TESTING_HTTP_TOKEN`）。
+- **测试**：`test/panel-artifact-route.test.js` +1（目录 200/HTML、子目录与上级链接、名称转义、`.artemis` 根无上级；既有「非白名单类型」用例改为先落盘 `raw.bin` 再断言 400）。全量 2036 绿。
+
+### 13.172 调整（面板信息架构第一刀：去顶栏状态、收敛项目页锚点）
+
+> 2026-10-21。反馈：左侧入口多而杂、同一件事有多个入口；顶栏的「PostgreSQL / 最近写入」对使用者无操作价值。
+
+- **顶栏**：移除存储状态胶囊（持久层标签、最近写入、写失败徽标）；`storeHealth` 数据仍保留，持久层信息只在项目页「可持久」行与运维页出现。
+- **导航**：`DEFAULT_CONSOLE_NAV` 由 12 项收敛到 9 项——删除 `tasks`/`runners`/`schedules` 三个一级入口（它们本就是项目页内锚点）；`g t/r/s` 快捷键仍指向对应锚点，深链 `?section=…` 不破坏。项目页新增「页内：任务 · 执行机 · 计划」跳转行；任务/批次详情页的导航当前态回落到「项目」。
+- **测试**：`console-shell`（默认 nav、快捷键锚点、顶栏无胶囊）、`panel-web`（项目页无胶囊、可持久行）、`usage-web`（顶栏无记录底座）同步更新；全量 2036 绿。
+
+### 13.173 调整（面板信息架构第二刀：结果/运维合并与术语收敛）
+
+> 2026-10-21。接 §13.172：同级页面合并、术语降噪。
+
+- **导航 8 项**（HTTP 模式含使用统计）：总览 / 项目 / 结果 / 下发 / 用例库 / 档案 / 运维（独立面板进程隐藏使用统计）。结果＝失败分析（`view=review`）+ 统计（`view=stats`）；运维＝数据（`section=ops`）+ 审计（`section=audit`）。旧 URL 原样可用，导航当前态统一高亮组合入口（stats→review、audit→ops）。
+- **页签**：`renderGroupTabs`（`src/console/shell.ts`）在四个页面顶部渲染「失败分析 / 统计」「数据 / 审计」，`.c-tabs` 复用 CSDC 胶囊样式。
+- **术语收敛**：项目页标题去英文/工程词——接入信息→接入、磁盘资产→磁盘文件、测试批次→最近运行、独立运行→单次运行、新建回归测试→新建任务、执行机（runner）→执行机、回归任务→任务、定时回归（schedule）→定时任务；三轴改「运行 / 存储 / 接入」；术语表收进折叠 `<details>`；只读横幅文案缩短。
+- **测试**：相关断言同步（nav、页签、标题、三轴、横幅、快捷键）；全量 2036 绿。
+
+### 13.174 新功能（CMS 开放服务：静态设计图 → design.md + cases.xlsx）
+
+> 2026-10-21。面向 CMS 网页的独立开放服务；只生成、不执行、不接设备。
+
+- **入口**：`node dist/cli.js cms-open --host 127.0.0.1 --port 8780 [--cors …] [--allowed-hosts …] [--max-queue 20] [--max-concurrent 3] [--job-timeout-ms 600000] [--retention-ms 7200000] [--check]`。独立进程，不读项目配置、不依赖 PG；默认 loopback、无鉴权；CORS 默认拒绝跨源，写请求校验 `Origin` 与 `Host`（multipart 属 CORS 安全清单类型，不能只靠响应头）。
+- **接口**：`POST /jobs`（JSON ≤1MB / multipart 单文件 ≤50MB）→ `{jobId}`；`GET /jobs/:id`（状态/步骤/错误）；`DELETE /jobs/:id`（queued→cancelled，running→协作式取消标记）；`GET /jobs/:id/download`（done 200 / 未完成 409 / 过期 410 / 未知或重启 404+`job_not_found`）；`GET /healthz`（bootId）。
+- **任务模型**：内存 JobManager（FIFO、并发 3、队列 20、单任务 10 分钟、产物 TTL 2 小时）；zip 先落临时文件再发送；`meta.json` 必含 source/generatedAt/model/maxFlows/maxDepth/counts/warnings。
+- **凭证注入**：新增 `DesignRuntimeLike`（`src/figma/design-runtime.ts`）作为唯一注入口；`figma_extract_flows`/`figma_generate_tests`/`pen_extract_flows`/`render` 接受显式 `figmaToken`/`chat`，不写 `process.env`。vendored Figma client 增加 per-call token 参数，响应缓存键含 token 指纹（NOTICE 第 7 条）。
+- **静态 Figma 合成**（`src/figma/static-flows.ts`，App/CMS 共用）：无原型交互时按「箭头/连线 → 画板旁文字注释（正则，失败可走 LLM 结构化抽取）→ 画布顺序」推断 `FlowGraph`；所有推断边 `provenance=inferred`/`confidence=low`；md 标注需复核；无屏幕 → `no_screens`，无箭头/注释 → `layout-fallback`。
+- **用例与模版**：复用线性化与用例模型，Web 文案去掉 `mobile_run_task` 描述（`src/figma/web-wording.ts`）；Excel 默认 7 列，模版有 `{{case.*}}/{{index}}` 走原占位符引擎，否则按表头映射（必需：用例名称/操作步骤/预期结果；别名与额外列留空）；缺列报 `template_invalid`。
+- **`.pen`**：上传文件写入 job 临时项目，复用 `pen_extract_flows`；渲染/截图使用服务机登录态（`pen login`/`PEN_CLI_KEY`），未就绪显式 `pen_unavailable`，不静默降级。
+- **测试**：`open-credentials`（token 隔离/缓存不串）、`open-figma-static`（箭头/注释/布局）、`open-template-map`（7 列/表头映射/缺列/占位符）、`open-jobs`（队列/并发/超时/取消/TTL）、`open-zip`、`open-pipeline`（静态/pen/无用例）、`open-server`（路由/CORS/限额/取消/410）、`open-command`；全量 2064 绿。
+
+### 13.175 改进（App 静态稿：无原型时按箭头/注释/画布顺序合成）
+
+> 2026-10-21。把 CMS 的静态合成回灌到现有 `figma_extract_flows`，App 静态稿同样受益。
+
+- **fallback**：`figma_extract_flows` 在原型边为 0 且存在屏幕时默认调用 `synthesizeStaticFlows`（原型边优先）；`staticFallback:false` 或 `AOS_STATIC_FALLBACK=0` 关闭。推断边 `inferred/low`，`no-interactions` 警告替换为 `static-flow-inferred`（有线索）或 `layout-fallback`（纯画布顺序）；截图与 flow-map 沿用原渲染链。
+- **CANVAS 修复**：`buildFlowGraph` 此前只认 `PAGE`，Figma REST 实际页面类型是 `CANVAS`，真实文件可能 0 屏；`screenOf`/`pageNameOf`/屏幕收集统一接受 `CANVAS` 与 `PAGE`。
+- **模块归位**：合成器从 `src/open/` 移到 `src/figma/static-flows.ts`，App/CMS 共用，避免 figma→open 的反向依赖。
+- **测试**：`test/figma-static-fallback.test.js` 2 例（默认合成、`staticFallback:false` 保留 `no-interactions`）；全量 2066 绿。
+
+### 13.176 修复（CMS 开放服务读取真实 tests.json 形态）
+
+> 2026-10-22。CMS Open 的 Figma/pen 任务在真实产物下必现 `no_cases`：生成阶段已完成，却拿不到 zip。
+
+- **根因**：`src/open/pipeline.ts` 直接解析 `tests.json` 的 `cases` 字段，而 `figma_generate_tests` 的落盘形态是 `flows`（`test-gen.ts` payload）；`test/open-pipeline.test.js` 的 fixture 恰好写 `{cases}`，测试全绿掩盖了漂移。
+- **修复**：`TestsDocument` 增 `rawFlows`（完整原始 `flows[]`，`records` 仍是消费方投影）；CMS Open 改用 `readTestsDocument(...).rawFlows`，不再自行解析，落实 `design-store` 单一读取口径。
+- **测试**：`open-pipeline` fixture 改为真实 `{flows}` 形态（静态/pen/模版/无用例 5 例全部覆盖）；`design-store` 增 `rawFlows` 断言。全量 2068 绿，lint 0 error（2 条既有 warning）。
+- **边界**：接口与产物格式不变；仅修复读取口径，`flows` 缺失仍按 `no_cases` 显式失败。
+
+### 13.177 优化（design_to_test 重复开销：截图复用 / 阶段复用 / save 粒度）
+
+> 2026-10-22。设计→用例链路的重复成本：提取已落盘的截图在生成阶段又被下载/渲染一遍；`run:false → run:true` 续跑会完整重跑生成；CMS Open 生成后丢弃 md/xlsx/case-sets。
+
+- **截图复用（`src/design/screens.ts` + `src/figma/test-gen.ts`）**：`existingScreenPath` 校验已落盘 PNG；`captureCaseScreens` 按 nodeId 分区，仅缺失/损坏的屏走 Figma `/images` 或 pen 渲染，已有图直接复用（不重新下载/渲染）。响应 `screenshots.reused` 记录复用屏数；figma/pen 两通道一致。提取阶段仍按设计源重新渲染（设计可能变更），复用只发生在生成阶段（flows 为事实源）。
+- **阶段复用（`src/workflow/design-to-test.ts` + `src/tools/native-tools/workflow.ts`）**：`design_to_test` 新增 `reuseExistingTests`（需与 `reuseExistingFlows` 同用）；复用 `tests.json` 时跳过 `figma_generate_tests`（含功能命名 LLM、md/xlsx、case-set 归档），直接走 preflight/覆盖闸；`steps[generate]` 标 `reused:true`；`nextAction` 同时携带 `reuseExistingTests:true`。缺 tests.json 返回 `needs-info`（`category:"no-tests"`，先问不猜）；警告从 preflight 快照回填。
+- **save 粒度（`src/figma/test-gen.ts` + `src/tools/native-tools/figma.ts`）**：`saveArtifacts` 可分别关闭 `markdown`/`xlsx`/`caseSets`；`tests.json` 在 `save !== false` 时始终落盘（供 check/run 复用），`savedTo` 只列实际写出的路径；截图只在需要 md（或 case-set md）时采集。CMS Open 改为只落 `tests.json`，不再生成并丢弃 `tests.md`/`tests.xlsx`/`discard.xlsx`/case-sets。
+- **测试**：`figma-test-screens` +2（figma 二次生成不再请求 `/images`/下载；pen 二次生成不再渲染）、`figma-testgen` +1（saveArtifacts 只落 tests.json）、`native-figma-tool` +1（saveArtifacts schema）、`workflow-design-to-test` +3（复用 tests 跳过生成、缺 tests → needs-info、未配 reuseExistingFlows → 用法错误）并同步 nextAction 断言、`native-workflow-tool` 暴露新字段。全量 2073 绿，lint 0 error（2 条既有 warning）。
+- **边界**：默认行为不变（三件套仍全量落盘、生成仍执行）；`reuseExistingTests` 仅在显式传参时生效，覆盖闸/三件套校验口径不变。
+
+### 13.178 加固（CMS 开放服务运维：台账持久化 / 清理 / 进度超时 / 鉴权）
+
+> 2026-10-22。承接 §13.174/§13.176：服务重启后任务全丢、工作目录只增不减、超时不感知进度、公网监听无鉴权。
+
+- **台账持久化（`src/open/job-store.ts` + `src/open/jobs.ts`）**：`workRoot/jobs.json` 原子写（临时文件 → rename，0600），只存状态/时间戳/产物路径，不存请求凭证；`JobManager.snapshot()/initial/onChange` 负责恢复与变更落盘。启动时 queued/running 统一标记 `failed` + `error.code="job_interrupted"`（不假装恢复执行）；已完成任务在保留期内仍可查询/下载。文件损坏/缺失按空台账启动。
+- **清理**：保留期到期由 `onExpire` 删除 `workRoot/<jobId>`；启动时清理没有台账记录的孤儿工作目录；`close()` 落盘最终快照。`tick()` 保留手动触发入口（测试/运维）。
+- **进度感知超时**：`lastProgressAtMs` 在 claim 与每次 `setStep` 时刷新；tick 按“距上次进度”判定，消息改为「>N 秒无进度」。避免提取耗时较长但已进入生成阶段的任务被启动时间误杀。
+- **鉴权**：`--token` 或 `AOS_CMS_OPEN_TOKEN` 启用 Bearer；除 `GET /healthz` 与 CORS 预检外所有端点校验 `Authorization`（常量时间比较），失败 401 `unauthorized` + `WWW-Authenticate: Bearer`；`--cors` 预检仍不要求令牌。CLI 日志只显示“已启用/未启用”，不打印 token。
+- **测试**：`open-jobs` +3（进度超时、snapshot/restore、onExpire）、`open-job-store` +2（roundtrip、坏文件）、`open-server` +6（重启恢复完成态、重启中断态、孤儿清理、tick 清理、Bearer 全端点、持久化不含凭证）、`open-command` +1（flag/env token 日志）。全量 2085 绿，lint 0 error（2 条既有 warning）。
+- **边界**：不恢复执行中断任务（凭证只在内存、避免静默重放外部副作用）；`artifactPath` 仍为服务端内部字段，客户端下载走 `/jobs/:id/download`。
+
+### 13.179 优化（覆盖预算误判与混合稿补边）
+
+> 2026-10-22。`maxFlows` 命中探索帽时即使硬/探索覆盖已完整也报 `truncated`，导致覆盖闸失败与“调大上限重试”；混合稿有原型边时静态合成完全不触发。
+
+- **截断语义（`src/figma/test-gen.ts`）**：`truncated` 不再等价于“探索停止”。先计算 `knownGap`（全屏/全跳转/全未决目的地是否被 kept 路径覆盖 + 剩余候选是否仍有覆盖增量），仅当 `knownGap && (探索帽命中 || maxFlows 命中)` 才判截断。命中探索帽但覆盖已完整 → `truncated:false`，覆盖闸不再误杀。
+- **探索预算**：固定 `guard<500` 改为按图规模 `min(20000, max(500, screens*20 + edges*4))`，大图不再因固定帽提前停；仍保留 `maxFlows*4` 候选上限与 20k 硬上限。
+- **混合稿补边（`src/figma/static-flows.ts` + `src/figma/flows.ts`）**：`reachableScreenIds` 从入口沿已有边求可达；`mergeStaticEdges` 仅对入口不可达的屏补边——优先采用静态合成的箭头/注释/画布顺序边，仍不可达的剩余屏按合成器画布顺序串链；显式原型边与入口不变，新增边 `inferred/low`。提取阶段仅在图有边且存在不可达屏时才调用合成器（避免全连通文件多跑一次）。
+- **警告**：补边成功追加 `static-flow-inferred`（“部分屏无原型交互：补充 N 条推断边（需复核）”，details ≤10 条）；`flowGraphWarnings` 在合并后重算，不可达告警随实际图变化。
+- **测试**：`figma-testgen` +1（探索帽命中但覆盖完整不判截断）、`figma-static-fallback` +2（混合稿循环组件补边、`mergeStaticEdges` 静态线索 + 画布链）。全量 2088 绿，lint 0 error（2 条既有 warning）。
+- **边界**：`maxFlows` 默认 10 不变（成本闸保留）；`entryScreens` 仍由显式边自动推导，混合补边只处理“入口不可达”的组件，不强行把多入口设计合并成单流程。
+
+### 13.180 优化（首轮 a11y 标识预挖）
+
+> 2026-10-22。生成步骤的 `a11y:` 注记此前只来自 screen-map `elements`（需要先跑过一轮 iOS 套件才自动发现），首次生成只能靠可见文本定位。
+
+- **图层名启发（`src/figma/test-gen.ts`）**：`identifierFromLayerName` 只接受显式前缀（`testID:`/`a11y=`/`id:`/`accessibilityIdentifier=`/`contentDescription=`）、snake/kebab/dot/colon（`btn_login`/`login-button`）或 lowerCamel（`loginButton`）；含空格、纯单词、中文标签一律不猜（避免把 `Button`/`登录按钮` 当标识）。
+- **文本关联**：`identifierSuggestionsFromGraph` 把交互元素图层名与 `edge.textHints` 的运行期文本关联（同文本取首个）；`loadIdentifierSuggestions` 先读 screen-map 观测结果（命中优先），再用预挖结果补空。figma/pen 共用（都经 flows.json 的 edge.element）。
+- **效果**：首次生成即可在步骤中输出 `a11y: btn_login`（无需先跑一轮）；人工 `screen_map save` 的 manual identifier 仍最高优先。
+- **测试**：`figma-testgen` +2（启发式边界、生成步骤含预挖 `a11y`）。全量 2090 绿，lint 0 error（2 条既有 warning）。
+- **边界**：只处理“有运行期文本的交互元素”；纯图标/无文本元素不猜；代码 locator 扫描（testID/contentDescription 与源码映射）留作后续。
+
+### 13.181 优化（源码 locator 预挖）
+
+> 2026-10-22。接 §13.180：设计图层名之外，源码里的 `testID`/`accessibilityIdentifier` 等才是应用真实定位符，首次生成也应能用上。
+
+- **扫描器（`src/figma/code-identifiers.ts`）**：按扩展名（tsx/ts/jsx/js/swift/kt/java/xml/dart）递归扫描项目，跳过 `node_modules`/`build`/`dist`/`Pods`/`.artemis` 等目录与符号链接；单文件 ≤512KB、最多 800 文件/500 条提示（超限 `truncated`）。
+- **配对**：标识模式 `testID`/`data-testid`/`testTag`/`.accessibilityIdentifier`/`accessibilityIdentifier`/`Key|ValueKey`/`android:id`；文本模式 `Text(...)`/`<Text>…</Text>`/`text=`/`setTitle`/`label|title|placeholder`/`android:text`。仅同文件行距 ≤4 行配对，取最近；文本含代码符号/过长/本身像标识（`loginButton`）则丢弃，避免把 key 当文案。
+- **优先级**：screen-map 观测（manual/自动发现）> 源码 locator > 设计图层名预挖；`AOS_CODE_IDENTIFIERS=0` 关闭源码扫描。
+- **重构**：`identifierFromLayerName` 移到 `src/design/identifiers.ts`（test-gen 仍 re-export，测试兼容），源码扫描复用同一保守校验。
+- **测试**：新增 `test/code-identifiers.test.js` 4 例（RN/SwiftUI/Flutter/Android XML、远距离不配对、忽略目录）；`figma-testgen` +1（源码 `testID` → 生成步骤 `a11y: loginButton`）。全量 2095 绿，lint 0 error（2 条既有 warning）。
+- **边界**：行级启发式，多行 JSX/复杂 DSL 可能漏配；只映射“附近有可见文本”的标识，纯图标元素不猜；扫描上限与缓存策略后续按真实项目调。
+
+### 13.182 调整（项目页：合并重复的「新建任务」区）
+
+> 2026-10-22。用户反馈底部「新建任务」只有一个无内容的黄色标题条＋嵌套卡片，既无独立功能也不清楚用途。
+
+- **移除重复区**：删除 `renderDispatchCta`（`section#regression.c-plain` + `<h2>新建任务</h2>` + 「使用下发向导（唯一入口）」卡片）；其信息并入顶部「下一步」卡。
+- **信息不丢**：有引用用例集时显示「当前有 N 份可引用的用例集；新建任务走下发向导：选来源 → 设参数 → 预览 → 确认」并保留「新建任务」按钮；无用例集来源时给「先去生成/导入用例」按钮＋「去用例库」链接。
+- **空态文案**：任务列表改为「暂无任务（从上方「下一步」创建）」，不再指向已删除的「新建任务」区。
+- **重复入口**：页头的「失败分析 · 统计」与「下一步」卡重复，移除页头行；统计入口只在卡片内（失败分析仍有全局导航）。
+- **测试**：`panel-web` 更新断言（无 `section#regression`/空 `<h2>新建任务</h2>`；保留用例集数、dispatch href、去用例库与计划表单断言）。全量 2095 绿，lint 0 error（2 条既有 warning）。
+
+### 13.183 调整（项目页活动行与表题去重）
+
+> 2026-10-22。接 §13.182 的同类问题排查：活动行出现「待领取：待领取 · id」重复状态词；表格 caption 与 section h2 同名（最近运行/执行机/跨端差异）形成视觉重复。
+
+- **活动行**：`activeLinks`/`pendingLinks` 只显示任务短 id，前缀保留「执行中：」「待领取：」；不再在链接内重复状态词。
+- **表题**：移除 `renderBatches`、`renderRunners`、`renderTaskPage`/`renderStats` 跨端表中与 h2 完全同名的 caption；保留有区分度的表题（接入凭证/任务引用用例集等）。
+- **批次摘要标题**：`归纳分类` → `结果概览`（内容为用例/通过/失败计数 + 失败域，旧标题不直白）；README L3 描述同步。
+- **测试**：`panel-web` 增断言（活动行无重复状态词、项目页无 `caption>最近运行/执行机`、任务页无 `caption>跨端差异`、批次页无「归纳分类」）。全量 2095 绿，lint 0 error（2 条既有 warning）。
+
+### 13.184 调整（面板术语第一刀：用例集 / 设备运行）
+
+> 2026-10-23。按业务梳理 P0「统一业务语言」先做面板第一刀；DB/API/代码标识符不动，仅 UI/文档/帮助层收敛。
+
+- **对象名**：`份` 保留为量词，不再作对象名；面板用「用例集」。用例库标题/列/动作改为「用例集」「按用例集下发」「下发该用例集」。
+- **运行层级**：`设备运行` → `设备运行`；任务页「引用用例集」→「引用用例集」、项目任务表「引用用例集数」→「引用用例集数」；停止/取消确认文案同步。
+- **下发页**：来源「用例库选用例集」、字段「用例集」、空态「选择用例集」、预览表「引用用例集明细」。
+- **统计口径**：旧「用例集份 / 无份 / 最近份批次」统一为「用例集 / 无用例集来源 / 最近用例集批次」；仅 UI 文案，不改统计主体字段。
+- **术语表**：`份` 条目改为「用例集」并注明「份」为量词；`子运行` 改为「设备运行」。
+- **测试**：`console-shell`/`console-pages`/`console-dispatch`/`console-a11y`/`panel-web` 同步断言。全量 2095 绿，lint 0 error（2 条既有 warning）。
+- **边界**：DB 表/列（`case_sets`/`suite_runs`/`suite_run_cases`）、API 字段、代码标识符不变；CLI/README 收口见 §13.185。
+
+### 13.185 调整（CLI/文档术语收口与过期内容清理）
+
+> 2026-10-23。接 §13.184：把同一口径推到 CLI 帮助/运行提示与文档，并删除明确过期或重复的内容。
+
+- **CLI/runner 文案**：`按端展开设备运行`、`引用用例集`、`设备运行 N`；`suite schedule` 的 `last_note` 改为「引用用例集均不可用」。
+- **文档术语**：README/AGENTS/DESIGN/接入指南中的 `子运行`/`引用份`/`最新份` 等旧复合词收敛为「设备运行」「引用用例集」「最新用例集」；“份”只作量词。
+- **过期内容清理**：README 删除 M0–M6 里程碑快照与 `/Users/louis/artemis` 旧运行时说明；DESIGN §1.3 删除“不做 iOS”旧非目标；DESIGN §13 删除 M6 未实施期的“现状评估”旧表，改为当前状态 + 历史记录术语说明；AGENTS 里程碑行改为“当前主线能力已落地，详见 DESIGN”。
+- **边界**：`docs/superpowers/plans|specs` 历史计划保留当时措辞；DB/API/代码标识符不变。
+- **测试**：`fire-schedules`/`native-workflow-tool` 同步断言。全量 2095 绿，lint 0 error（2 条既有 warning）。
+
+### 13.186 改进（批次详情：UI 保真入口）
+
+> 2026-10-23。接业务梳理 P1「UI 保真入口」：`suite run --ui-diff` 已有 UI 四态，但批次详情只显示功能状态，UI 结果只能从清单 JSON 里翻。
+
+- **数据**：`PanelBatchDetail` 增 `ui: UiSummary | null`；`PanelBatchCaseView` 增 `ui: UiVerification | null`；`buildPanelBatchDetail` 从 `manifest.summary.ui`/`cases[].ui` 读取，旧清单缺字段 → `null`。
+- **渲染**：批次详情「结果概览」显示 UI 计数 chip（失败/未验证/通过）；「用例结果」表新增 **UI** 列，四态显示为通过/失败/未验证/不适用，`reason` 进 `title`；旧清单显示 `—`。
+- **任务页**：`PanelTaskRunView` 增 `ui: UiSummary | null`；`buildPanelTaskDetail` 按台账 `manifestPath` 读取本机批次清单的 `summary.ui`，远端执行机/清单不可读 → `null`；「设备运行」表新增 **UI** 列并回显计数 chip。`loadRunManifest` 支持绝对路径（面板直接使用台账路径）。
+- **测试**：`panel-web` 批次详情与任务页用例构造 `ui.failed` 清单，断言 JSON `ui`/`cases[].ui` 与 HTML `UI` 列、`UI 失败 1`。全量 2095 绿，lint 0 error（2 条既有 warning）。
+- **边界**：只读展示，不改变功能门禁；未改 `suite_runs` schema，任务页 UI 汇总依赖清单在本机可读（远端执行机显示 `—`）。
+
+### 13.187 实施记录（P1：面板项目事件入口）
+
+> 2026-10-23。接业务梳理 P1「事件/反馈入口」：`project_events` 已有 `aos_event_report/aos_events/aos_event_poll` 与 `/events/<project>`，但面板只能看内部审计，看不到项目执行事件与 `feedback.request`。
+
+- **路由**：`GET /panel?section=events`（HTML）与 `GET /panel.json?project=…&section=events`（JSON `view:"events"`）；运维版块页签「数据 / 审计 / 事件」，`ConsoleNavKey` 增 `events`。
+- **筛选**：`type` / `status` / `consumed`（0=未消费，1=已消费）/ `since`；`ProjectStore.listProjectEvents` 新→旧、最多 200 条，payload 默认不回显；读取异常在页内卡片标注，不整页失败。
+- **渲染**：`renderEventsPage` 显示 seq/时间/类型/状态/关联（runId/caseId）/消费态/大小；`feedback.request` 加「反馈」徽章；快捷筛选「全部 / 未消费 / 反馈请求 / 近 24 小时 / 近 7 天」；底部说明上报与轮询入口。
+- **边界**：面板只读，消费确认仍由 `aos_event_poll` / `GET /events/<project>/poll?consume=true` 完成；按主机作用域 store 读取（`?host=` 保留）；不新增表、不改事件协议。
+- **测试**：`panel-web` 新增项目事件用例（事件新→旧、`type=feedback.request&consumed=0` 过滤、消费后 `consumed=1`、HTML 事件页与反馈入口）；全量 2096 绿，lint 0 error（2 条既有 warning）。
+
+### 13.188 实施记录（P2：项目页机队视图）
+
+> 2026-10-23。接业务梳理 P2「多机机队视图（队列/容量/租约/离线）」：项目页原执行机表只列名称/设备/工具/心跳，缺少队列积压、容量与租约占用。
+
+- **数据**：`ProjectStore` 增 `listDeviceLeases({hostId?})`（Memory/File/PG 三实现；缺省按 store 主机作用域，PG 直读 `device_leases`）；`PanelProjectDetail` 增 `fleet: PanelFleetView`。
+- **口径**：执行机在线/失联复用 runner TTL；设备容量按 runner 上报的 `devices[]` 统计（total/iOS/Android），`busy`＝未过期租约的去重 `host:serial`；队列按最近 200 条回归任务的 `pending/claimed/running/stopping` 计数（近似，精确以任务页为准）；租约表含 host/serial/task/到期/有效或已过期。
+- **渲染**：项目页执行机区块新增四张摘要卡（执行机/设备容量/任务队列/设备租约）＋「设备租约」表（任务可点回任务页）；无 runner 时也保留机队摘要与租约空态。
+- **测试**：`queue-lease` 三存储补 `listDeviceLeases`（host 过滤、文件重开后租约仍在）；`panel-web` 项目页断言机队四卡、租约状态与 JSON `fleet` 计数。全量 2096 绿，lint 0 error（2 条既有 warning）。
+- **边界**：只读；不新增表/迁移；队列计数为最近 200 条近似，租约读取按主机作用域，跨项目租约在主机机队视图内可见。
+
+### 13.189 改进（结果页：失败处理路径）
+
+> 2026-10-23。接业务梳理 P1「结果页按失败处理旅程组织」：原失败分析页只有队列与底部动作指引，首次使用者需要自己拼「先看证据、再裁决、再建单/复跑」。
+
+- **渲染**：失败分析页在队列上方新增「失败处理路径」卡片，按 **发现 → 证据 → 裁决 → 修用例/建单 → 复跑** 列出当前未裁决数与对应页内锚点/链接（`#improvement`、`#issues`、`#run-hint`）；无失败用例时不渲染。
+- **边界**：只读导航，不改变裁决/建单/复跑逻辑；文案链接复用既有页面锚点。
+- **测试**：`panel-web` 失败分析用例新增路径卡与五步文案断言；全量 2096 绿，lint 0 error（2 条既有 warning）。
+
+### 13.190 加固（CMS 开放服务：可选每客户端限流）
+
+> 2026-10-23。接业务梳理 P2「CMS Open 独立产品化」：已有 Bearer 鉴权、队列/并发/超时/体积上限，缺少面向外部调用方的请求频率上限。
+
+- **入口**：`cms-open --rate-limit <n>` 或 `AOS_CMS_OPEN_RATE_LIMIT`（0=关闭，最大 6000）；启动日志回显当前限流；`--help` 与 `--check` 同步。
+- **服务**：`CmsOpenServerOptions.rateLimitPerMinute`；进程内按 `request.socket.remoteAddress` 维护 60s 滑动窗口（不信任 `X-Forwarded-For`），鉴权通过后、路由前计数；`/healthz` 与 CORS 预检豁免；超限抛 429 `rate_limited`，带 `Retry-After`；窗口内恢复；Map 超过 1024 个客户端时清理空桶。
+- **边界**：单进程内存计数，不跨实例/重启；反向代理后所有客户端共享代理 IP，需在代理层另做限流；未新增持久化/表。
+- **测试**：`open-server` 新增限流用例（第 3 次 429、`Retry-After`、healthz 豁免、窗口后恢复）；`open-command` 补 flag/env 校验与日志；全量 2098 绿，lint 0 error（2 条既有 warning）。
+
+### 13.191 实施记录（P2：ui-lint 最小规则）
+
+> 2026-10-23。接业务梳理 P2「`ui-lint` 机械规则与 UI 基线治理」的第一条：先只做圆角字面量，不铺 presentation/hero 等尚未有稳定映射的规则。
+
+- **命令**：`suite ui-lint [--contract <json>] [--allowlist <json>] [--project <dir>] [--json]`；默认读 `.artemis/design/ui-contract.json` 与 `.artemis/design/ui-lint-allowlist.json`；缺契约/解析失败 exit 2，未登记圆角 exit 1，全通过（含 allowlist）exit 0。
+- **规则**：扫描 Compose `RoundedCornerShape/CornerRadius`、SwiftUI `cornerRadius/RoundedRectangle`、Flutter `BorderRadius.circular`、CSS `border-radius`、JS/RN `borderRadius`、Android XML `android:radius`；值必须命中契约 `screens[].tokens.cornerRadius`（另允许 `0`）。启发式命中只报文件/行/列/栈/片段，不自动改代码。
+- **范围**：跳过 `.artemis`、测试、构建、依赖、vendor 目录与符号链接；单文件 ≤1 MB、最多 5000 个文件；不做设计→代码映射，`mapping-confidence` 留待后续（当前按全局 token 集合校验）。
+- **allowlist**：`{version, entries:[{file,value?,owner,reason,expiresAt}]}`；缺字段、非法/过期时间不生效并告警；命中的 finding 标 `allowlisted`，不阻塞退出码。
+- **边界**：本批仅圆角规则；颜色/字号见 §13.208，字体族/字重见 §13.213/§13.210，逐屏映射见 §13.218；presentation/hero 资源仍未实现，文档与输出不冒充；不接 `suite run` 门禁，需手动/CI 调用。
+- **测试**：新增 `ui-lint` 4 例（契约通过/未登记失败、allowlist 生效/过期、缺契约硬错、CLI JSON 与 0/1/2 退出码）；全量 2102 绿，lint 0 error（2 条既有 warning）。
+
+### 13.192 改进（ui-lint：仅扫工作区变更）
+
+> 2026-10-23。接 retro「存量与例外：只扫变更文件/新 ticket」：全量扫描存量项目会一次报出大量历史圆角，白名单压力大。
+
+- **入口**：`suite ui-lint --changed`；只取 `git diff --name-only --diff-filter=ACMR HEAD`（已提交后的暂存/未暂存改动）与 `git ls-files --others --exclude-standard`（未跟踪文件）的交集，再按源码扩展名过滤。
+- **行为**：仍走同一契约/allowlist/规则；`scanned.files` 为变更后实际扫描数；空仓库无 `HEAD` 时回退 untracked；非 git 仓库抛错 → CLI exit 2；不改变默认全量行为。
+- **测试**：`ui-lint` 增 1 例（提交后只改 A → 全量命中 A+B、`--changed` 只命中 A；非 git 仓库报错）；全量 2103 绿，lint 0 error（2 条既有 warning）。
+- **边界**：不解析 `--since <ref>`/PR diff；重命名按新路径；CI 可在 checkout 后直接对工作区差异跑。
+
+### 13.193 改进（项目事件页：可选 payload）
+
+> 2026-10-23。事件/反馈入口此前只有类型/状态/消费态，`feedback.request` 的具体诉求拿不到，仍需改走 `aos_events`/HTTP。
+
+- **入口**：`?section=events&payload=1` 或页内勾选「显示 payload」；默认关闭保持列表轻量。
+- **数据**：`includePayload:true` 时沿用事件存储上限（最多 50 条），JSON 同源返回 `events[].payload` 与 `includePayload`；默认仍不回显。
+- **渲染**：表格新增「内容」列；优先取 payload 的 `message/summary/note/text/reason/title/comment`，否则 JSON 序列化；单元格截断 220 字、`title` 截断 500；「反馈请求」快捷入口自动带 `payload=1`。
+- **边界**：payload 可能含业务/日志文本，面板按内网只读面处理；不做脱敏与全文检索；消费确认仍走 `aos_event_poll`。
+- **测试**：`panel-web` 项目事件用例补默认不返回 payload、`payload=1` JSON 回显与 HTML「内容」列/反馈正文；全量 2103 绿，lint 0 error（2 条既有 warning）。
+
+### 13.194 加固（ui-lint：契约完整性闸门）
+
+> 2026-10-23。retro P0 要求「缺契约或 no-baseline 不得进入实现」；ui-lint 原先只查圆角，契约不完整也能通过。
+
+- **入口**：`suite ui-lint --require-complete`；默认不影响退出码，供实现前/CI 显式收紧。
+- **口径**：契约 `screens[].status` 必须全部为 `extracted`；`partial/unverifiable/no-baseline/unknown` 计入 `contract.incomplete`，无屏幕时记 `missing`。报告 JSON 增 `statusCounts` 与 `incomplete[{id,name,status}]`；`ok=false` → exit 1。
+- **输出**：摘要行显示「契约 N 屏（未完成 M）」；未完成与未登记圆角分别报错，避免把契约缺口误报成圆角问题；`--json` 原样带出。
+- **边界**：不自动补设计/契约；颜色/字号见 §13.208；字体族/字重见 §13.213/§13.210，逐屏映射见 §13.218；presentation/hero 等仍未检查；allowlist 按 `rule` 作用域与各规则共用。
+- **测试**：`ui-lint` 增 `--require-complete` 用例（默认通过、严格失败、CLI JSON/exit 1）；全量 2104 绿，lint 0 error（2 条既有 warning）。
+
+### 13.195 改进（统计下钻：调用量与成本代理）
+
+> 2026-10-23。接业务梳理 P2「质量趋势与成本指标」：flaky/趋势已有，生成/执行投入只能去 `aos_usage` 另查；不引入虚构的计费单价，先给调用量与耗时口径。
+
+- **数据**：`buildPanelStatsView` 读取最近 7 天 `usage_events`（`limit ≤ 10000`，客户端调用口径，ADR-0006），`buildPanelUsageCostView` 聚合总调用/成功率/p95、生成/执行/其他分组与 top5 工具（复用 `usageSummary`）。
+- **分类**：生成＝`design_to_test`、`figma_*`、`pen_*`；执行＝`run_regression`、`verify_jira_issue`、`mobile_*`；其余计其他；不含内部编排调用，也不是计费金额。
+- **渲染**：统计页新增「调用量与耗时（近 7 天）」区块：总调用/成功率/p95、生成与执行的调用数及 p95、top5 工具表；无事件显示采集关闭/无调用空态。
+- **测试**：`panel-web` stats 用例补 3 条 usage 事件（生成 1 / 执行 2），断言 HTML 区块与 JSON `usage.total/generation/execution`；全量 2104 绿，lint 0 error（2 条既有 warning）。
+- **边界**：仅客户端调用；`AOS_USAGE=0` 停采集但历史仍可读；无 token/金额字段，UI/文档均标注「成本代理，不是计费」。
+
+### 13.196 实施记录（P2：面板进程级角色/权限）
+
+> 2026-10-23。接业务梳理 P2「角色/权限模型（看/派/改/建单）」：先做内网单租户的进程级最小模型，不引入多用户登录/身份表。
+
+- **角色**：`AOS_PANEL_ROLE=viewer|dispatcher|maintainer|admin`；未配置时 HTTP 默认 `admin`、`AOS_PANEL_ACTIONS=0` 强制 `viewer`，非法值 fail closed 为 `viewer`；独立 `panel --web` 仍要求 `AOS_PANEL_ACTIONS=1`。
+- **动作范围**：viewer 只读；dispatcher＝任务创建/取消/停止/释放/重派 + 队列暂停/恢复 + 导出；maintainer＝+裁决/计划/隔离/导入/主机登记；admin＝+Jira 建单/证据重试。
+- **服务端**：`src/panel/roles.ts` 提供角色解析、`panelRequiredRoleForPath` 与 rank；`handlePanelActionRequest` 在同源校验后、路由前强制，越权 `403 {code:"role_forbidden",role,required}`；`AOS_PANEL_ACTIONS=0` 仍整体 404。
+- **UI**：`ConsoleCapabilities` 增 `role/scopes`；顶栏显示「角色：派发/维护/管理/只读」；派发、任务动作、裁决、建单、用例库写入口、计划、导出按 scope 禁用并给可见原因；裁决页只读时 checkbox/提交禁用，建单区块提示需要 admin。
+- **边界**：进程级单角色；HTTP 命名令牌（§13.216）按请求用户角色覆盖，独立面板/静态令牌仍用进程角色；不替代反向代理鉴权；非法角色 fail closed；Jira 建单仍是外部副作用。
+- **测试**：新增角色解析/路由拒绝（panel-actions）、顶栏角色（console-shell）、派发 scope（console-dispatch）、用例库 scope（console-pages）；全量 2109 绿，lint 0 error（2 条既有 warning）。
+
+### 13.197 加固（CMS 开放服务：每日任务配额）
+
+> 2026-10-23。接 P2「CMS Open 独立产品化」：限流只约束频率，不能防止外部调用方一天内大量建任务；补一个可选的每日成功入队配额。
+
+- **入口**：`cms-open --max-jobs-per-day <n>` 或 `AOS_CMS_OPEN_MAX_JOBS_PER_DAY`（0=关闭，最大 100000）；启动日志/`--help`/`--check` 回显。
+- **服务**：`CmsOpenServerOptions.maxJobsPerDay`；进程内按客户端地址 + UTC 日计数，`POST /jobs` 校验通过、`manager.create()` 成功后计数（队列满等失败不消耗配额）；超限 429 `quota_exceeded` + `Retry-After` 到次日 UTC；`/healthz` 不受影响；Map 超过 1024 时清理非当日桶。
+- **边界**：单进程内存、不跨实例/重启；反向代理后共享代理 IP；只统计成功入队，不统计执行失败；与分钟限流独立叠加。
+- **测试**：`open-server` 新增每日配额用例（首个 202、第二个 429、healthz 豁免、UTC 日切换恢复）；`open-command` 补 flag/env 校验与日志；全量 2111 绿，lint 0 error（2 条既有 warning）。
+
+### 13.198 产品化（CMS 开放服务：/readyz 容量就绪）
+
+> 2026-10-23。接 P2「CMS Open 独立产品化」：`/healthz` 只证明进程活着，负载均衡/运维看不到队列是否已满、任务是否在跑。
+
+- **端点**：`GET /readyz`（免 Bearer、免限流，与 `/healthz` 同层）返回 `{ok, ready, bootId, queue:{queued,running,maxQueue,maxConcurrent}, jobs:{queued,running,done,failed,cancelled}}`；`ready = queued < maxQueue`。
+- **边界**：只读快照，不触发清理/调度；`maxQueue/maxConcurrent` 回显启动参数；不暴露工作目录、任务输入或凭证；进程级单实例口径。
+- **测试**：`open-server` 新增 readyz 用例（无鉴权 200、容量字段、完成后 done 计数）；全量 2112 绿，lint 0 error（2 条既有 warning）。
+
+### 13.199 治理（ui-lint：allowlist 到期提醒/门禁）
+
+> 2026-10-23。接 retro「被接受的差异回写白名单，避免每次回归重报」：allowlist 只校验字段/过期，缺到期前的可见提醒与 CI 收紧开关。
+
+- **数据**：`UiLintReport.allowlist` 增 `{entries, expiring[{file,owner,reason,expiresAt,daysLeft}]}`；默认阈值 7 天，按剩余天数升序；过期条目仍由原逻辑忽略并告警。
+- **CLI**：`--expiry-warn-days <n>`（默认 7）控制提醒窗口；`--fail-on-expiring` 有即将到期条目时 `ok=false` → exit 1；摘要行回显 allowlist 条数与即将到期数；`--json` 原样输出。
+- **测试**：`ui-lint` 增到期用例（3 天后到期 → expiring 1/警告/`--fail-on-expiring` 失败）；全量 2113 绿，lint 0 error（2 条既有 warning）。
+- **边界**：只提醒/阻塞，不自动续期或删除；到期后条目继续按过期忽略；仅影响 `ui-lint` 退出码，不改变面板/运行门禁。
+
+### 13.200 产品化（CMS 开放服务：Prometheus /metrics）
+
+> 2026-10-23。接 P2「CMS Open 独立产品化」：`/readyz` 适合探活，但 SLA/容量趋势需要可抓取的时序指标。
+
+- **端点**：`GET /metrics`（Prometheus text exposition v0.0.4）：`cms_open_jobs{status=...}`、`cms_open_queue_capacity`、`cms_open_worker_capacity`、`cms_open_ready`、`cms_open_build_info{boot_id}`。
+- **鉴权**：不豁免 Bearer（与业务端点一致，便于内网/网关统一）；不受分钟限流/每日任务配额影响（只读快照，不创建任务）。
+- **边界**：单进程快照，不持久化历史；不含请求输入、项目路径或凭证；高基数标签仅 status（5 个固定值）。
+- **测试**：`open-server` 新增 /metrics 用例（格式/容量/ready/boot_id、启用 Bearer 时 401/200）；全量 2114 绿，lint 0 error（2 条既有 warning）。
+
+### 13.201 改进（面板排除服务仓等项目）
+
+> 2026-10-23。业务方反馈：服务仓自身作为项目会话运行时，会把自己注册进中心台账，导致总览项目列表「自己监控自己」。
+
+- **入口**：服务仓库自身默认隐藏（`projectExcluded` 按服务仓库根目录判断，避免“自己监控自己”）；`AOS_PANEL_EXCLUDE_PROJECTS` 逗号分隔项目名（大小写不敏感）或绝对根路径可再隐藏其他项目；非法/相对路径按项目名处理，不做 glob。
+- **范围**：`buildPanelOverview` 合并注册行与 workspace 行后过滤，`PanelOverview.excludedProjects` 暴露隐藏数；`buildPanelCompare` 复用总览行并透传该数；页面标注「已隐藏 N 个项目（服务仓库默认隐藏，或由 AOS_PANEL_EXCLUDE_PROJECTS 指定）」；2026-10-26 扩展：面板项目切换器/搜索、usage 看板列表与 `usage --all` 同源过滤（见 §13.226）。
+- **不影响**：直接 `?project=<rootPath>`、项目详情、统计、任务、台账/运行；只是列表可见性。显式 usage `?project=`/`--project` 仍可访问被隐藏项目。
+- **测试**：`panel-overview` 增名称/路径隐藏与直接详情仍可访问；`panel-web` 增 JSON/HTML 提示与直接 URL；全量 2116 绿，lint 0 error（2 条既有 warning）。
+- **边界**：进程级 env，需重启面板；usage CLI/Web 不读取该变量（统计仍可按项目查询）。
+
+### 13.202 实施记录（design_to_test：人类层/执行器层与 API 说明）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-design-to-test-dual-layer-design.md` 实施：净化人类层、保留执行器层，补 API 变更状态与截图可见性。
+
+- **人类层**：`GeneratedTest` 增 `humanSteps/displayName/displayScreens/humanization`（additive；`steps`/`name`/`screens` 机器语义与 caseId 哈希不变）。人类步骤优先可见文本，其次剥离通用词后的可读图层名，最后回退控件通用名；回退密度 >20% 或 ≥3 个自动进备注；MD 正文不展示 `设计元素/i18n/a11y`。
+- **Excel**：主表 12 列（保留导入所需的用例编号/模块/Section/关联用例），隐藏「执行器」sheet 存 `caseId/displayId/humanStepsHash/taskDesc/设计引用`；新增「API 说明」sheet；模板占位符 `case.steps` 输出人类步骤，`case.taskDesc` 仍为机器描述。
+- **Markdown**：每个用例设计图嵌入（有图时），执行器 `taskDesc` 放 `<details>`；API 状态块展示 pending/provided/无变更/未确认。
+- **API**：`design_to_test`/`figma_generate_tests` 增 `apiChange/apiSpec/apiSpecPath`；`apiSpec` 内联到 `tests.json.apiReview`（≤64 KiB，`apiSpecPath` 限项目内），随 case-set JSON 复制；`new/modified` 缺说明时生成并标 `pending`，响应 `apiReviewNextAction`；补说明走 `reuseExistingTests:true + apiSpec` 原位更新 tests/md/xlsx 与匹配 case-set，不重生成、不改 caseId；`apiChange:"none"` 覆盖为 not-applicable；未传时沿用上次并标 `carriedForward`，设计指纹变化升级 warning。
+- **截图**：`design_to_test` 默认 `screens:true`（显式覆盖 `AOS_SCREENS=0`）；关闭/失败写 `screens-disabled`/`screenshot-*`；MD 实际 `<img>` 数与映射数不一致写 `screenshot-embed-mismatch`。
+- **导入回环**：`readCaseSheet` 解析隐藏执行器 sheet；`importTestDocument` 按 displayId 匹配并比对 humanStepsHash，未编辑复用 taskDesc+caseId，编辑后重建并保留 caseId、返回 `warnings`；`run_regression` 回显 `importWarnings`。
+- **批次**：`RunManifest` 增 `apiReview` 快照（change/status/specSha256/designFingerprint/carriedForward/designChanged）。
+- **测试**：新增人类层/API pending+provided/补说明/截图关闭/Excel 回环（未编辑+编辑）用例；全量 2122 绿，lint 0 error（2 条既有 warning）。
+- **边界**：旧产物无新字段仍可读；自定义 Excel 模板可能含技术信息；case-set 归档在补说明时按 `savedTo.json` 匹配更新，未匹配的不强改。
+
+### 13.203 改进（跨端语义身份与 parity）
+
+> 2026-10-23。Android/iOS 同一份 `.pen` 生成结果不一致的根因是 flows 变体不同（replanned 19 屏/32 边 vs inferred 23 屏/22 边），且 caseId 仍含平台 a11y/i18n grounding。
+
+- **semanticId**：`GeneratedTest` 增 `semanticId`（`sem-<sha12>`），只由 canonical 路径骨架（屏幕序列 + 边 from/to/trigger/back）派生；不含 taskDesc、i18n、a11y、模块名、人类步骤、预期或对账来源。同一路径骨架重复出现时追加 `-2`/`-3` 稳定序号，避免不同用例合并。旧 `id`（caseId）保留用于历史兼容。
+- **displayId**：新产物 `displayId` 改由 `semanticId` 派生（`TC_<6>`），同源跨端应一致；旧产物仍读旧值。
+- **指纹**：`tests.json` 顶层增 `designFingerprint` 与 `flowsFingerprint`；`flowsFingerprint` 哈希 canonical `FlowGraph`（屏幕/边/文本提示/来源），同一 Figma URL 内容变化也会变化；`designFingerprint` 对 URL 源同样吸收内容指纹（非 URL 源直接用内容指纹）。
+- **CLI**：新增 `suite parity --a <tests.json> --b <tests.json> [--json]`：比较 semanticId/displayId/名称/屏幕/人类步骤/前置/预期/测试数据/section/module，忽略 taskDesc/i18n/a11y；重复 semanticId 单独报 `duplicate`（不静默合并）；报告 design/flows/reconciliation 指纹与 maxFlows/maxDepth 差异；exit 0 一致 / 1 差异 / 2 读取失败。
+- **测试**：`parity` 5 例（机器层差异忽略、人类层差异/缺失、指纹差异、reconciliation/generation 差异、CLI JSON）；全量 2127 绿，lint 0 error（2 条既有 warning）。
+- **边界**：旧 tests.json 无 semanticId 时 parity 用 `id` fallback 并警告；功能命名/LLM 随机仍可能造成 module/section 差异，parity 会如实报告。
+
+### 13.204 实施记录（风险修订第一批：R1/R2/R8/R10）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-dual-layer-risk-assessment.md` rev 3 的第一批实施。
+
+- **R1 导入回环**：`humanStepsHash` 扩展为 `steps + preconditions + expected + testData`；Excel 导入新增「测试数据」列解析；步骤/预期/数据任一变化都会重建 `taskDesc` 并保留 `caseId`，重建时追加隐藏执行器层 `设计引用`；测试覆盖“只改预期/测试数据”。
+- **R2 API pending 门禁**：`suite check`、`suite run`（含 `--task`/runner 领取路径）与 `design_to_test(run:true)` 默认阻断 `apiReview.status=pending`；新增 `--allow-pending-api` / `allowPendingApi:true`；Excel 导入集保持 `n/a (imported)` 豁免。
+- **R8 截图**：`tests.md` 按用例先对屏幕引用去重，单用例上限从 3 提到 8；`screenshotEmbedWarning` 同步按去重后 `min(n,8)` 校验。
+- **R10 semanticId**：派生改为纯路径骨架（归一化屏幕序列 + 边 from/to/trigger/back），剥离 `hints/provenance/humanSteps`，避免单端 reconciliation/acceptance 打断跨端配对；`displayId` 随 semanticId 稳定。
+- **测试**：`figma-testgen`/`figma-test-screens`/`suite-command` 增补；全量 **2131 绿**，lint 0 error（2 条既有 warning）。
+
+
+### 13.205 实施记录（风险修订第二批：R10 碰撞/R11 持久化/R12 内容指纹）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-dual-layer-risk-assessment.md` rev 3 的第二批实施。
+
+- **R10 碰撞消歧**：`generateTestCases` 生成后执行 `disambiguateSemanticIds`，同一纯路径骨架的第二/第三条追加 `-2`/`-3`；同一路径不同数据不再共享 semanticId，`displayId` 随最终身份派生；旧产物重复 semanticId 由 `suite parity` 报 `duplicate`。
+- **R11 API 说明持久化**：`SuiteRunRecord` 增 `apiReview`（PG `suite_runs.api_review`；file/memory 同步），登记时从 `tests.json` 快照；`suite backfill` 从清单快照回填。面板批次详情优先读台账，清单缺失/损坏时按 `manifest_path` 回退台账，仍展示 `apiReview` 与用例摘要。
+- **R12 内容指纹**：新增 `flowGraphFingerprint(graph)`；`flowsFingerprint` 改为内容指纹，`designFingerprintFor` 支持从实际 `FlowGraph` 计算（URL 源拼接 URL + 内容），同一 URL 的文本/连线/acceptance 变化可被 parity/API carry-forward 检测。
+- **测试**：新增 `run-registry`/`suite-backfill`/`panel-overview`/`console-pages`/`figma-testgen` 用例；全量 **2138 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.206 实施记录（风险修订第三批：R5/R6/R7）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-dual-layer-risk-assessment.md` rev 3 的第三批实施。
+
+- **R5 统一用例选择器**：`design-store.resolveCaseSelector(selector, cases)` 精确匹配 `caseId` → `semanticId` → `displayId`；同选择器多条命中返回 `ambiguous` 与候选 `caseId`，不静默取首条。`suite run --case`、`suite flake --cases`、`suite baseline --case`、`suite report --case` 与 `quarantine.json` 隔离匹配均接入；`GeneratedCase` 投影补 `semanticId`/`displayId`（旧产物为 null）。
+- **R6 功能身份持久化**：`flows.json` 顶层可选 `features: [{key,name,screens}]`；生成时作为最高优先 `PriorFeature` 交给既有 `applyIdentity`，优先级高于 `case_sets` 历史；首次命名后（`save !== false` 且非 URL 源）写回 `flows.json`。写回按 key/name/screen 集合幂等，`save:false` 不动 flows；URL 源不写本地 flows。
+- **R7 vision 人类标签**：`humanElementLabel(edge, graph?)` 优先顺序固定为「运行期可见文本 → 已 grounding 的 vision 元素 label（按 `nodeId`/`id` 匹配）→ 去通用词图层名 → 通用控件名」；无文字图标/按钮不再一律退化为「按钮」。
+- **测试**：新增 `design-store` 选择器、`suite-command` 的 run/flake/quarantine/baseline/report 选择器、`figma-testgen` 的 features 继承/写回/`save:false`/vision label 用例；全量 **2147 绿**，lint 0 error（2 条既有 warning）。
+
+
+### 13.207 实施记录（风险修订第四批：R3/R4；R9 边界）
+
+> 2026-10-23。按 `docs/superpowers/specs/2026-10-23-dual-layer-risk-assessment.md` rev 3 收口。
+
+- **R3 共享设计真源**：新增 `design.sharedDir`（`aos.config.jsonc`）与 `AOS_SHARED_DESIGN_DIR`（项目 `.env`/进程 env，优先级 env > .env > config）。共享目录作为**只读 canonical flows**：`figma_generate_tests` 默认读取、`preflight`/`suite check`/`suite runner`/`design_to_test`/`run-report`/UI 核验读取同一路径；共享 `flows.json` 缺失时回退项目本地。现场提取仍写项目本地，确认后由人工/脚本原子 promote 到共享目录；跨主机不共享磁盘，仍用 Git/parity。
+- **R3 版本步调**：`suite check` 比对 `tests.json.flowsFingerprint` 与当前生效 flows 的内容指纹，不一致在 JSON 输出 `flowsFingerprint.stale=true` 并打印警告；`suite parity` 对同目录 flows 内容指纹与 tests 声明不一致报 `flowsFingerprintStale` profile 差异。
+- **R4 API 说明联动**：`apiSpec` 中提取错误码/HTTP 路径线索，当项目 `error-codes.json` 缺失或没有匹配规则时生成 warnings：`api-spec-error-codes-missing` / `api-spec-error-codes-gap`（不阻断生成，进入 tests.json.designWarnings；运行期仍由 `api-errors` 规则匹配）。不修改 taskDesc。
+- **R9 边界**：面板角色/CMS 配额仍为单进程内存级；反向代理/多实例部署继续视为内网单实例边界，不引入 PG 侧角色表或网关限流。
+- **测试**：新增 sharedDir 配置/读取、`suite check` 覆盖与 stale、parity stale、apiSpec error-codes 告警用例；全量 **2154 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.208 实施记录（ui-lint：颜色与字号规则）
+
+> 2026-10-26。接 §13.191/§13.194 的规则扩展：在圆角之外补颜色与字号字面量，仍保持「机械规则 + allowlist 收口」，不推断设计→代码映射。
+
+- **规则**：`suite ui-lint` 扫描 `tokens.colors` 与 `tokens.fontSizes`。颜色支持 `#RGB/#RGBA/#RRGGBB/#RRGGBBAA` 与 `0xAARRGGBB`，统一成 `#rrggbbaa` 比较；`.xml` 的 8 位按 Android `#AARRGGBB`，其余按 `#RRGGBBAA`。字号支持 `fontSize`/`font-size`/SwiftUI `.system(size:)`/UIKit `systemFont(ofSize:)`/Android `textSize`，只比较数值，不换算 rem/em/%。
+- **契约**：`loadContract` 增读 `screens[].tokens.colors/fontSizes`；契约缺对应 token 时跳过该规则并 warning（避免全量误报），`--require-complete` 仍只判屏幕 status。
+- **allowlist**：条目增可选 `rule: radius|color|font-size`；缺省 `radius` 兼容旧条目；颜色 value 归一后比较；非法 rule/value 告警并忽略。finding 增 `rule` 与颜色 `normalized`，JSON additive。
+- **CLI**：摘要分别显示允许圆角/颜色/字号；未登记按规则计数；通过/失败文案改为通用「字面量」。
+- **边界**：启发式命中（注释、CSS 选择器、整数 `0x...`、rem/em 不换算）可能误报，靠 allowlist 收口；颜色 token 取契约 `tokens.colors`（pen fill；stroke/渐变未提取时可能误报）；字重见 §13.210、字体族见 §13.213、逐屏映射见 §13.218；presentation/hero/图片位仍未实现；不接 `suite run` 门禁。
+- **测试**：`ui-lint` 新增 3 例（颜色/字号契约命中与失败、Android/Compose leading-alpha 归一、allowlist rule 作用域与旧条目兼容）；全量 **2158 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.209 实施记录（测试用例字段 P1：relatedCases/designRefs/variants）
+
+> 2026-10-26。按 `docs/superpowers/specs/2026-10-20-test-case-authoring-design.md` P1 实施；P2（执行结果回填/跨平台结果列/warning scope）未开始。
+
+- **relatedCases**：`assignRelatedCases` 按同 module 或共享 ≥1 屏，共享屏数降序 → `displayId` 升序取前 3；只引用传入数组内的 `displayId`。live 在全量 cases 上计算；每个功能 case-set 用浅拷贝子集重算，归档不跨子集引用。
+- **designRefs**：`enrichGeneratedCases` 接收 graph，按 `case.screens` 顺序写 `nodeIds`（缺失写空串，不伪造），入口屏 `suggestedRoute` 非空时写 `route`。
+- **variants**：`acceptance.json` 增 `variants`（`screen`+`label` 必填，`data`/`expected` 各 ≤20，variants ≤20，重复 `screen+label` 忽略）；对每条 variant 克隆 `screens` 包含该屏的基准用例，每 variant 最多 20 个克隆（超出 `variant-clone-truncated`；无命中 `variant-screen-unmatched`）。克隆 `id`/`semanticId` 哈希纳入 `screen + label`（JSON 编码避免分隔符歧义；当前 `displayId` 由 `semanticId` 派生，避免撞身份/parity duplicate）；`steps`/`expectations` 不变；`testData` 合并 `variant.data`（去重 ≤12）；`taskDesc` 在 `【AOS-EXPECT】` 前加 `【变体：label】`（数据/预期）；`expectedResultLines` 在编号预期后追加 `变体预期（label）：...`；`summary.variantGroups` 计数。
+- **模板**：复用既有 `{{case.relatedCases}}/{{case.designRefs}}/{{case.variantLabel}}/{{case.variantExpected}}`，未知占位符原样保留。默认 Excel 沿用 P0 的 12 列 + 隐藏执行器（designRefs 在隐藏 sheet），变体预期追加到「预期结果」列，不新增可见列。
+- **边界**：克隆为浅拷贝；变体不写执行结果（P2）；`taskDesc` 的 `【变体】` 块为执行语义补充，不改 `expectations`；变体选择规则为「覆盖该屏的基准用例」，不是按 Section 猜测。
+- **测试**：`assignRelatedCases` 子集/上限、P1 变体克隆/Excel/MD/relatedCases/designRefs、未命中/超 20 截断、同 label 不同屏身份唯一、模板占位符扩展；全量 **2162 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.210 实施记录（ui-lint：字重规则）
+
+> 2026-10-26。接 §13.208 的字体维度：补字重字面量，仍保持机械规则 + allowlist 收口。
+
+- **规则**：`suite ui-lint` 读 `tokens.fontWeights`，经 `normalizeFontWeight` 统一为 100–900；扫描 `fontWeight`/`font-weight`/`.fontWeight(.semibold)`/`.weight: .bold`/`FontWeight.w600`；名称与数字等价（bold=700、semibold=600、w600=600）；变量/无法解析的值跳过，不误报。
+- **契约/allowlist**：契约缺字重 token 时跳过并 warning；allowlist 支持 `rule:"font-weight"` 数字值；CLI 摘要/错误按规则计数。
+- **边界**：字体族见 §13.213；逐屏映射见 §13.218；presentation/hero/图片位仍未实现；CSS 变量/主题引用不是字面量，不检查；仍不接 `suite run` 门禁。
+- **测试**：`ui-lint` 新增 1 例（名称/数字归一、CSS/SwiftUI/Flutter/RN 命中、allowlist 作用域）；全量 **2163 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.211 实施记录（P2：执行结果回填 + 跨端对比）
+
+> 2026-10-26。接 §13.135 spec P2：`suite report --update-tests` 把运行结果写入 `tests.xlsx` 独立「执行结果」sheet，并按 `suite_runs` 生成「跨端对比」sheet；不改生成计划。
+
+- **入口**：`suite report [--task <id>] --update-tests [--tests-xlsx <path>]`；默认 `.artemis/design/tests.xlsx`；`--tests-xlsx` 相对项目根解析。
+- **数据**：沿用 `RunReport`（`buildRunReport`/`buildTaskRunReport`）；任务报告补 `runId/device/startedAt/appVersion`（task_stats 报告缺省为 `—`）。跨端历史读 `listSuiteRuns`（任务报告按 taskId 过滤；读取失败仅 stderr 告警，不阻断回填）。
+- **Sheet**：`执行结果` 17 列（用例编号/caseId/名称/结果/台账状态/功能/端/设备/耗时/traceId/失败域/失败原因/API 错误/证据路径/批次/运行时间）；displayId 从隐藏「执行器」sheet 的 caseId→展示编号映射，缺失 `—`；不改「测试用例」「执行器」「汇总」。
+- **跨端对比**：`跨端对比` sheet 按 case × 平台取 `suite_runs` 最新结果（Android/iOS 等列动态），并用同平台上一批次状态生成变化（新增/修复/回归/仍失败/仍通过）；附最近批次/时间；仅展示当前报告涉及的 caseId，历史不足时省略该 sheet。
+- **幂等/错误**：重复调用替换同名 sheet，不追加；tests.xlsx 缺失/不可读 → `testsUpdateError`，显式 `--update-tests` 时 exit 1；未指定 flag 零副作用。
+- **边界**：跨端历史只来自已登记 `suite_runs`（best-effort，内存/文件/PG 同源）；不合并历史到 `执行结果` 行、不写 `tests.json`/计划行；`--no-save` 仍可回填（回填是独立写）。
+- **测试**：`run-report` 扩展 1 例（17 列表头、displayId 映射、跨端矩阵/变化、幂等替换、缺失文件）、`suite-command` 扩展 1 例（CLI JSON `testsUpdated`/`historyRows`、跨端 sheet、exit 0/1）；全量 **2165 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.212 实施记录（P2：设计警告→用例 scope 映射）
+
+> 2026-10-26。接 §13.135 spec P2 收口：`DesignWarning` 增可选 `scope.screens/caseIds`，把有作用域的警告挂到命中的用例，不逐条复制全局警告。
+
+- **模型**：`DesignWarning.scope?: {screens?: string[]; caseIds?: string[]}`；`normalizeWarnings` 保留并清洗（去重、去空、非数组忽略），无有效 scope 仍是全局警告。
+- **带 scope 的来源**：acceptance `data/questions/section` 的 invalid/truncated（按屏幕名）、`variants` 的 invalid/duplicate/truncated（按 `screen`）、`variant-screen-unmatched`/`variant-clone-truncated`（按 variant screen）。
+- **挂载**：`attachDesignWarningsToCases` 按 `case.screens` 交集或 `scope.caseIds` 精确匹配，写入 `GeneratedTest.designWarnings`；只在落盘生成时执行，无 scope 的 warning 不挂。
+- **渲染**：`tests.json flows[].designWarnings`；`tests.xlsx` 备注/待确认列追加 `设计警告（code）：message`；`tests.md` 每例「设计警告」小节；全局 `warnings`/`designWarningsSummary` 面不变。
+- **边界**：只有已带 scope 的警告会挂；screenshot/vision 等暂无 scope 的仍只在全局警告面；scope 不做模糊匹配；`save:false` 不落盘；不改变 `suite check` 门禁。
+- **测试**：`normalizeWarnings` scope 清洗 1 例；acceptance 非法 data 的 Home scope 挂载 + Excel 备注/MD 可见（扩展既有 1 例）；全量 **2166 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.213 实施记录（ui-lint：字体族规则）
+
+> 2026-10-26。接 §13.208/§13.210 的字体维度：补字体族字面量，采用保守口径避免回退链噪声。
+
+- **规则**：读 `tokens.fontFamilies`；只检查主字面量——CSS `font-family` 第一族、RN/Flutter `fontFamily`、SwiftUI `.custom("…")`、UIKit `UIFont(name:)`、Android XML `android:fontFamily`；小写并折叠空白后比较。
+- **跳过**：`sans-serif`/`serif`/`monospace`/`system-ui`/`-apple-system` 等通用族、`@font/`/`?attr` 资源引用、`var()/theme()/attr()` 与 `$变量`；不从字体别名/PostScript 名推断。
+- **契约/allowlist**：契约缺字体族 token 时跳过并 warning；allowlist 支持 `rule:"font-family"` 字符串值（归一后比较）；CLI 摘要/错误按规则计数。
+- **边界**：字体别名/PostScript 名/回退链不解析（如 `SF Pro` vs `SFPro-Regular` 会误报，靠 allowlist）；只检查带引号/XML 属性的字面量；不检查字体文件；仍不接 `suite run` 门禁。
+- **测试**：`ui-lint` 新增 1 例（CSS/RN/SwiftUI/UIKit/Android 命中、通用族/资源引用/Variables 跳过、allowlist）；全量 **2167 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.214 实施记录（字重切片 4/5：baseline bbox + 同平台 opt-in 门禁）
+
+> 2026-10-26。接 `docs/superpowers/specs/2026-10-20-font-weight-detection-design.md`：切片 4 落地，切片 5 机制落地但默认关闭。
+
+- **切片 4（baseline bbox）**：`saveBaseline` 优先从 trace `run.json` 的 `steps[].texts` 读设备文本（逻辑点 × `scale` → 设备像素）；trace 无 `texts` 时用 `ui-contract` + `--screen`（缺省按步骤屏文本唯一匹配）做 design-bbox bootstrap（`frameWidth → 设备宽`缩放），写 `meta.json.texts[]` + `textSource`；`compareBaseline` 用同 bbox 裁 baseline/current，调 `measureTextWeight(localization:"baseline-bbox")`，输出 `textStyles`（textsTotal/checked/lighter/similar/heavier/highConfidenceHeavier/unverified/byReason/items）。
+- **切片 5（门禁机制）**：`textWeightGateFails(report,"text-weight")` 仅在 `status=ok` 且 `highConfidenceHeavier>0`（confidence ≥0.7）时失败；CLI `suite baseline compare --fail-on text-weight` 触发 exit 2。**默认不阻断**，真实样本未校准前不进入 `suite run --ui-diff` 门禁。
+- **suite run --ui-diff（report-only）**：`autoCheckUi` 读 `design_device_diff` 的 `detail.textStyles`，按屏累加进 `UiVerification.textStyles` / `UiSummary.textStyles`（textsTotal/checked/lighter/similar/heavier/highConfidenceHeavier/unverified/byReason）；不改 `ui.passed/failed`，批次清单/面板 JSON additive；面板批次/任务 UI 徽标显示中性的 `字重 heavier x/y` chip（不参与门禁）。
+- **降级**：baseline/current 任一非 PNG → `lossy-source`；bbox 越界/无文本 → `unverified`；无 `meta.texts` → `textStyles:null`（不伪造通过）。
+- **边界**：design-bbox bootstrap 依赖 `--screen` 或步骤屏文本唯一匹配（歧义不猜）；要求同设备/同步骤/同 bbox；不识别字体/内容变化（沿用切片 2 的 row/column/extent 守卫）；真实样本校准（同字重 N≥20、regular↔semibold↔bold 双向）仍未做。
+- **测试**：`baseline` 新增 2 例（trace texts → meta bbox、同图 similar、加粗 heavier、高置信计数、`text-weight` gate true / 非 text-weight false；trace 无 texts → design-bbox 唯一匹配、bbox 映射、加粗 heavier）；`ui-auto-check` 新增 1 例（detail.textStyles 聚合、状态不变）；全量 **2170 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.215 实施记录（字重离线校准 harness）
+
+> 2026-10-26。切片 4/5 的真实样本校准前置：不依赖设备，先用成对图片跑离线矩阵。
+
+- **入口**：`suite text-weight-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]`；manifest `{pairs:[{name?,design|baseline,device|current,expected?("lighter"|"similar"|"heavier"),designWeight?,textPixelHeight?,sourceFormat?,lossless?,localization?}]}`，图片路径相对 manifest。
+- **输出**：total/labeled/unlabeled/checked/unverified/`unverifiedByReason`；`confusion[expected][actual]`（actual 含 unverified）；`highConfidenceMismatches`（actual≠expected 且 confidence ≥0.7）、`highConfidenceFalseHeavier`；按 expected 的 delta mean/stddev/min/max；阈值建议（`min(heavier)` vs `max(non-heavier)`，可分离时给中点）。
+- **退出码**：`ok`（无高置信误报）→ 0；有误报/`--strict` 下 unverified 或未标注 → 1；manifest 读取失败/无 pairs → 2。默认报告落 `.artemis/design/reports/text-weight-calibration-<stamp>.json`，`--no-save` 关闭。
+- **边界**：离线、无设备/网络；不自动改 `measureTextWeight` 阈值；真实样本仍需人工按报告判定；同一 manifest 的图片栅格/字号须可比（不替用户换源）。
+- **测试**：新增 `text-calibrate` 2 例（混淆/未验证/delta/阈值、高置信 false-heavier 失败）+ `suite-command` 1 例（CLI JSON、strict exit 1、缺 manifest exit 2）；全量 **2173 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.216 实施记录（身份级 HTTP 命名令牌）
+
+> 2026-10-26。在 §13.113 静态令牌与 §13.196 进程角色之上补身份级最小实现；不引入 OAuth/OIDC/会话/用户表。
+
+- **配置**：`AOS_HTTP_USERS` JSON `[{name,token,role}]`；token ≥16 字符，role ∈ viewer/dispatcher/maintainer/admin；名字/令牌重复或字段非法整批拒绝（启动失败 exit 2，fail closed）。令牌只读进程 env、不落日志/PG。
+- **身份解析**：静态 `MOBILE_TESTING_HTTP_TOKEN` → `{name:AOS_ACTOR|static, role:AOS_PANEL_ROLE 回退}`；用户令牌 → `{name, role}`；启用认证但无匹配 → 401；未启用 → anonymous（沿用进程角色）。
+- **授权**：HTTP 面板页面按请求身份渲染 `capabilities.role/scopes`；动作层用 `request.identity.role` 做既有 `panelRequiredRoleForPath` 闸门；`AOS_PANEL_ACTIONS=0` 仍全局关闭；面板缓存键加入 role 防跨角色命中。
+- **审计**：面板动作 `actor` 记用户名（静态令牌取 `AOS_ACTOR`/static）；取消/停止/建单/派发等动作沿用同一 actor；独立面板无身份时仍记 `panel`。
+- **边界**：命名令牌是共享密钥而非登录会话；用户 CRUD/吊销/轮换见文件生命周期（§13.217）；无每个用户的细粒度资源授权（仅四角色）；用户令牌不用于 runner 产物服务（仍用 `AOS_RUNNER_ARTIFACT_TOKEN`）。
+- **测试**：`auth` 2 例（解析/失败关闭/身份解析）、`http-server` 2 例（命名令牌角色/401/403、非法配置启动失败）、`panel-actions` 1 例（请求身份驱动角色与审计 actor）；全量 **2178 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.217 实施记录（HTTP 用户生命周期：文件存储 + CLI + 热加载）
+
+> 2026-10-26。补 §13.216 的运维闭环：用户不再只能内联在 env，落到权限受控的用户文件；`user` CLI 管理，HTTP 服务热加载，吊销/轮换无需重启。仍不引入 OAuth/OIDC/会话/PG 用户表。
+
+- **存储**：默认 `~/.aos/http-users.json`，`AOS_HTTP_USERS_FILE` 可覆盖；结构 `{version:1, users:[{name, role, tokenSha256, disabled?, createdAt?, updatedAt?}]}`。只存 SHA-256（不落明文/不落 PG），目录 `0700`、文件 `0600`，临时文件 + 原子 rename，按名字排序。非法 JSON/字段/重复名字/重复 hash 整份拒绝。
+- **CLI**：`user add <name> --role <role> [--token <t>] | list | revoke <name> | rotate <name>`，通用 `--file <path>`、`--json`；token 自动生成 32 字节 base64url（显式导入仍需 ≥16 字符），明文仅在 add/rotate 输出一次；`list` 不显示令牌或 hash；revoke 保留记录并置 `disabled`（幂等），rotate 不改变角色/吊销状态；退出码 0 成功 / 1 操作失败 / 2 用法错误。
+- **HTTP 热加载**：每请求按 `mtime+size` 检查文件，变更则重读；轮换/吊销即时生效。运行期非法更新保留上一次有效用户并 WARN（同一错误只告警一次），启动时非法则 `AuthConfigError` → exit 2。文件启动时不存在的服务保持无鉴权；之后文件出现且有用户则自动启用认证。
+- **认证闩锁**：进程一旦启用过认证（静态/inline/文件），运行期清空或删除用户文件也不会放开匿名访问（所有请求继续 401），需重启才回到无鉴权；仅剩 `disabled` 用户同样保持认证开启（fail closed）。
+- **身份/授权/审计**：文件用户与 inline 用户同路径解析（Bearer/Basic → sha256 → `timingSafeEqual`），沿用 §13.216 的请求角色、动作闸门与审计 actor；静态令牌与 inline `AOS_HTTP_USERS` 保持兼容并可并存。
+- **边界**：共享密钥而非登录会话；文件是本机/本进程视图（多机部署各管各的或共享挂载，无中心同步）；无 OAuth/OIDC/会话/密码策略/PG 用户表；无每用户资源级 ACL（仅四角色）；rotate 不自动解除吊销。
+- **测试**：`user-lifecycle` 6 例（hash/权限/CRUD/非法文件/热加载/identity）、`user-command` 4 例（add/list/revoke/rotate/JSON/退出码）、`http-server` 3 例（文件令牌热轮换与吊销、文件后出现动态启用、非法启动失败）；全量 **2191 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.218 实施记录（ui-lint 逐屏映射：screen-map → 文件/组件 → 逐屏 token）
+
+> 2026-10-26。接 UI interpretation retro P2（`docs/superpowers/specs/2026-10-20-ui-interpretation-retro.md`）与业务梳理「ui-lint 扩展」：先落**逐屏映射**前置；presentation/hero/图片位仍未实现，不冒充全量。
+
+- **映射来源**：`.artemis/design/screen-map.json`（`--screen-map <json>` 覆盖）；条目 `design.screen/component` → 契约屏幕（按 id/name/sourceFrameName 归一匹配），`code.file` 按项目相对路径精确匹配、唯一后缀兜底；`code.component` 按声明（class/struct/fun/interface/const 等）或文件名唯一匹配。仅 route、未匹配、路径不存在、后缀/组件歧义一律忽略并进 `mapping.warnings`。
+- **置信与收窄**：`manual`=1、`proposed`/缺省=0.8、启发式=0.5；只有 confidence ≥0.7 且契约屏 `status=extracted` 的显式映射进入 `scopedScreenIds`。`--per-screen` 时按文件映射屏幕的 token 并集检查（圆角始终含 0）；未映射/低置信/partial/该维度无 token → 回退全局或跳过该维度，不把缺 token 扩成全量误报。
+- **报告**：`report.mapping` 含 `screens.mapped/unmapped(+explicit)`、`files.scoped/explicit/heuristic/globalFallback`、逐条 `mappings(source/confidence/usedForScoping)` 与 warnings；finding 在逐屏收窄时增 `scope:"screen"` + `screens[]`。启发式候选（文件/类名匹配，confidence 0.5）仅报告，绝不参与 `--per-screen`。
+- **门禁**：`--require-mapping` 要求每个 `status=extracted` 屏至少有高置信显式映射，否则 `ok=false` / exit 1；默认不要求（存量项目先 `--changed` 或仅报告）。`--require-complete` 仍只管契约屏状态；两者独立。
+- **内存上限**：源码内容一次性读入供映射/扫描，新增 `maxTotalBytes`（默认 256 MB）；超出跳过并告警，`scanned.skipped` 计入。
+- **边界**：只解决逐屏 token 收窄；presentation/hero/图片位、代码 token→设计节点的反向映射未实现；screen-map 的 `route` 无法静态解析；同文件多屏取并集；启发式仅候选，不作权威；映射不改变 allowlist 口径。
+- **测试**：`ui-lint` 新增 5 例（逐屏收窄/未映射回退、`--require-mapping`、组件+启发式、partial 回退、CLI flags/JSON/exit）+ 既有 12 例；全量 **2196 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.219 实施记录（design_device_diff 现成 PNG 设计源，P6）
+
+> 2026-10-26。接 UI interpretation retro P6「廉价 PNG 适配器」：让 `.artemis/design/screens/*.png` 等现成截图可直接作为设计源，解决“有图但不能用”的接口缺口；不替代高倍 pen/Figma 渲染。
+
+- **入口**：`design:{source:"image",imagePath:"<相对项目根或绝对路径>.png"}`；`imagePath` 单独给出时也可推断（省略 `source`），与 `figmaUrl`/`penPath` 同时给出 → 明确报错。`dryRun` 只解析路径并回计划，不读盘/不校验格式。
+- **行为**：实际取源读取 PNG（非 PNG 显式报错，不静默降级）；`designNodes=[]`，报告 `unit.design={source:"image",path,format:"png"}`；新增 `image-source` 警告说明「无节点几何 → 差异按 pixel、区域核验用 tiles」；图层分类不再有 missing/extra/text/asset 等节点语义。
+- **保真**：现成图固定栅格，不做设计侧重渲染；设计宽度低于设备原生栅格时沿用 `design-upscaled` 警告（detail 阈值 0.1），reason 标 `image-source（固定栅格，不重渲染）`；`regions:"auto"` 因无节点源自动退化为 tiles。
+- **边界**：仅 PNG；无节点几何/文本节点契约匹配（`detail.textStyles` 走 text-regions 或为空）；低分辨率不能靠工具“放大变清晰”；只作廉价适配器，验收仍应以 Figma/pen 高倍渲染为准。
+- **测试**：`design-device-diff` 新增 3 例（PNG 源+像素分类/无节点警告、低分辨率 `design-upscaled`+tiles、dryRun/缺路径/JPEG/来源冲突）；全量 **2199 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.220 实施记录（ui-contract 指纹漂移检测，P7）
+
+> 2026-10-26。接 UI retro P7「token 版本化」：契约 `source.fingerprint` 绑定 flows + 逐屏 `.pen`，`ui-lint` 每次重算并告警，避免设计源已变但 token 未更新时静默漂移。
+
+- **指纹口径**：复用 `suite ui-contract` 的 `uiContractFingerprint(flowsPath, designRoot)`（flows 文件字节 + `pen/screens/*.pen` 文件名/内容排序哈希）；只读校验，不生成/不改写契约。
+- **状态**：`contract.fingerprintStatus = current | stale | unverifiable | missing`；`fingerprintNow` 为当前重算值（缺源/读失败为 null）；`contract.source` 暴露 flows/designRoot 相对路径。
+- **默认行为**：`stale` 仅告警（中文说明契约/当前指纹前 12 位），不改 `ok`/exit；`unverifiable`/`missing` 也告警但默认放行（存量契约/测试夹具常见）。
+- **门禁**：`--fail-on-stale-contract` 要求 `fingerprintStatus=current`，否则 `ok=false` / exit 1；CLI 失败原因单独打印。与 `--require-complete`/`--require-mapping` 独立。
+- **边界**：只能发现「flows/.pen 变了」；Figma 源或未拆屏 `.pen` 的契约不覆盖；契约缺 `source.flows/designRoot` 视为不可校验；不自动重新生成契约；存量契约/测试夹具缺源时开启该门禁会失败（显式 opt-in 预期）。
+- **测试**：`ui-lint` 新增 1 例（current → stale 告警/门禁 → 默认放行 → 缺 flows 不可校验）+ CLI 断言 `--fail-on-stale-contract` exit 1；全量 **2200 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.221 实施记录（suite UI 窄门禁：`--fail-on-ui`）
+
+> 2026-10-26。接 UI retro P3「测试循环门禁」的窄阻断：现有 `--ui-diff` 已产出逐例 `ui.status`，但默认只报告；新增 opt-in 门禁，只阻断确定性 `failed`，`unverified` 不冒充通过也不阻断。
+
+- **入口**：`suite run --ui-diff --fail-on-ui`、`suite run --task … --fail-on-ui`、`suite loop --ui-diff --fail-on-ui`；`SuiteRunOptions.failOnUi` 透传到共享批次执行。
+- **判定**：仅 `quarantined !== true` 且 `ui.status === "failed"` 计门禁；`ui.status=unverified`（JPEG/缺契约/缺屏/trace 不匹配等）不阻断；功能失败仍按原 exit 1，UI 门禁命中按 `--fail-on` 语义 exit 2（功能+UI 同时失败也 exit 2，原因分列）。
+- **来源保真前置**：`autoCheckUi` 已保证 `failed` 只可能来自 lossless PNG（JPEG/未知源降为 unverified），门禁不额外放宽。
+- **任务模式**：逐设备/逐份运行各自计算 UI gate 并写入运行登记 `exitCode`；任务终态记为 `partial`，整体 exit 2；隔离用例仍排除。
+- **审计**：批次清单 `options.failOnUi` 记录开关（旧清单无该字段）；文本输出新增 `UI 门禁: 通过/未通过` 与失败原因；loop 文本新增 UI 汇总行。
+- **边界**：只门禁 `failed`，不把 `unverified` 当失败；不上调像素噪声阈值（跨源基线 D12 未验证）；不做 presentation/hero 专项门禁；功能门禁与 UI 门禁仍分轴。
+- **测试**：新增 `suite-ui-gate` 2 例（默认不阻断、failed 阻断、unverified/隔离/quarantine 不阻断；功能失败 exit 1 vs UI gate exit 2）；全量 **2202 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.222 实施记录（UI 访问屏/契约屏覆盖账本）
+
+> 2026-10-26。接 UI retro P1/P3「契约屏覆盖率报告」：`--ui-diff` 已有逐例四态，但没有回答“哪些屏被真正比对、哪些没覆盖”；补覆盖账本，避免把未访问屏当成通过。
+
+- **逐例**：`UiVerification.coverage` 记录 `requested/matched/compared/skipped/unmatched` + `comparedScreens/skippedScreens/unmatchedScreens`；早退（缺契约/flows/trace/匹配）也带账本，全部计入 `unmatched`，不伪造 0。
+- **聚合**：`runGeneratedTests` 末尾调 `summarizeUiCoverage(results, contractScreens)` 产出 `SuiteRunReport.uiCoverage`（去重屏、按 id/name 归一）；契约屏从 `.artemis/design/ui-contract.json` 读取，`contractNotCompared` 列出未被任何用例成功比对的屏。无 coverage（未跑 `--ui-diff`）→ 省略字段，旧报告/清单兼容。
+- **展示/审计**：`suite run`/`loop` 文本输出 `UI 覆盖: 契约 N 屏 · 已比对 M · 契约未覆盖 K · 请求/匹配/跳过/未匹配`；批次清单 `summary.uiCoverage` 持久化（旧清单无该字段）。
+- **口径**：`matched`=按 `testCase.screens` 匹配到 flows/trace 的屏（受 `--ui-diff-max` 上限截断后）；`compared`=成功拿到 diff 的屏；`skipped`=匹配到但缺逐屏 `.pen`/diff 失败；`unmatched`=请求屏未匹配或超出单例上限。`contractNotCompared` 只表示“未被成功比对”，不推断原因（可能是未访问/缺 `.pen`/源不保真）。
+- **边界**：不自动导览未访问屏（无执行器能力）；不做契约屏自动补齐；契约屏按 id 匹配，id 为空才用 name；覆盖账本不参与 UI 门禁（`--fail-on-ui` 仍只看 `failed`）；`unverified` 不因覆盖缺口升级。
+- **测试**：`ui-auto-check` 既有 3 例补覆盖断言 + 聚合/契约缺口断言；全量 **2202 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.223 实施记录（面板 UI 覆盖 chip）
+
+> 2026-10-26。把 §13.222 的 `uiCoverage` 从 JSON/CLI 带到面板：总览最新批次、批次表、批次详情都能看到“已比对/契约/未覆盖”，不用翻清单。
+
+- **数据**：`PanelBatchSummary.uiCoverage?` / `PanelBatchDetail.uiCoverage` 从批次清单 `summary.uiCoverage` 读取；旧清单/不可读 → null，不显示。
+- **展示**：`uiBadge` 在 UI 状态/字重 chip 后追加 `UI 覆盖 X/Y · 未覆盖 Z`（仅 `contractScreens>0` 时）；`title` 列出未覆盖屏名（最多 10 个，超出省略）；总览最新批次、项目批次表、批次详情三处复用。
+- **口径**：X=`comparedScreens.length`、Y=`contractScreens`、Z=`contractNotCompared.length`；只展示 §13.222 的账本，不在面板重新计算/推断原因；不影响 UI 门禁。
+- **边界**：任务详情/设备运行行暂未展示覆盖（运行登记不持久化 coverage，只有批次清单有）；未覆盖名单仅 title，不展开逐屏表；旧清单兼容为空。
+- **测试**：扩展 `panel-web` 批次详情用例（JSON `uiCoverage` 透传 + HTML chip/未覆盖名）；全量 **2202 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.224 实施记录（suite 字重窄门禁：`--fail-on-ui-weight`）
+
+> 2026-10-26。接 UI retro P3.1 / 业务梳理「字重硬门禁」：机制落地但**默认关闭**，真实样本校准前不改变既有成功口径。
+
+- **入口**：`suite run --ui-diff --fail-on-ui-weight`（含 `--task`）、`suite loop --ui-diff --fail-on-ui-weight`；`SuiteRunOptions.failOnUiWeight` 透传共享批次执行。
+- **判定**：仅非隔离用例、`ui.textStyles.highConfidenceHeavier > 0`（confidence ≥0.7）→ exit 2；`lighter` 不门禁；`ui.status=unverified` 不掩盖独立字重证据（高置信 heavier 仍命中）；无 `textStyles`（未跑 UI diff/契约缺文本）不阻断。
+- **集成**：批次 exitCode、任务终态 `partial`/整体 exit 2、loop exit 2；批次清单 `options.failOnUiWeight` 审计；文本输出 `UI 字重门禁: 通过/未通过（高置信 heavier N 例）`。
+- **边界**：默认关闭，真实样本校准（同字重 N≥20、regular↔semibold↔bold）前不设为默认门禁；不改 `measureTextWeight` 阈值；不等同像素 UI 门禁（`--fail-on-ui`）；仅高置信（≥0.7），低置信/未验证不阻断。
+- **测试**：`suite-ui-gate` 新增 1 例（默认不阻断、开启后 highConfidenceHeavier=1 命中、0 放行、隔离排除、UI unverified 不掩盖）；全量 **2203 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.225 实施记录（用户生命周期补全：enable/role + 最后一个管理员保护）
+
+> 2026-10-26。`user` CLI 原本只有 add/list/revoke/rotate；补上重新启用、改角色与“不要把管理面锁死”的保护，仍复用文件存储与 HTTP 热加载。
+
+- **新增命令**：`user enable <name>` 清除 `disabled`（保留令牌，立即生效；重复 enable 幂等返回 0）；`user role <name> --role <role>` 修改角色（保留令牌/吊销状态；非法 role → exit 1，用户不存在 → exit 1）。
+- **最后管理员保护**：`revoke` / `role` 若目标是**启用中的 admin** 且 `activeAdminCount(users) === 1`，拒绝执行并 exit 1；`--allow-last-admin` 显式放行（break-glass）。已吊销 admin 不计入，降级非 admin、改回 admin、enable 不受限。
+- **口径**：只统计用户文件内的启用 admin；静态 `MOBILE_TESTING_HTTP_TOKEN` / inline `AOS_HTTP_USERS` 中的管理员不可见，必要时用 `--allow-last-admin`。
+- **热加载**：写文件后 HTTP 目录按 mtime 生效；enable/role 与 revoke/rotate 同路径，仍无需重启。
+- **边界**：文件级单进程操作，无跨进程写锁；不提供 delete/rename；不解决 PG 用户表/OAuth/会话。
+- **测试**：`user-command` 新增 1 例（enable 恢复令牌、两个管理员下吊销/降级保护、`--allow-last-admin`、非法 role/不存在用户、list 角色回显）；全量 **2204 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.226 实施记录（排除项目扩展到切换器/搜索/usage）
+
+> 2026-10-26。实际运行发现：`AOS_PANEL_EXCLUDE_PROJECTS` 只过滤总览列表，项目切换器、搜索和 usage 看板仍能看到服务仓自身；补全所有列表可见面。
+
+- **共享口径**：抽出 `src/project-visibility.ts` 的 `projectExcluded`（绝对路径精确 / 名称大小写不敏感），panel 与 usage 共用；避免两套解析漂移。
+- **面板**：项目切换器、搜索页也过滤排除项；总览/对比原有行为不变；直接 `?project=<rootPath>` 仍可访问（列表可见性，不是 ACL）。
+- **usage**：`usage --web` 的项目列表/datalist/默认项目从可见集合选择；`usage --all` 同样过滤；显式 `?project=`/`--project` 仍在原始集合解析（可直达被隐藏项目）；Web 视图新增 `excludedProjects` 与页内提示。
+- **边界**：同一个 `AOS_PANEL_EXCLUDE_PROJECTS`（名字沿用，scope 扩展到统计列表）；不隐藏单项目视图/台账/运行；不做 glob；非法/相对路径按项目名处理。
+- **测试**：`usage-web` 新增 1 例（列表隐藏/显式项目仍可访问/页内提示/datalist 不含隐藏项）、`usage-command` 新增 1 例（`--all` 过滤）、`panel-web` 排除用例补项目切换器断言；全量 **2206 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.227 实施记录（失败证据 → 接入检查：API / 页面复用 / 重写）
+
+> 2026-10-26。分析近期 iOS 批次：失败大量集中在 `data-environment` / `behavior-or-design`（订单加载接口失败、商品未上架、Banner 无数据、设计有「關閉」实际无控件、起始屏未匹配），不是单纯应用缺陷。仅在 taskDesc 写“真实数据”不足以让接入方判断该补 API、复用页面还是重写；补结构化提醒。
+
+- **taskDesc**：`REAL_DATA_CLAUSE` 增加一句——无法满足数据/进入目标页时，先核对**可用 API**、**可复用页面/入口**；两者都没有时明确需要新增/重写的页面或接口并报告 blocked，禁止假数据/替代商品/替代页面。
+- **反馈聚合**：`GenerationFeedback.readiness`（`needed` + `checks[]`，每项 code/message/caseIds/traceIds）。按失败域与证据文本归并：
+  - `api`：`data-environment`/`api-error`、未处理 API 错误或接口/加载/商品/订单/上架/无结果等信号；
+  - `page-reuse` + `rewrite`：`behavior-or-design`/`design-inference` 或页面/入口/控件/不存在/无法进入等信号；
+  - `environment`：HID/idb/bundleId/WDA/设备/隧道等；
+  - `app-defect` / `case-defect` / `triage`：对应域或未分类。
+- **展示**：`suite feedback` 文本新增「接入检查（按失败证据）」；JSON 增加 `readiness`。`suite loop` 的 JSON/markdown/文本同样输出，并保留 case/trace 反查。
+- **展示扩展（2026-10-26 补）**：`suite run`（普通与 `--task`）在结果后输出同一「接入检查（按失败证据）」，`--json` 增加 `readiness`；面板批次详情新增同名区块（API／数据、页面复用、需要重写等，带 case/trace 关联），以**单卡三行 checklist** 呈现（一行动作 + 证据计数，详情折叠；390px 无整页横向溢出）。同时修正三处取证偏差：① 环境匹配收紧为明确设备/ADB/WDA 故障，`设备日志已采集` 等附注不再误判环境；② 失败项同时读取 `itemText` 与 `evidence`，避免只看到标签漏掉页面/接口证据；③ `run-report` 在 task 的 caseId 缺失时按 taskDesc 回填生成用例 id，readiness 才有可定位的 caseIds。
+- 分块设计阅读：见 §13.229。
+- **口径**：只读聚合，不自动判定 API/页面是否真实存在、不改写设计/tests、不改变退出码；文本启发式可能同时命中多类，按证据并列呈现，人工复核。
+- **测试**：`generation-feedback` 新增 1 例（行为/页面缺失 → page-reuse + rewrite，带 case/trace），既有数据失败用例补 `api` 断言；全量 **2207 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.228 实施记录（UI 语义一致性：分类树/覆盖率/视觉截断/动态资产）
+
+> 2026-10-26。原版 Figma 节点（375×2088，85 个文本节点）与 iOS trace 对比后，原计划“分类名截断”升级为更准确的判定：设计是 17 项两级分类，实现把后端 27 个叶子分类拍平；同时 trace 的无障碍文本是完整 `每日精選咖啡`，截图才显示 `每...咖啡`。据此补一层 additive 语义契约，不改存量项目行为。
+
+- **语义文件**：`.artemis/design/ui-semantics.json`（可 `--semantics` 覆盖）；`version:1`、`screens[].regions[]`、`taxonomy[]`（`category`/`group-header`/`virtual`）、`invariantTexts`、`displayNames`、`dynamicExamples`、`dynamicPatterns`、`expectedAssets`、`allowedRoles`、`allowDuplicates`、`expectedOccurrences`。`suite ui-semantics init` 从 `ui-contract.json` 生成 `draft:true` 空骨架；缺文件/空文件/未知字段不阻断存量。
+- **分类树**：`taxonomy[].aliases` 表达“运行时叶子 → 设计顶层”的多对一（如 `咖啡飲品` ← `每日精選咖啡`/`熱濃縮咖啡飲料`/`冰濃縮咖啡飲料`）；`group-header` 非交互；`virtual` 允许重复商品/自定义名称。平文本 `invariantTexts` 仍支持，两者二选一或互补，不重复计数。
+- **覆盖率**：`suite ui-parity` 输出 `counts.visible/matched/missing/truncated/unverified/offscreen`；恒等式 `invariant = matched + missing + truncated + unverified + offscreen`，且 `visible = matched + missing + truncated`。单视口只覆盖部分 invariant → `insufficient-coverage`，不得 `layout-compatible`；整文件缺失才 `insufficient-data`（exit 2）。
+- **两条 lane**：trace AX `texts[]` 是 **content-space** 全量内容树（可含屏外 y=6091）；adapter 按截图视口算 `visible/offscreen`，`space:"content"` 不做 role 几何。截图/`--visual-text` 是 **viewport-space** 视觉层，用于截断/资产；AX 完整文本不能证明未截断，只标 `unverified`（warning `visual-truncation-unverified`），需要 `source:"visual"` 才可判 `truncated-labels`。
+- **截断**：尾部 `…`/`...` + 前缀（≥3）；中缀按省略号拆首尾，首段前缀（≥1）+ 尾段后缀（≥2）；精确匹配优先；截断命中只记 `truncated`，抑制同文本 missing；finding severity error。合成旗舰用例仍保留；真实菜单案例的 verdict 是 `ia-mismatch`（alias 归一后 4 缺失；带 region bbox 的视口快照再看到 6 多余；纯 trace 无 bbox 时不臆造 unexpected），不是 `truncated-labels`。
+- **角色/重复**：`deviceBbox` 统一 viewport 像素；中心点严格包含 → 最小面积 → 最内层；跨区多现且在 `allowedRoles`/`allowDuplicates` 内不报错；全部在错区才 `role-mismatch`。
+- **动态资产**：`dynamicAssets` 只表示像素可变，仍需 `expectedAssets` 存在性/placeholder 检查；`design_device_diff` 的 `ui.ignoreDynamicRegions` 只忽略显式动态 region，`ui.expectedAssets=true` 时不忽略并提示用 `suite ui-parity` 检查；Hero 空白/商品图 fallback 不得被 `data-diff` 吞掉。
+- **CLI**：
+  - `suite ui-semantics init [--contract/--out/--force/--json]`：draft 骨架，已有文件无 `--force` exit 2；`.bak` 原子写。
+  - `suite ui-parity (--trace <id> --step <n> | --snapshot <json>) [--visual-text <json>] [--region <id>] [--screen/--contract/--semantics/--baseline] [--update-baseline] [--json]`：exit 0 `layout-compatible`/`data-diff`（且 unverified/offscreen 0）；1 `no-invariants`/`truncated-labels`/`ia-mismatch`/`insufficient-coverage`；2 `insufficient-data`/用法/路径/死屏/坏基线。
+  - `suite check [--semantics/--fail-on-dynamic/--dynamic-baseline/--update-dynamic-baseline]`：扫描 taskDesc/steps 命中已登记 `dynamicExamples`/`dynamicPatterns`；默认 warning，`--fail-on-dynamic` 对 fresh 命中 exit 2；基线只抑制已登记 `caseId|text`，新命中仍阻断。
+- **design_device_diff**：`alignment.designCrop`（design-source 像素）先校验画布内，再裁剪设计图/平移设计节点；`ignoreRegions` 按 cropped-design 传入；report 增 `alignment.designCrop`、`dynamicIgnoreRegions`、`dynamicRegions`。Figma 的 `Flow/Header`/`Flow/Remarks` 与状态栏是 chrome/annotation；工具不自动识别，调用方用 `designCrop` 排除。`ui.expectedAssets` 只拒绝整块忽略，presence/placeholder 由 `suite ui-parity` 的 `assets` 输入检查。
+- **边界**：Phase 1 不做 OCR/视觉角色推断（视觉文本由 `--visual-text`/人工 snapshot 提供）；不自动判断 API/页面是否存在；不自动修复分类截断；不自动生成 owner 例外；baseline 更新必须显式命令；缺语义文件不阻断存量。
+- **测试**：`ui-semantics` 20 例、`ui-semantics-init` 5 例、`ui-parity` 23 例、`ui-parity-command` 15 例、`ui-parity-baseline` 4 例、`ui-native-schema` 1 例、`diff-crop` 4 例、`design-device-diff` 扩 5 例、`test-preflight` 扩 3 例、`suite-command` 扩 2 例；全量 **2288 绿**，lint 0 error（2 条既有 warning）。
+- **评审修正**：MCP zod schema 透传 `designCrop`/`ui`；`no-invariants`/`insufficient-data` 不被 baseline 抑制；`draft:true` 强制 `no-invariants`；`expectedAssets` 无 `assets` 时记 missing-asset；role 交集/无 bbox/异常归属与 `viewport-mismatch` 修正，`expectedOccurrences` 生效；截断支持 alias 且不重复计入 unexpected；taxonomy unexpected 按 region bbox 收窄；数字/日期样例匹配不再强制货币词；`suite check` 对坏 semantics exit 2；trace step screen 可解析；`design_device_diff` 对 `expectedAssets` region 不整块忽略并提示用 `ui-parity` 检查 presence/placeholder（Phase 1 不内置资产检测）。
+
+### 13.229 实施记录（设计稿分块阅读：design_reading）
+
+> 2026-10-26。目标：页面多时按相邻几屏分块读取设计稿，先记录可证据化观察，再合并成交互链与 CR 主线假设；不新增用户命令，阅读是 `design_to_test` 的内部阶段。
+
+- **入口**：`design_to_test` 新增 `reading`（默认 `"auto"`，屏 ≥6 且视觉可用时触发；`false` 关闭）与 `readingMaxScreens`（默认 50）；不新增 MCP 工具/CLI。
+- **分块**：3 屏 + 1 屏 overlap；默认只发原图；多图被拒按丢尾降级 2→1 屏；`screensRead/screensTotal/droppedScreens/truncatedScreens` 显式会计，失败块不算成功。
+- **记录**：严格 JSON；每屏 `headerControls`（back/title/search/cart/other，空数组合法，无文字图标不得省略）、`persistentNav`、`contentGroups`、`floatingActions`、`annotations`；chrome 不进控件；`observed/inferred/unconfirmed` 三档；连接线起点不明 → question，不猜目标页。
+- **合并**：交互边端点校验（目标不在全局屏集 → unconfirmed + question）；同源目标冲突、overlap 同屏差异都生成 question；段内 questions 不丢；CR 主线为模板化假设（MVP 不额外调用文本模型），含推断边时显式标注；稠密图主线搜索有 5000 次访问预算。
+- **provenance**：视觉边一律 `vision-inferred`，不写 flows/tests、不改生成器/硬门禁；问题确认路径＝改 flows.json 显式边后重跑。
+- **人工答案**：`.artemis/design/reading/answers.json`（`{version,style?,answers:[{id,match,answer,resolution?}]}`）在合并期生效，不触发模型调用；`match` 支持 `screenId/screenNameIncludes/elementIncludes/questionIncludes`（问题正文也参与元素匹配），命中后抑制对应问题并计入 `questionsAnswered`；`resolution` 可写 `toScreenId`（`"self"`＝当前屏/底部弹层）、`toLabel`、`action`、`dropInteraction`、`screenTitle`，被解析的边标 `observed` + `basis:"human-answer:<id>"`，不写回 flows/tests。`match` 比较先做 NFKC、常见繁转简、去标点/空白，并按内置同义词归一（搜尋/搜索/search、門市/门市/store、取餐/pickup、底部弹层/bottom sheet 等）；`style` 可追加 `separators`/`stateKeywords`/`synonyms`。示例见星巴克项目答案文件。画板顺序 knownEdge 标 `basis:"canvas-order"`，CR 报告显式提示其不代表真实控件跳转。
+- **画板标签/状态**：prompt v4 要求每屏记录 `boardLabel`/`stateLabel`，标签**不假设只在手机外框上方**（也可能来自画板名/页面名/旁注）；`Frame/Screen/Group/Text + 数字` 等设计器默认名不算标签；分隔符支持 `- / ｜ _ · （） []` 等，拆不出状态时 `stateLabel=null` 但保留完整 `boardLabel`。flows 中 `screens[].states` 的标签去重后作为 `knownStates`；状态变体按 **frame id** 去重（不再按 label），`readingStates:true` 时作为独立屏纳入分块（`kind:"state"` + `parentScreenId`，报告标「状态变体」/「父屏」）；无状态输入时 warning `reading-states-unavailable`。状态屏不进入 CR 主线，避免变体污染主流程。星巴克实测 23 主屏 + 20 状态 = 43 屏 / 21 块，0 失败。
+- **视觉守卫**：使用 `resolveVisionCapability`（声明 `AOS_LLM_VISION` → 缓存 → 启发式 → unknown）；`reading:true` + 明确无视觉 → 不发图；auto + unknown 跳过；forced + unknown 尝试并 warning。
+- **缓存/预算**：块级哈希 = 实际屏幕 ID + 图片 sha + 块内边 + 参数 + promptVersion + 解析后 model；`AOS_READING_CONCURRENCY` 默认 2（1–4）、单调用默认 180s（`AOS_READING_TIMEOUT_MS`）；预计块数 >20 warning。
+- **测试**：`design-reading` 53 例、`workflow-design-to-test` 新增 5 例、`native-workflow-tool` schema 正反例；全量 **2360 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.230 实施记录（CMS Open：可选设计阅读阶段）
+
+> 2026-10-27。把 `design_to_test` 的分块阅读复用到 CMS Open，让静态 Figma/.pen 的 `design.md` 与 zip 也能带状态/结构/问题；不改变默认生成路径。
+
+- **入口**：`POST /jobs` 新增 `reading`（默认 `false`）、`readingStates`、`readingMaxScreens`（默认 30、最大 200）、`readingAnswers`（本次请求规则，≤100 条）、`readingStyle`（分隔符/状态词/同义词）；JSON 与 multipart 同名字段。只给后几项时自动开启 `reading`；显式 `reading:false` 优先。
+- **顺序**：extract → `onStep("reading")` → 可选 `runDesignReading` → generate → packaging；阅读在生成前完成，不修改 flows/tests。未提供 `llm`、缺 `flows.json` 或阅读异常只写 warning，不阻断 `cases.xlsx`；任务仍可 done。
+- **人工答案**：`readingAnswers` 写入任务临时目录 `design/reading/answers.json`，复用 `answers.json` 合并期语义（抑制问题、`self` 页内/底部弹层、`dropInteraction`、`screenTitle`）；CMS Open 不读项目 `.artemis`，规则随请求生命周期结束。
+- **产物**：zip 增 `design-reading.md`/`design-reading.json`；`design.md` 追加「## 设计阅读」摘要（屏/块/问题/CR 主线/前 10 条问题）；`meta.json.reading` 记录 `status`、`screensRead/Total`、`chunksProcessed/Requested`、`questionsTotal/Answered`、`spineStatus/Title`、`artifacts`；未开启为 `{status:"disabled"}`，跳过为 `{status:"skipped",reason}`。
+- **状态/成本**：任务 `step` 增 `reading`；`readingStates` 仅对 pen `states` 有输入；大稿/状态变体受任务 10 分钟无进度超时与视觉配额约束，调用方用 `readingMaxScreens`/`reading` 控制。
+- **测试**：`open-pipeline` 新增 3 例（阅读产物/默认关闭/无 LLM 跳过），`open-server` 新增 2 例（JSON/multipart 解析、非法 answers 400）；全量 **2360 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.231 实施记录（设计稿命名/风格归一化）
+
+> 2026-10-27。星巴克样本的 `行動預點-下滑` 能工作，不代表其他设计师的命名也能工作；补一层 style-agnostic 归一，不把单项目写法写死。
+
+- **状态标签拆分**：`splitStateLabel` 支持 `- – — － / ／ ｜ | _ · ・ : ： ( （ [ 【 → > »` 等分隔符，父屏在前/在后都识别；括号闭合自动剥离；拆不出状态时 `stateLabel=null`，保留完整 `boardLabel`，不丢状态屏。
+- **状态来源/去重**：`knownStates` 保留唯一展示标签；状态变体按 frame id 去重（不再按 label 合并）；`readingStates:true` 时，pen `states` 之外还会把独立 screen 名（如 `Login / Empty`）按状态词启发式归并到主屏；无状态输入时 warning `reading-states-unavailable`（Figma 原生 component variants 未被 extractor 展开时显式提示，不静默）。
+- **画板标签**：prompt v4 明确标签可能在外框上方/旁边/画板名/页面名/旁注；`Frame/Screen/Group/Text + 数字` 等通用名不作为 `boardLabel`；merge 用 `boardLabel → ref.name → sourceFrameName` 的非通用 fallback，全部通用则 `null`。
+- **answers 归一**：`NFKC` + 常见繁转简 + 去标点/空白 + 内置同义词（搜尋/search、門市/store、取餐/pickup、底部弹层/bottom sheet 等）；`answers.json.style` 可追加 `separators`/`stateKeywords`/`synonyms`；CMS `readingStyle` 透传到同一份 answers.json。
+- **画板排布**：从 flows `bounds` 识别 `vertical/horizontal/grid`；`grid` 时不把 `canvas-order` 边放进 CR 主线（warning `reading-grid-canvas-order`），横/竖保留画板顺序但标 `canvas-horizontal|canvas-vertical`；报告新增「画板排布」，`design_to_test.reading.canvasLayout` 同步返回。
+- **boardLabel 清洗**：模型把画布说明/画框标签混在一起时，`sanitizeBoardLabel` 提取 `畫框標籤：...` 后缀、过滤含「畫布/區塊/標題」等描述性文本与通用名；清洗后仍不可用则回退 `ref.name → sourceFrameName`，全不可用为 `null`。
+- **边界**：Figma 原生 component variants 尚未由 extractor 展开；仅对「独立 screen 名 + 状态词后缀」做启发式归并。网格/横排画板的 CR 仍是 `canvas-order` 假设（报告显式标注）；状态词表/同义词可配但不是穷尽。
+- **测试**：新增 `naming` 分隔符/多语言/通用名/繁简同义词、状态 slash/括号/英文运行、Figma 式独立 variant 归并、画板 vertical/horizontal/grid 识别与 grid 主线禁用、通用 Frame fallback、answers style 配置、prompt v4、CMS `readingStyle` 断言；全量 **2360 绿**，lint 0 error（2 条既有 warning）。
+
+
+### 13.232 实施记录（服务仓库项目默认隐藏）
+
+> 2026-10-27。面板反复出现 `mobile-testing` 自己：MCP 以服务仓库为项目注册后，总览把“自己监控自己”列出来；之前只能靠 `AOS_PANEL_EXCLUDE_PROJECTS`，重启/换环境又忘配。
+
+- **默认规则**：`src/project-visibility.ts` 增加 `serviceRepoRoot()`（按模块所在仓库根目录解析）；`projectExcluded` 对该根路径**始终返回 true**，无需环境变量。
+- **范围**：面板总览/多项目对比、项目切换器/搜索、usage 看板列表与 `usage --all` 同源隐藏；`excludedProjects` 计数可见；直接项目 URL/显式 `--project`/台账/运行不受影响。
+- **文案**：面板/usage 提示改为「服务仓库默认隐藏，或由 AOS_PANEL_EXCLUDE_PROJECTS 指定」；`AOS_PANEL_EXCLUDE_PROJECTS` 继续用于隐藏其他项目。
+- **测试**：新增 `project-visibility` 1 例（服务仓库默认隐藏/普通项目不受影响/环境名单仍生效）、`panel-overview` 1 例（服务仓库项目不进入列表）；全量 **2360 绿**，lint 0 error（2 条既有 warning）。
+
+
+### 13.233 实施记录（定时任务端选项按项目栈过滤）
+
+> 2026-10-27。iOS 项目仍显示 `android` 端选项，容易创建无设备可覆盖的计划；端选项改为按项目检测栈生成。
+
+- **数据**：`PanelProjectRow` 增 `stackIds`（`detectProjectStacks` 结果），`softReadProject`/`buildProjectRow` 同步；旧数据/未检测到栈时保留 `undefined`。
+- **映射**：`schedulePlatforms`：`ios-native`→ios、`android-native`→android、`flutter`/`react-native`→双端、`web`/未知→不显示移动端；无 `stackIds` 时回退双端保持旧行为。
+- **UI**：计划表单只渲染适用端并默认勾选；无可用端时显示说明、不渲染创建表单；已有计划列表不因项目栈变化隐藏。
+- **测试**：`panel-web` 新增 `schedulePlatforms` 单测与 iOS-only HTML 断言；全量 **2360 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.234 实施记录（design_to_test 执行默认检测设计与真机差异）
+
+> 2026-10-27。真机屏幕与设计图明显不符却“没有检测到”：`design_to_test` 的 `run` 阶段从未传 `uiDiff`，且项目没有 `ui-contract.json`/逐屏 `.pen`；即使手动开启，iOS 步骤截图（PNG）因未带 `lossless` 标记仍被判为有损源，自动核验恒为 `unverified`，永远不会给出 `failed`。
+
+- **逐屏基线**：新增 `src/pen/split.ts` `splitPenScreens`——从整份 `.pen` 按 flows screen id 拆出单屏文件（顶层只留该屏、原点归零，保留 version/fileToken/themes/variables），内容未变不重写；`buildUiContract` 发现缺逐屏 `.pen` 且 flows 来源为 `pen:<path>` 时自动拆分，拆分失败/屏缺失进 warnings，不静默。
+- **多屏画板**：拆分前用渲染 PNG 宽度中位数识别“整板拼图”（宽度 > max(600, 中位数×1.5)）；画板内优先选第一块手机宽屏（变体容器再下钻第一屏），避免把多状态并排图当单屏基线。 
+- **入口默认**：`design_to_test` 增 `uiDiff?: boolean`（默认 true）；`run:true` 时先构建 `ui-contract`（pen 源自动拆分），再以 `uiDiff` 执行；契约无 `extracted|partial` 屏或构建失败时关闭比对并给 `ui-contract-unusable`/`ui-contract-unavailable` warning；响应 `run.ui`/`run.uiCoverage` 回传，完成 0 条比对时给 `ui-not-verified`，不把“未核验”当通过。显式 `uiDiff:false` 完全跳过契约构建与比对。
+- **无损判定**：步骤截图来自轨迹原图，PNG 即无损；`design_device_diff` 的 `detail.deviceSource.lossless` 与字重核验改用 `effectiveLossless`（step 模式按 PNG 判定，实时抓图仍看 `captured.lossless`）。`autoCheckUi` 的 `sourceOf` 同样按 PNG 兜底，避免缺标记导致假 `unverified`。
+- **屏匹配**：trace 的 `thought` 参与匹配（页内弹层/跳转常只在 thought 里出现屏名）；屏名只在 thought、不在观察文本（transient）且 post 有 blocker/major 时回看同一步 `pre`，取差异更小者，避免“点选关闭弹层”的 post 截图被误判。
+- **真机实证（starbucks-ios-taiwan）**：23 屏自动拆出 23 个逐屏 `.pen`（`U2rRt`/`P3urv` 由整板拼图收窄到第一块手机屏），契约 21 partial / 2 unverifiable / 0 no-baseline；对既有失败轨迹 `ios-b04dde46…` 的 6 个设计屏自动比对，6/6 匹配、状态 `failed`（`選擇取餐時間` 弹层 `pre` 截图命中 color blocker；`選擇門市` 仅 minor/info），不再降级为 `unverified`。
+- **测试**：`pen-split` 5 例（拆分/幂等/坏源/整板选首屏/变体容器下钻）、`ui-contract` 自动拆分 1 例、`workflow-design-to-test` 默认开/显式关 2 例、`diff-detail-tool` step PNG 无损 1 例、`ui-auto-check` PNG 缺标记/thought 匹配/transient pre 3 例；全量 **2372 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.235 实施记录（设计交互推断 Phase 1：纯函数 + reading 集成）
+
+> 2026-10-27。POC gate 通过后把视口归一化/滚动折叠推断落成核心纯函数，并接入 design reading；仍只报告候选，不升硬断言。
+
+- **核心**：新增 `src/design/reading/interaction.ts`——`classifyFrame`（viewport-state/full-content/overlay/component）、`normalizeTextForSet`/`normalizeForMatch`、`pairContainers`（屏族、结构锚、状态/滚动候选、代表去重、预算）、`inferScrollCollapse`（sticky/collapsed/takeover）、`PairingStats`/`InteractionCandidate` 类型。
+- **数据装配**：新增 `src/design/reading/frames.ts`——从 flows 主屏/状态 + 逐屏 `.pen` 组装 `InteractionFrame`；状态 `.pen` 落 `design/pen/states/`，内容容器渲染落 `design/screens/interaction/`；文本绝对几何用 pen CLI `Get` 结果并缓存 `design/pen/text-bounds.json`（首跑 343s，缓存后 1.4s）。
+- **reading 集成**：`ReadingFile` 增可选 `interactionCandidates` / `pairingStats`；`runDesignReading` 写入 `reading.json`，失败仅 warning；不生成 `Assertion`。
+- **真实项目**：starbucks 100 帧（主屏/状态/内容容器）→ `scrollCandidates=2`（MOP `OFftq→pEfey` delta 360、takeover「到店自取」；另一条 `Myrgb→A5MwD` 待复核）、`stateCandidates=15`、`questions=20`；均在 POC 预算内。
+- **测试**：`design-reading-interaction` 7 例 + `design-reading-interaction-frames` 2 例（含 reading.json 落盘）；全量 **2381 绿**，lint 0 error（2 条既有 warning）。
+- **边界**：候选仍是 `inferred`；不进 `design_to_test` 门禁；Phase 2 真机探测后才允许 `observed → Assertion`。
+
+### 13.236 实施记录（设计交互推断 Phase 2：真机滚动探测）
+
+> 2026-10-27。Phase 1b 把 inferred 候选写进 reading.json；Phase 2 补 observed 探测与缓存，仍不自动升断言。
+
+- **探测**：`src/design/reading/probe.ts`——`probeScrollCollapse` 分段上滑（步长由 maxScroll 派生）、结构信号判定（collapsed 文本消失 + takeover 标题出现）、二分逼近 fullEffect、回滚恢复；输出 `ObservedInteraction`（`unit: "logical"`，`nativeUnit: "pt" | "dp"`；firstChange/fullEffect、restored）。
+- **缓存**：`.artemis/design/interactions.observed.json`；key `screen::device`；fingerprint 含 device/appVersion/designFingerprint；`observed` 断言要求 app 版本匹配，inferred 软缓存不升断言。
+- **入口**：内部库 `probe.ts` / `probe-command.ts`；**Phase 2 不新增独立用户命令**，产品入口仍为 `design_to_test`（后续把探测挂到内部观测阶段；设备需已停在目标屏）。
+- **断言**：`toScrollAssertion` 用 `origin/region` 生成结构不变量；探测只产出 observed，不直接写 tests。
+- **测试**：`design-reading-probe` 5 例（探测/恢复/断言区/缓存/命令匹配/Android 解析）；全量 **2387 绿**，lint 0 error（2 条既有 warning）。
+- **边界**：探测逻辑平台无关，设备适配器共享 `ScrollProbeDevice`；iOS 走 `Runtime.iosDevice`（points），Android 走 adb `input swipe`/`uiautomator dump` 并在适配器内按 density 把 px 转 dp；平台差异只是设备 I/O 适配器，不是能力/单位边界。**RN/Flutter 不单独分叉**：它们仍跑在 iOS/Android 上，只按设备 serial 选适配器；若未开启 accessibility/semantics 导致 AX 文本为空，显式返回 `observation-no-ax-text`，不猜框架。不负责导航到目标屏。
+
+### 13.237 实施记录（技术栈检测证据、纯 Dart 守卫与显式覆盖）
+
+> 2026-10-28。设计→代码校准必须先确定“读哪套代码”。原有根目录 marker 启发式在单仓单应用够用，但缺证据链、显式覆盖与纯 Dart 守卫；先把检测从“能猜”收紧为“能解释”。
+
+- **检测规则（单仓单应用）**：`pubspec.yaml` 且声明 `flutter:`/`sdk: flutter` → Flutter（0.95）；根 `package.json` 的 `react-native`/`expo` 依赖 → RN（0.90）；无 Flutter/RN 时根 `settings.gradle(.kts)`/`app/build.gradle` → Android 原生（0.85）；无 Flutter/RN 时 `.xcodeproj/.xcworkspace`（≤2 层）→ iOS 原生（0.80）；非 Flutter/RN 的前端依赖 → Web（0.70）。RN/Flutter 的 `ios/`、`android/` 是同一应用的壳，不作为第二个应用。
+- **纯 Dart 守卫**：`pubspec.yaml` 存在但未声明 Flutter 时按纯 Dart 包处理并告警，不再仅凭文件存在误判 Flutter。
+- **显式覆盖**：`aos.config.jsonc` 新增 `project.stack`（字符串或数组，取值 `flutter|react-native|android-native|ios-native|web`）；优先级高于文件检测，非法值在配置加载时报错；`Runtime.stackDetections()` 为唯一入口，所有资产/token/字符串/扫描/差异工具统一走该入口。
+- **证据与歧义**：`StackDetection` 增 `evidence[{kind:marker|dependency|config,path,detail}]`、`source:detected|config`、`ambiguous`；`detectProjectStacksDetailed` 返回 `{stacks,source,warnings}`。`package.json` 解析失败、`pubspec.yaml` 不可读、Flutter+RN 并存均显式告警；后者标 `ambiguous` 并要求 `project.stack`，不静默取最高置信度。
+- **可见性**：`aos_status.stack` 保留检测数组，新增 `stackSource`/`stackWarnings`；`gaps.json` 的 `detectedStacks` 携带证据；`project_archive` 把检测告警并入 `degraded`。面板与 `aos_status` 的旧字段保持兼容。
+- **边界**：当前按**单仓单应用**设计；单仓多应用、RN/Flutter 嵌入原生壳的棕色地、Flutter add-to-app 子目录仍需 `project.stack` 显式声明（检测不再猜测）。运行期平台仍由设备 serial 决定（iOS/Android），技术栈只决定读哪套代码。
+- **测试**：`stack` 新增 4 例（纯 Dart 不误判/覆盖/Flutter+RN 歧义/坏 package.json），`config` 新增 1 例（字符串/数组/非法值），`aos_status` 新增 1 例（detected/config 来源与 evidence）；全量 **2393 绿**，lint 0 error（2 条既有 warning）。
+- **只读 POC**：`.scratch/resource-calibration-poc/` 用 RN/Flutter fixture 输出 design↔code↔device 对账表（图片 logical/scale/fit、文字 lineHeight 换算、font-weight-substituted、text-scale、upscale）；只读、不写产品目录、不新增命令，输出与限制见该目录 README。
+
+### 13.238 实施记录（ui-contract 资源字段 + design_to_test 只读资源对账）
+
+> 2026-10-28。资源校准 POC 通过后，把设计侧的图片/文字度量纳入 `ui-contract`，并作为 `design_to_test` 的内部阶段输出 `resources`；只报告，不新增命令、不升硬门禁。
+
+- **契约扩展**：`UiTextContract` 增 `lineHeight/letterSpacing/maxLines/textAlign`（design-px / 源声明）；新增 `UiImageContract`（`source/assetKey/fit/bbox/geometryStatus`），`UiScreenContract.images` 兼容旧契约（缺省 `[]`）。`inspectPen` 同时识别 `type:"image"` 节点与 `fill:{type:"image",url,mode}`，文本度量按 `.pen` 字段原样投影；Markdown 增图片节点/行高统计。
+- **只读对账**：新增 `src/ui/resource-calibration.ts`——读 `ui-contract` + 项目源码，按 `detectProjectStacksDetailed` 选 RN/Flutter/Android 原生/iOS 原生扫描器；图片比较逻辑尺寸、fit、变体尺寸（`@2x/@3x` / `2.0x/3.0x`），设备 `pixelRatio` 仅显式提供或从 trace 回填时才判 `upscale`；文字比较 content/fontFamily/fontSize/lineHeight/letterSpacing/fontWeight/maxLines，Flutter 额外检查 `pubspec.yaml` 字重声明（缺失 → `font-weight-substituted` / `font-unbundled`），RN/原生标 `*-font-weight-unverified`；`fontScale` 只进 `deviceStatus`（`text-scale`），不污染设计↔代码结论。读取 `screen-map.json` 的 `code.file` 时按屏收窄扫描，减少跨屏同名文案/资源误配；读取 `.artemis/design/strings.json` 解析 `t("key")`/`AppLocalizations`/`NSLocalizedString`/`@string/key`，不把 i18n key 误报为文案缺失；原生图片解析 Android `drawable-*` 密度桶与 iOS `.imageset/Contents.json`，按设备倍率判 `upscale`。
+- **接线**：`design_to_test` 在 `run:true` 且默认 `uiDiff` 构建契约后、执行完成后用 trace `run.json` 的 `step.scale` 回填 `pixelRatio` 再对账；`run:false` 时若已有 `ui-contract.json` 也做只读对账（不重建契约）。响应新增 `resources`（`mode:"report-only"`、逐资源 `status/issues/notes/codeRef`、图片/文字计数、`stacks` 证据、`warnings`）。`uiDiff:false` 不构建契约也不产出 resources；无栈/扫描解析不到一律 `unverifiable`/`unmapped`，不猜。
+- **边界**：扫描器是 fixture 级启发式（行级 TSX/Dart/Swift/Kotlin/XML + 静态字符串/`style:` 引用），不替代 AST；动态文案、内联样式、复杂主题/组件映射暂标 `unmapped`/`unverifiable`；原生扫描覆盖 Android XML/Compose 与 iOS SwiftUI/UIKit 的基础声明，字体文件/绝对行高/复杂布局可能 `unverifiable`；`pixelRatio` 从存在 `step.scale` 的 trace 回填；`fontScale` 读取 trace 显式字段（`fontScale`/`font_scale`/`device.fontScale`），当前 executor 尚未写入，报告 `not-evaluated`；不写盘、不改 contract、不影响用例门禁。
+- **测试**：新增 `resource-calibration` 7 例（RN 图片/文字/text-scale、Flutter 行高/字重、无栈降级、trace pixelRatio、Android XML、iOS SwiftUI、RN i18n）、`ui-contract` 图片/度量断言、`design_to_test` resources 存在/关闭/已有契约断言；全量 **2401 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.239 实施记录（UI 自动比对默认上限 3 → 10）
+
+> 2026-10-28。starbucks 228 条批次复盘显示 `--ui-diff-max` 默认 3 会让长路径的后段屏永远不进入 UI 比对；覆盖率账本虽记 `unmatched`，但默认行为本身形成盲区。
+
+- **变更**：`autoCheckUi` 的 `maxScreens` 缺省从 3 改为 10；`--ui-diff-max` 显式值仍优先；`suite run` 帮助与 README/DESIGN 同步为“单例默认最多 10 屏”。
+- **边界**：这是默认覆盖提升，不是“全量比对”；超出上限仍记 `unmatched`/`contractNotCompared`，不伪造覆盖。性能成本按屏线性增加，长批次可显式调小。
+- **测试**：既有 `ui-auto-check` 用例均显式传 `maxScreens: 3`，口径不变；全量 **2401 绿**。
+
+### 13.240 调整（控制台侧栏去重：移除「工作区」分组与「总览」入口）
+
+> 2026-10-28。用户反馈侧栏顶部的「工作区」分组标题与「总览」入口重复，需要删除。
+
+- **导航**：`DEFAULT_CONSOLE_NAV` 移除 `overview`（侧栏不再渲染「总览」）；品牌徽标链接仍指向 `/panel`，总览页与 `active="overview"` 的当前态逻辑保留（不再有对应一级项）。移除 `g o` 跳转键与帮助面板中的「总览」行。侧栏 `<aside>` 不再输出 `c-nav-group-title`「工作区」分组标题。
+- **数据侧（非代码）**：文件台账 `registry.jsonl` 会累积测试临时项目（`/private/var/folders/.../T/aos-audit-*` 下的 `proj-*`），导致总览出现大量同名重复行并挤占项目切换器。清理时按 `rootPath` 去重、剔除临时路径；同时把外部项目（如 `starbuckstw`）登记进本机台账，使其出现在总览/切换器。
+- **测试隔离**：`test/audit-legacy-tests.test.js` 派生子进程时显式设置临时 `AOS_LEDGER_DIR`，避免审计测试把临时项目写进服务仓库台账。
+- **自动收敛（不靠人工提醒）**：`FileStore` 加载/合并 `state.json` 后按 `rootPath` 归并项目行——同一路径的历史 NULL-host 行与已绑定行并存时保留已绑定行并写回快照（`normalizeProjects`）；只有多个已绑定行（真正的跨主机同路径）才保留歧义。面板解析项目时优先使用进程本机主机身份（`deps.localHostId`）作用域，因此 legacy 行不会再触发 409。
+- **测试**：`console-shell` 断言侧栏无分组标题、无总览项、无 `g o` 跳转；`db-project-hosts` 断言 legacy NULL 行自动收敛；`panel-project-hosts` 断言本机身份下自动选本机行；全量测试见完工验证。
+
+### 13.241 调整（用户可见品牌统一：AOS → mobile-testing）
+
+> 2026-10-28。用户指出 iOS 执行器描述仍写「AOS」，与「用户可见品牌统一 mobile-testing」的约定不一致。
+
+- **改名范围**：用户可见文案统一为 mobile-testing——MCP server instructions、`aos_status` 工具描述、iOS 执行器状态（`mobile_manage_task` 回显）、Appium 隧道指引、pen 凭证提示、flows schema 升级提示、Jira 证据/结论评论标题、控制台搜索示例、CLI 帮助首行、`.env` 模板标题；README/接入指南/iOS 适配方案中的「AOS 执行器/后端/只给指引」同步。
+- **保留（兼容契约，不随品牌改）**：`AOS_*` 环境变量、`aos.config.jsonc`、`.artemis/`、工具名 `aos_status`、Jira 幂等 marker `AOS-TRACE:`/`AOS-VERIFY:`、taskDesc 协议标记 `【AOS-EXPECT】`、Jira 项目 key 示例（`AOS-123`）。
+- **测试**：Jira 标题与初始化错误文案断言同步；全量测试见完工验证。
+
+### 13.242 调整（同进程 `/usage` 并入控制台外壳）
+
+> 2026-10-28。用户反馈使用统计页 UI 未对齐：侧栏只有「使用统计」、顶栏缺项目切换/搜索、返回链接位于标题下方，与 `/panel` 各页不一致。
+
+- **同进程（`panelUrl` 非空）**：`/usage` 复用完整 `DEFAULT_CONSOLE_NAV`、传入当前项目 `rootPath` 与 `hostId`、渲染项目切换器（最多 20 个，链接回 `/usage?project=…`）、保留全局搜索、品牌链接回 `/panel`；返回链接移到 `<h1>` 之前，与项目/任务页顺序一致。
+- **独立进程（`usage --web`）**：行为不变——仅「使用统计」导航、无全局搜索、品牌指向 `/usage`、不渲染回链。
+- **测试**：`usage-web` 同进程分支断言完整导航、项目链接携带 project、切换器与搜索存在；独立分支保持无搜索断言；全量测试见完工验证。
+
+### 13.243 修复（`/usage` 带本机 host 的项目链接误报未知项目）
+
+> 2026-10-28。控制台「使用统计」导航按 `project=<rootPath>&host=<hostId>` 链接；文件台账 `listProjects()` 行恒为 `hostId: null`（单机语义），`/usage` 按 host 过滤后得到空集合，返回 `未知项目 "<rootPath>"`。
+
+- **修复**：`buildView` 仅对 PG/内存多主机做 host 过滤（`store.kind !== "file"`）；文件台账显式 host 不参与项目过滤，直接按 path/name 在原始集合解析。单机多主机语义不变（文件台账本就无跨主机行）。
+- **测试**：`usage-web` 新增 FileStore 用例（host-bound 行 + `?host=` + `?project=<rootPath>` → 200 且回显项目名）；全量测试见完工验证。
+
+### 13.244 调整（JSON 产物浏览器查看器）
+
+> 2026-10-28。用户打开 `/panel/artifact?...&path=.../api-errors.json` 时浏览器直接显示原始 JSON，不利于阅读。
+
+- **行为**：`/panel/artifact` 对 `.json` 文件按 `Accept` 内容协商——浏览器（含 `text/html`）返回只读查看器（文件元信息、2 空格缩进、键/字符串/数字/布尔/null 语法高亮、返回项目、复制 JSON、原始 JSON 入口）；非浏览器/API 客户端仍返回 `application/json` 原始字节。`?raw=1` 可强制原始内容。
+- **长文本**：查看器正文 `white-space:pre-wrap` + `overflow-wrap:anywhere`，长字符串（如 `task_desc`）自动换行、整页纵向滚动，不再横向裁切或用内层 72vh 滚动截断；复制按钮取 `pre.textContent`，复制的是完整格式化 JSON。
+- **日志/文本**：`.log` / `.txt` / `.csv` / `.xml` 在浏览器 Accept 下同样进入查看器（等宽、自动换行、整页滚动、`复制日志`/`原始日志`），ERROR/FATAL/Exception/Traceback/Panic 与 WARN/WARNING 行高亮；ANSI 颜色码剥离；超过 5000 行只展示前 5000 行并提示。
+- **目录索引**：同一查看器外壳渲染目录——目录在前、文件在后，显示类型/子项数/大小/修改时间；空目录默认折叠并提示「已折叠 N 个空目录（执行中断或未写入产物）」，可用 `?showEmpty=1` 展开；空目录自身显示「此目录为空」而非白页。执行中断留下的 `steps/<uuid>/` 空壳因此不再铺满页面。
+- **边界**：非法 JSON 按纯文本展示并显式告警；>512 KB 不展开高亮，按纯文本展示并提示；查看器仅渲染 `.artemis` 范围内白名单文件（与既有路径/扩展名校验一致），所有内容 HTML 转义。
+- **测试**：`panel-artifact-route` +6（HTML JSON 查看器、非浏览器原始 JSON 与 `?raw=1`、非法 JSON 告警、日志查看器与 ERROR/WARN 高亮、非浏览器日志保持 text/plain、空目录折叠与空态）；全量测试见完工验证。
+
+### 13.245 修复（trace `steps/<uuid>/` 空目录的来源与清理）
+
+> 2026-10-28。用户打开 `.artemis/traces/<trace>/steps` 看到 140 个 UUID 空目录，点进去白页，询问「既然是空白的为什么会产生」。
+
+- **来源（ARTEMIS 上游）**：`artemis/artemis/data_engine/engine.py#allocate_step_id` 在每一步开始前预分配 `steps/<uuid>/` 并立即 `mkdir`；截图/动作产物只在后续 `update_step_action` 收到 post screenshot 时写入。取消、超时、无视觉截图或该步未产生产物时，目录保留为空壳。这是上游预分配语义，不是 AOS 生成的测试数据。
+- **AOS 清理**：任务进入终态后（`Runtime.onTerminalTask`）调用 `pruneEmptyStepDirs(traceDir)`，仅删除 `steps/` 下无任何文件的子目录，保留有产物的目录；失败静默，不影响任务结果。不修改 `artemis` 子模块。
+- **展示**：目录索引默认折叠空目录并提示数量，`?showEmpty=1` 展开；空目录页显示「此目录为空」，不再白页。
+- **测试**：`artifacts` 新增 `pruneEmptyStepDirs` 用例（空目录删除、含 `post.jpg` 保留、缺失目录返回 0）；`panel-artifact-route` 覆盖折叠与空态。
+
+### 13.246 调整（用例库以 Excel 为主产物展示）
+
+> 2026-10-28。用户反馈用例库「来源」显示 `flows.json`，看起来像测试资产仍是 JSON，而不是一直强调的 Excel。
+
+- **展示**：用例库表新增「Excel 文件」列，链接到该用例集实际 `.xlsx`（经 `/panel/artifact` 只读服务打开/下载）；「来源」改名「设计来源」（flows.json 是生成输入，不是测试产物）；最新一份加「最新」徽章。副标题改为「每份可打开 Excel（tests.xlsx）」。
+- **口径**：`flows.json` 仅设计输入；实际用例三件套为 `tests.json` / `tests.md` / `tests.xlsx`，历史用例集在 `.artemis/design/case-sets/<stamp>_<feature>.{json,md,xlsx}`。多份历史记录是不同时间的生成版本，不是同一文件重复；Excel 文件名与登记时间可区分。
+- **测试**：`console-pages` 断言 Excel 列、设计来源列、xlsx 链接走产物服务。
+
+### 13.247 修复（项目切换器不显示当前项目）
+
+> 2026-10-28。用户选中项目后顶栏切换器仍显示「切换项目…」。
+
+- **原因**：`loadProjectSwitcher` 以 `(rootPath, hostId)` 精确匹配当前项；文件台账 `listProjects()` 行恒为 `hostId: null`，而页面解析（本机 host 作用域）返回 `hostId=<本机>`，精确匹配失败 → 无 `selected`。
+- **修复**：先按 `(rootPath, hostId)` 精确匹配；未命中时回退到同路径的 NULL-host 行（文件台账单机语义），只标记一个 current；切换器因此显示当前项目名。
+- **测试**：`console-pages` 新增 FileStore + `localHostId` 用例，断言 `<option selected>` 为当前项目。
+
+### 13.248 调整（项目页显示技术栈徽章与缓存说明人话化）
+
+> 2026-10-28。用户询问「生成时间 刚刚 · 缓存 TTL 内数据可能滞后（AOS_PANEL_CACHE_MS）」含义，并指出项目端类型不清。
+
+- **技术栈徽章**：项目页 `<h1>` 追加 `row.stacks` 徽章（如 `Android (Kotlin/Java)` / `iOS (Swift)`），避免同名或跨端项目混淆；数据仍来自 `src/projects/stack.ts` 检测（`project.stack` 可显式覆盖）。
+- **缓存说明**：页面提示由固定技术文案改为 `页面缓存 N 秒内数据可能滞后`（N 由 `AOS_PANEL_CACHE_MS` 换算；0 显示「页面缓存已关闭」），不再把环境变量名暴露给最终用户。含义：面板进程内缓存 `/panel` 响应，TTL 内重复打开可能看到略旧数据，刷新/等待 TTL 后更新。
+- **测试**：既有 `panel-web` 缓存 TTL 行为不变；项目页新增徽章不改变接口。
+
+### 13.249 调整（项目页状态行只保留运行轴）
+
+> 2026-10-28。用户反馈项目页「存储：文件台账（.artemis/ledger） · 接入：1/3 就绪（缺 Figma、Jira；不影响执行）」不需要展示。
+
+- **变更**：项目页状态行由「运行 / 存储 / 接入」三轴收敛为只显示「运行：<灯><说明>」；存储与接入信息仍保留在运维页、环境自查明细和项目表/接入检查中，不丢失能力。
+- **测试**：`panel-web` 断言只保留运行状态、不再出现存储轴与接入就绪数。
+- **补充**：项目路径/最后活跃行不再显示（路径与磁盘状态仍在总览、运维与接入检查中可见）。
+
+### 13.250 新增（Web 项目资产存储 + Excel 上传/CAS）
+
+> 2026-10-28。Task 4：为托管 Web 项目提供版本化资产（当前仅 Excel；类型预留 materials/package），原件按内容寻址只读保存，不解析/不改写。
+
+- **存储**：`web_assets`（PG）与 Memory/File 台账 `webAssets` 同构；字段 `id/projectId/rootPath/kind/version/filename/sha256/size/storagePath/uploadedBy/createdAt/metadata`。`version`＝同 `rootPath+kind` 最大版本+1；列表按 `version DESC, id DESC`；`(root_path, kind, version)` 唯一索引兜底并发（冲突重试至多 3 次）。`(root_path, kind, sha256)` 建普通索引用于内容查找——同内容重复上传仍新增版本行（保留上传历史），文件本身复用。
+- **文件路径**：`<projectRoot>/.artemis/web/assets/<kind>/<sha256>.<ext>`；写入前校验扩展名（excel 仅 `.xlsx`，大小写不敏感）、非空、≤20MB；`writeFileAtomic` 原子落盘，目标已存在则复用；文件名只取 `basename`，存储路径不含用户文件名（无目录穿越）。
+- **服务**：`src/web/assets.ts` 的 `storeWebAsset`（sha256 → 落盘 → `store.createWebAsset`，`projectId` 取 `getWebProject(rootPath)?.projectId`，`uploadedBy` 记操作人）与 `listWebAssets`；错误以 `WebAssetError.code` 区分 `unsupported-kind|invalid-extension|empty-file|too-large`。
+- **API**：`POST /panel/api/projects/assets`（multipart，字段 `project`、`kind`（必填，仅 `excel`）、`file`；`host` 可选），require maintainer；项目经 `resolveProjectKey` 解析（未知 404、歧义 409），响应 `{ok, asset}` 仅摘要不含文件字节；审计 `domain: asset`、`action: asset.upload`（ok/failed，refs 含 assetId/kind/filename/sha256/version）。`parseMultipartUpload` 增加文本字段收集（旧调用兼容），扩展名/上限由调用方传参（import 默认 `.xlsx`，资产同样 `.xlsx` + 20MB）；HTTP/独立面板服务端对所有 multipart POST 读取 rawBody（不再只限 import）。
+- **边界**：不实现 Excel 解析/列映射/回写、materials/package 上传与资产删除/保留期；版本行不可变；工作副本与 journal 见后续任务。
+- **测试**：`test/web-assets.test.js`（CAS 路径/重复内容版本递增/扩展名/空文件/20MB/basename；API 成功+审计+400/404/413/403；FileStore 重启；pg-mem `web_assets` 往返与 kind 独立版本）；全量测试见完工验证。
+
+### 13.251 新增（任意 Excel 解析 + 列映射 + 语义指纹）
+
+> 2026-10-28。Task 5：Web 项目接入现场任意格式的测试 Excel（列名/列序各不相同），需要先识别列再解析，为后续映射持久化与回写提供稳定输入。
+
+- **共享列定义**（`src/web/excel-columns.ts`）：`CANONICAL_FIELDS = caseId/name/steps/expected/preconditions/module/priority/testData/testId`、`CanonicalField`、`ExcelColumnMap = Partial<Record<CanonicalField,string>>`（值是表头文本）、`REQUIRED_CANONICAL_FIELDS = [caseId, steps]`、`CANONICAL_FIELD_LABELS`（中文错误/展示名）与 `COLUMN_ALIASES`（web 解析器用的中英文超集别名，含新增 `用例ID`/`测试过程`/`优先级`/`测试编号` 等）。旧导入器另用 `LEGACY_COLUMN_ALIASES` 子集（见下），避免超集改变其 first-match 优先级。`normalizeExcelHeader`：NFKC + trim + 小写 + 去空白/`_`/`-`，因此 `用例 编号`、`case_id`、`Case-ID` 等价。`suggestExcelMapping(headers)` 按规范字段顺序取第一个未被占用的匹配列，无关列忽略；`semanticFingerprint(sheetName, headers)` = `sha256(JSON.stringify({sheet, fields: <映射到的规范字段>.sort()}))`，**不含列顺序与表头文本**，列换序或个别表头写法不同仍能命中已保存映射，但必填字段集合变化（如缺「步骤」）会得到不同指纹。
+- **解析器**（`src/web/excel.ts`）：`parseExcel(buffer, { sheetName?, headerRow?, mapping })` → `{ sheetName, headers, cases, rejected }`。exceljs 的 `xlsx.load` 是异步 API，故返回 `Promise<ParsedExcel>`（与计划中的同步签名不同，调用方需 await）。工作表缺省取第一个（`sheetName` 按 trim 后精确匹配）；`headerRow` 缺省 1；按 `mapping` 的表头**文本**定位列，不看列位置；单元格逐行 trim。另导出 `readExcelHeaders(buffer, { sheetName?, headerRow? })` → `{ sheetName, headers }`，缺必填列时也能读表头（供预览/列映射建议）。必填 `caseId`/`steps` 未映射或映射列不存在分别抛 `ExcelMappingError`（`missing-required` / `column-not-found`）；同一列被映射给两个字段抛 `duplicate-column`。其余错误码：`invalid-workbook`（损坏/无工作表/超 10000 行×200 列）、`sheet-not-found`、`invalid-header-row`、`missing-header`、`merged-cells`。
+- **行规则**：全空行跳过；`caseId` 空 → rejected「缺少用例编号」；`steps` 空 → rejected「缺少步骤」；重复 `caseId` 保留第一条、后续 rejected「用例编号重复：…（保留第 N 行）」；rejected 带真实 Excel 行号与原因。数字 `caseId` 转字符串；日期转 ISO。`steps`/`preconditions` 按换行拆分为数组（保留每行原文与编号前缀，只去首尾空白/空行），`expected`/`module`/`priority`/`testData`/`testId` 为空时 `null`。公式单元格经 `cell.formulaType` 判定、读 `cell.result` 缓存值（`0`/`false`/空串等 falsy 缓存值同样保留；不能读 `cell.value`，exceljs 会丢弃 falsy result）；只有**必填列**公式无缓存时整行 rejected「公式单元格无缓存值（字段）」，可选列公式无缓存按 `null` 继续解析（不丢整行）。映射列（含表头行）出现合并单元格 → 整个工作表 `merged-cells` 拒绝；未映射列的合并不影响。
+- **导入器复用**：`src/workflow/excel-import.ts` 改为引用 `LEGACY_COLUMN_ALIASES`（旧别名子集；字段映射：`displayId ← caseId`）并保留原表头归一（trim/小写/去空白），删除本地别名表；因此扩展别名（如 `用例ID`/`测试过程`）不会抢走旧列的 first-match，导入行为、错误文案与拆分/幂等逻辑不变。
+- **边界**：不实现映射持久化、预览 API、UI、Excel 回写（Task 6/7）。
+- **测试**：`test/web-excel.test.js`（14 例：规范字段与别名建议、扩展别名、列换序/无关列不变、语义指纹稳定/缺列变化/换表名变化、解析字段与行号、数字 caseId、重复/空必填 rejected、公式缓存值与 `0`/`false`/可选无缓存/必填无缓存、合并列拒绝与未映射合并不影响、缺必需列/列不存在/重复映射、工作表与表头行选择、表头单独读取、损坏工作簿）；`test/workflow-excel-import.test.js`（含旧别名优先级与 `displayId`/`testData` 锁定）与全量测试保持全绿。
+
+### 13.252 新增（Excel 列映射持久化 + 预览/保存 API）
+
+> 2026-10-28。Task 6：把用户确认的列映射按原件版本持久化，并提供预览（建议映射/指纹）与保存 API；原件仍是只读 CAS，映射不写回文件。
+
+- **存储**：`excel_mappings`（PG）与 Memory/File 台账 `excelMappings` 同构；字段 `id/projectId?/rootPath/assetId/sheetName/headerFingerprint/columnMap/createdBy/createdAt`。`columnMap` 是「规范字段 → 工作表真实表头文本」；`(root_path, asset_id, header_fingerprint)` 唯一索引，保存时按该键 **upsert（最新覆盖）**：同键保留原 `id`/`createdAt`，更新 `sheetName`/`columnMap`/`createdBy`；列表按 `createdAt DESC, id DESC`，可按 `assetId` 过滤。PG 写入先 UPDATE 再 INSERT，23505（并发抢先）回退 UPDATE；映射行不级联资产删除（当前无删除入口）。
+- **指纹**（`src/web/excel-mapping.ts` 的 `mappingFingerprint(sheetName, columnMap)`）：`sha256({sheet, fields: <已映射规范字段>.sort()})`，**不含列顺序与表头文本**；确认映射的字段集合变化（增/减可选列、漏填 `steps`）才换指纹。对 `suggestExcelMapping(headers)` 的结果与 Task 5 `semanticFingerprint(sheetName, headers)` 完全一致；列换序后预览/保存得到同一指纹，可直接查回既有映射。
+- **服务**：`previewExcelAsset` 读资产原件 → `readExcelHeaders`（缺必填列也返回表头）→ `{sheetName, headers, suggested, fingerprint, rejectedPreview: []}`；`saveExcelMapping` 重新读表头、校验映射、算指纹后 upsert；`findExcelMapping` / `listExcelMappings` 为薄封装。资产校验：必须属于该项目（`getWebAsset(rootPath, assetId)`）、`kind=excel`、`storagePath` 解析后位于 `<root>/.artemis` 内；越界路径拒绝读盘（400），文件缺失 404。映射校验：键必须是 `CANONICAL_FIELDS`、值必须是非空字符串、表头按 `normalizeExcelHeader` 后必须存在（**归一后为空的表头——如 `---`/`__`/空单元格——一律拒绝，不能充当任何字段，更不能满足必填列**）、同一列不得映射给两个字段，且必须含非空 `caseId`/`steps`；未知键/非字符串 → `invalid-column-map`，其余复用 Task 5 的 `ExcelMappingError`（`missing-required`/`column-not-found`/`duplicate-column`/`invalid-workbook`/`sheet-not-found`/`invalid-header-row`/…），API 统一 400 + `code`。
+- **API**（均 require maintainer，项目经 `resolveProjectKey` 解析）：`POST /panel/api/projects/excel/preview` body `{project, assetId, sheetName?, headerRow?}` → `{ok, sheetName, headers, suggested, fingerprint, rejectedPreview}`；缺必填列仍 200（UI 据此让用户补映射），工作簿/表头行无效 400，未知资产 404，非 Excel/越界 400。`POST /panel/api/projects/excel/mapping` body `{project, assetId, sheetName, headerRow?, columnMap}` → `{ok, mapping}`；校验失败 400，未知资产 404；审计 `domain: excel`、`action: excel.mapping.save`（ok/failed，refs `assetId`/`sheetName`/`headerFingerprint`）。预览不写审计（高频只读）。
+- **复用口径**：建议映射（preview）与保存的指纹在用户接受建议时相同；用户改动可选字段集合后指纹随确认语义变化，是刻意行为（不复用不确定映射）。跨资产复用时以最新原件的预览指纹查 `findExcelMapping`。
+- **边界**：不实现 UI、工作副本、写回与 journal（Task 7/8）；映射只挂原件，不参与 CAS/原件 sha。
+- **测试**：`test/web-excel-mapping.test.js`（11 例：预览 headers/suggested/指纹与缺必填列、列换序稳定；指纹与 Task 5 同源、键序无关；Memory upsert/find/list、换序命中；必填/列不存在/未知字段/空表名/表不存在/未知资产/非 Excel/越界路径/文件缺失；归一后为空或空单元格的表头不能冒充必填列而合法映射仍可保存；FileStore 重启；pg-mem 往返与同键 upsert；API 预览成功+headerRow+缺列 200+404/400/403/跨项目隔离；API 保存+审计+同键 upsert+字段集合变化新行+400/403；角色 maintainer）。
+
+### 13.253 新增（Excel 工作副本 + 写回 Journal + 8 列写回引擎）
+
+> 2026-10-28。Task 7：在原件 CAS 之上提供可写工作副本与「8 列系统写回」安全层；原件永不改写，系统只碰空白格或未被人工改动的系统格。
+
+- **工作副本**（`src/web/workbook.ts`）：固定路径 `workbookCopyPath(root, assetId)` = `<projectRoot>/.artemis/web/workbook/<assetId>.xlsx`；`ensureWorkbookCopy(original, copy)` 仅在副本缺失时 `COPYFILE_EXCL` 复制（并发先到者胜），副本已存在且可读时不覆盖（保留人工/系统写入）；副本存在但损坏/截断（exceljs 无法读或无工作表）时告警（`logWarn`）、删除并从原件重建（best-effort，失败抛错）；原件本身不可读则 `WorkbookCopyError("invalid-original")` 拒绝，不生成坏副本；`original === copy` 抛 `WorkbookCopyError("same-path")`。原件 sha 不因复制/写回改变。
+- **Journal 存储**（`src/db/*`）：`excel_writeback_journal`（PG）与 Memory/File 台账 `excelWritebacks` 同构；字段 `id/projectId?/rootPath/assetId/sheetName/jobId?/caseId/columnKey/cellRef/value/actor?/writtenAt`，**只追加**（同格多次写保留多条）；普通索引 `(root_path, asset_id, cell_ref, written_at)`（非唯一）；`lastExcelWriteback(rootPath, assetId, cellRef)` 取 `written_at` 最新（同刻取后写入/`id DESC` 兜底）。`cellRef` 约定带工作表名（`用例!F2`），避免多表地址碰撞。File 台账按 `id` union 合并、随 `state.json` 持久化；PG 写入 `project_id` 按 `getProjectByPath` 解析（未登记为 NULL）。
+- **8 列**（`src/web/writeback.ts` 的 `SYSTEM_COLUMNS`）：`建议｜脚本文件`、`建议｜关键预期`、`执行｜结果`、`执行｜设备与系统`、`执行｜安装包`、`执行｜开始时间`、`执行｜结束时间`、`执行｜traceId`（顺序即追加顺序）。
+- **锚定**：`writebackWorkbook` 只在**表头行**（`headerRow` 缺省 1）从 `caseIdHeader` 命中列（`normalizeExcelHeader` 等价）向右扫描到最后非空表头；数据行里的游离列不参与锚定、不覆盖；锚点左侧一律不碰。已有系统列按表头归一复用（可处在非规范顺序），缺失列仅在最后非空表头右侧按 `SYSTEM_COLUMNS` 顺序追加——追加从不插入/移动既有列，避免破坏公式与人工数据。重复执行不重复堆列。游离数据若恰好落在**本次新追加**列的数据行，按「非系统内容」跳过（只在其上方增表头，不改数据）。
+- **归属（K2）**：逐格读当前值 + `lastSystemValue(caseId, key)`：当前空且 journal 无值 → 写；当前（trim 后）等于 journal 最后值 → 允许刷新；journal 有值但当前被清空 → 视为人工清空，冻结不回填；当前与 journal 不同 → 人工格，跳过并 warning。**冷启动取舍**：单元格表头已是既有系统列且 journal 无记录时，非空当前值默认按人工内容**冻结**并 warning（不猜历史系统值）；仅当调用方显式传 `adoptExistingSystemColumns: true` 才按系统格刷新并 warning。本次新追加列下的非空数据始终按人工内容冻结。系统列以外的人工单元格永不被本引擎触碰。目标格为合并/公式 → 跳过并 warning；**锚点或系统列表头与合并区重叠 → 抛 `merged-header`**，不拆合并（追加列也检查）。缺 `caseId`（表头行找不到）、`caseIdHeader` 为空、工作表不存在、损坏工作簿、维度超限、表头行越界分别抛 `WritebackError`（`case-id-header-not-found` / `invalid-case-id-header` / `sheet-not-found` / `invalid-workbook` / `invalid-header-row`）；入口可选 `originalPath`，与 `workbookPath` 解析后相同即抛 `same-as-original`（运行期禁止写原件）。未知/重复用例编号、缺编号行只 warning 不写；**输入行按 trim 后 caseId 去重：首条生效，后续重复行告警且不二次写入**（`written`/`writtenCells` 每个物理格至多一次）。
+- **写盘与结果**：`undefined/null/空串` 值不产生写入尝试；有任何可写格时才追加表头并 `xlsx.writeBuffer` → `writeFileAtomic` 覆盖工作副本（无写入则完全不改文件）。`WritebackResult` 计数口径：`written`/`failed` 按单元格（`skipped` 对未知/空/重复用例编号行按行计一次，其余按格）。`warnings` 中文可读；`columns` 恒为 8 个表头；额外 `writtenCells[]`（`caseId/key/value/cellRef/address/rowNumber/columnNumber`）供调用方在保存成功后写 journal（先落盘再记账，失败不记账）。`lastSystemValue` 抛错按 `failed` 计并跳过该格。
+- **维度与往返**：维度上限按**实际使用**计——行用 ExcelJS `actualRowCount`（样式-only 远行如 `IZ10001` 不触发拒绝），列用表头/使用列宽；`maxRows`/`maxColumns` 可覆盖（默认 10000×200），超限抛 `invalid-workbook`。**往返限制**：写回以 exceljs 重新序列化工作副本；不支持对象的 zip/parts 预检与写回后自检见 §13.256（图表/透视/宏/切片器/ActiveX 拒绝；drawings/图片/comments 仍为 best-effort）。
+- **锁**（`src/web/lock.ts`）：`withFileLock(lockPath, fn, {timeoutMs=30000, pollMs=25})` 用 `fs.open(lockPath,"wx")` 独占创建，`EEXIST` 轮询至超时（`FileLockTimeoutError`），`finally` 关闭并删除锁文件（`fn` 抛错同样释放）。写回引擎本身不持锁，由 API/编排层用同一 `lockPath` 串行；跨进程/多实例的 PG advisory lock 留待后续。
+- **复用约定**：映射仍按原件解析（Task 6），`caseIdHeader` 必须由调用方按当前工作副本重新解析后传入（缺列即抛错，不信任历史表头文本）；`lastSystemValue` 由调用方按 `(caseId,key) → cellRef`（读当前副本表头/行号）查 journal。
+- **边界**：不实现 UI/API 接线、写回失败状态标记/重试、往返 parts 自检、PG advisory lock（Task 8/9 或后续）。
+- **测试**：`test/web-writeback.test.js`（17 例：副本复制/幂等/同路径拒绝/原件 sha/损坏副本重建与原件损坏拒绝；首写 8 列顺序与游离列保留；二次写刷新+人工冻结；人工清空不回填 vs 空+无 journal 可写；表头行锚定/游离表头列/锚点偏移与左侧不动；公式/合并目标跳过、合并表头抛错；`withFileLock` 互斥/超时/释放；并发写回不重复列且文件可重开；未知 caseId/空值/journal 失败/缺锚点/缺表/坏文件/headerRow；冷启动既有系统列无 journal 可刷新且非系统列人工内容不动；输入重复 caseId 首条生效、单次物理写与 journal 一致；`originalPath` 同路径拒绝且原件 sha 不变；样式-only 远行不触发维度上限、`maxRows`/`maxColumns` 可覆盖；Memory-File-PG journal 追加与最新值）。
+
+### 13.254 新增（Web 测试资产页：Excel 版本 / 上传 / 列映射预览与保存）
+
+> 2026-10-28。Task 8：把 Task 4–7 的资产与映射能力接到面板，提供可操作页面；不做写回执行 UI、结果列与脚本页。
+
+- **路由**：`GET /panel?project=<root>[&host=<id>]&section=assets` 返回新 `PanelView` 分支 `web-assets`（资产 `listWebAssets(..., "excel")`、映射 `listExcelMappings(rootPath)`，均走项目 host 作用域的 store）；`/panel.json` 同源返回 `{ok,view:"web-assets",assets,mappings}`。项目页新增「测试资产」入口并保留 `host`。
+- **页面**（`src/console/pages.ts` `renderWebAssetsPage`）：资产版本表（文件名/版本/大小/sha256 前 12 位/上传时间）；上传表单（`file`，仅 `.xlsx`，multipart POST `/panel/api/projects/assets`，字段 `project`+`kind=excel`[+`host`]，头 `X-AOS-Console`）；列映射区（资产下拉 + 表头行默认 1 + 预览 → 渲染规范字段建议映射 → 保存）；已保存映射表（资产/工作表/已映射字段/指纹/保存人/时间）。所有用户文本经 `escapeHtml`；客户端渲染值经文本转义。
+- **权限口径**：写动作（上传/预览/保存）要求 `capabilities.actions !== false` 且角色为 maintainer/admin；viewer/dispatcher 或缺省关闭时控件 `disabled`、端点脚本不注入（服务端仍按 §13.250/§13.252 的 maintainer 闸门强制）。只读角色仍可查看版本与已保存映射。
+- **刷新与防错**：上传/保存成功后服务端 `cache.clear()`（避免 5s 面板缓存让 reload 读到旧页、诱使重复上传）；资产或表头行变更即清空预览并禁用保存；上传/预览/保存请求在途时按钮禁用（失败恢复、成功保持禁用并 reload）；预览响应绑定发起时的资产/表头行，期间变更则丢弃旧响应。
+- **边界**：不实现写回/结果列 UI、materials/package 上传、资产删除、脚本/任务页；预览保存的是建议映射原样（用户改列仍需后续 API/页面）。
+- **测试**：`test/web-assets-ui.test.js`（资产表/上传表单/预览保存端点/映射表/文件名转义；JSON 视图；viewer/dispatcher 与 actions=0 禁用且不暴露写脚本；项目页入口保留 host）；`test/console-pages.test.js` 保持全绿。
+
+### 13.255 实施记录（Web 项目基础 Plan 1 端到端验收）
+
+> 2026-10-28。Task 9：把 Task 1–8 的项目、Excel 资产、列映射、工作副本与写回串成一条可运行链路，锁定 Plan 1 的交付不变量；后续 Plan 2–4（脚本/发现、远程执行、计费）不在本次范围。
+
+- **链路**：`createWebProject`（托管目录 + 最小 `aos.config.jsonc` + `web_projects`/`projects` 行）→ `storeWebAsset`（Excel 原件 CAS）→ `previewExcelAsset`/`saveExcelMapping`（语义指纹 + `excel_mappings`）→ `ensureWorkbookCopy`（工作副本）→ `writebackWorkbook`（8 列）→ `recordExcelWriteback`/`lastExcelWriteback`（`excel_writeback_journal`）。
+- **store 表**：`web_projects`、`web_assets`、`excel_mappings`、`excel_writeback_journal`；Memory/File/PG 三实现同构，PG 唯一约束与迁移见 §13.250–§13.253。
+- **不变量**：原件 `/.artemis/web/assets/excel/<sha256>.xlsx` 只读、永不改写；工作副本 `/.artemis/web/workbook/<assetId>.xlsx` 是派生物；原件 sha 不因复制或写回变化；映射挂原件、不读也不改工作副本。写回以映射的 `caseId` 表头（业务侧 `testcase_id`）只在表头行向右复用/追加 8 列。归属按 §13.253：当前值等于 journal 最后系统值可刷新；空且无 journal 可写；人工清空冻结；有 journal 但当前值不同为人工格冻结。冷启动时既有系统表头但无 journal 的非空格默认冻结并告警（显式 `adoptExistingSystemColumns` 才刷新，见 §13.256）；非系统列的人工单元格永不触碰。重复输入 `caseId` 首条生效且告警。
+- **单一写者**：写回只在中心服务执行，runner 不回写 Excel；本计划只提供引擎（`src/web/writeback.ts`）与锁工具（`src/web/lock.ts`），由后续 API/编排层使用同一锁串行；写回执行器与接线尚未实现。跨进程/PG advisory lock 留待后续计划。
+- **文件**：`src/web/{project-service,assets,excel,excel-columns,excel-mapping,workbook,writeback,lock}.ts`、`src/db/*`、`src/panel/actions.ts`、`src/console/pages.ts`；验收测试 `test/web-project-e2e.test.js`。
+- **验收（E2E，MemoryStore + 临时 workspace）**：建项目 → 上传 Excel → 预览/保存映射（指纹可查回）→ 按映射解析用例 → 建工作副本 → 首行写满 8 个系统列（F1–M1 表头与 F2–M2 值逐格断言）+ 第二行结果 → journal 记录 → 二次写回刷新系统格且人工改过的格冻结 → 重复输入 `caseId` 只写首条；全程原件 sha 不变、首次副本与原件字节一致、重复写回不堆列、原件仍只有原始表头。
+- **后续计划**：Plan 2 Script/Discovery（Maestro 草稿、testID 发现、脚本集 staleness）、Plan 3 Remote Runner/Execution、Plan 4 Billing。本次不含 materials/package 上传、写回失败状态与重试、PG advisory lock；往返 parts 自检与 `web.projectId` 补链见 §13.256。
+
+### 13.256 新增（Plan 1 全分支终审修复：审计哨兵 / OOXML parts / 并发创建 / 归属与写路径闸门）
+
+> 2026-10-28。最终整体审查的必修项一次性收口：失败审计不得在用户可控路径重建目录；写回必须预检/后检 OOXML parts；并发创建不得删除胜者目录；冷启动默认冻结；journal 归属改用可变业务键；工作副本读错误与解析损坏分开；归档/跨主机项目禁止写资产；`projectId` 正确传播。
+
+- **失败审计哨兵**（`src/panel/actions.ts`）：`project.create` 失败与 `project.archive` 未知项目的审计统一写 `deps.workspaceRoot ?? process.cwd()`，摘要仍保留名称/意图路径；不再写 `intendedRoot`/请求里的 raw `projectKey`（FileStore `recordAudit` 会 `mkdir -p <root>/.artemis/ledger`，原实现会在回滚后复活项目目录或写进其他项目）。回归：FileStore 下模拟 upsert 失败后无 `<slug>/`、同名重试成功；archive 未知不创建请求派生目录。
+- **OOXML parts 预检/后检**（新增 `src/web/xlsx-parts.ts`，零依赖最小 ZIP 中央目录读取）：写回前 `readXlsxParts` 列 entry，命中 `xl/charts/`、`xl/pivotTables/`、`xl/pivotCache/`、`xl/slicers/`、`xl/activeX/`、`xl/ctrlProps/`、`xl/vbaProject.bin` → `WritebackError("unsupported-parts")`（错误文案列出 part 并建议「单独结果文件」），不打开/不改写文件；drawings/images/comments、`xl/printerSettings/` 按 best-effort 放行（打印设置仅影响版式，不属于测试数据）。写后比对 before/after 清单，写回前存在、写回后消失且不属于 exceljs 可改写集合（workbook/sheet/style/sharedStrings/calcChain/drawing/theme/media/docProps/printerSettings 等）的 part → `WritebackError("parts-lost")`。写盘改为「临时文件 → 重新打开逐格校验已写值 → parts 清单校验 → rename 原子替换」，校验失败删临时文件、原工作副本不动；新增 `WritebackError` 码 `unsupported-parts`/`parts-lost`/`verify-failed`。
+- **并发创建**（`src/web/project-service.ts`）：`mkdir(rootPath)` 显式捕获 `EEXIST` → `WebProjectCreateError("directory-exists")`；记录 `createdDir`，只有本调用真正创建了目录才在失败回滚时 `rm`，败者绝不删除胜者目录。测试：同 slug `Promise.all` 一胜一败、目录与配置完整、仅一条 web 行。
+- **冷启动默认冻结**（`src/web/writeback.ts`）：`writebackWorkbook` 新增 `adoptExistingSystemColumns?: boolean`（默认 `false`）。既有系统列表头 + 无 journal + 当前非空 → 默认冻结并 warning（提示可显式 adopt）；仅 `true` 时刷新并 warning。新增列下的非空数据始终视为人工内容。
+- **journal 归属按业务键**：新增 store 方法 `lastExcelWritebackByCellKey(rootPath, assetId, sheetName, caseId, columnKey)`（Memory/File/PG 同构；PG 增索引 `excel_writeback_journal_cell_key_idx`），返回该用例+列最新系统写入；`cellRef` 只作报告。E2E/测试适配器改用它，插入行导致 cellRef 漂移后人工格仍能冻结。`recordExcelWriteback` 仍记录 cellRef。
+- **工作副本读取错误分流**（`src/web/workbook.ts`）：`inspectWorkbook` 区分「读文件失败」（EACCES/EMFILE/EIO/EISDIR 等）与「解析/校验失败」；只有解析失败才把副本改名为 `<copy>.corrupt-<iso>`（保留取证）并从原件重建；读错误抛 `WorkbookCopyError("copy-unreadable")`，不删除、不重建。
+- **归档与跨主机写路径闸门**（`src/web/project-service.ts` + `src/panel/actions.ts`）：`assertProjectActive(store, rootPath)` 拒绝非托管/非 active 项目（`WebProjectStateError` → 409，`project-archived`/`not-a-web-project`），接在资产上传与映射保存；资产页与 `/panel.json` 显示 `projectStatus`，归档时禁用上传/保存并说明只读。跨主机（`resolved.hostId` 非空且不等于 `deps.localHostId ?? store.localHostId`）的上传/预览/映射统一 409 `cross-host-write`，提示回项目机执行；`storeWebAsset` 不再 `mkdir` 项目根，根不存在抛 `WebAssetError("project-root-missing")`（409）。
+- **projectId 传播**：`storeWebAsset` 不再显式写 `projectId: web?.projectId ?? null`，未知时省略字段由 store 从 `upsertProject` 解析；`createWebProject` 在 `upsertProject` 后经新 store 方法 `linkWebProjectProjectId` 回填 `web.projectId`（Memory/File/PG）。E2E/资产测试断言 `asset.projectId === project.id`。
+- **测试**：`web-writeback`（图表/透视/宏拒绝且字节不变、lostParts、正常写回自检、冷启动双分支、插入行 journal 归属、损坏副本改名留档、EISDIR 不重建、三 store 按业务键查询）；`web-project-service`（并发创建、projectId 补链）；`web-project-api`（失败审计哨兵 + 同名重试、archive 未知不建目录）；`web-assets`（不代建根、归档 409、跨主机 409、projectId）；`web-excel-mapping`（归档保存 409/预览可读、跨主机预览/保存 409）；`web-assets-ui`（归档状态与禁用）；E2E 改用业务键适配器并断言资产 projectId。
+
+### 13.257 新增（design_to_test 状态变体覆盖：states 阅读 / ui-contract / uiCoverage）
+
+> 2026-10-28。修复 starbuckstw 反馈：`design_to_test` 静默跳过 flows.json 的 `screens[].states[]`，`ui-contract` 只投影主屏，`uiCoverage` 也不区分状态，导致「行動預點-下滑」（`n6dGB`）这类滚动/吸顶/弹窗态既不读、也不进对照清单。现在状态变体必须显式可见，不能再静默漏掉。
+
+- **默认阅读状态**（`src/workflow/design-to-test.ts`）：`readingStates` 缺省改为「flows.json 存在 states 时开启」；显式 `readingStates:false` 时返回 `states-not-read` 警告（含状态数与前 12 个 `label (id，父屏 …)`），阅读未执行/未完成时同样告警。`readingStates:true` 仍原样透传 `includeStates`。工具 schema 描述同步。
+- **状态截图缺失可见**（`src/design/reading/run.ts`）：`includeStates:true` 时若状态变体没有截图，返回 `reading-state-image-missing`（含状态 id/名称），不再只报「块无可用截图」；旧项目需重跑设计提取以生成状态 PNG。
+- **ui-contract 投影状态**（`src/ui/contract.ts`）：`readFlows()` 读取 `screens[].states[]`，按归一化 label 去重并跳过与父屏同名项；契约项新增 `presentation:"screen"|"state"` 与 `parentScreenId`，`counts:{screens,states}` 记录范围；`penFileFor()` 查找 `pen/states/<id>.pen`，`renderFor()` 兼容状态渲染图，契约指纹纳入 `pen/states/*.pen`，markdown 显示主屏/状态数量与父屏。`suite ui-contract` 文本/JSON 输出同步。
+- **uiCoverage 区分 screen/state**（`src/ui/verification.ts`、`src/figma/suite-runner.ts`）：`UiScreenRef` 增加 `presentation`/`parentScreenId`；汇总新增 `contractStates`、`contractNotComparedScreens`、`contractNotComparedStates`，`contractScreens` 仍表示主屏数；面板 chip 与 `suite run` 文本在存在状态时显示 `契约 N 屏 + M 状态`。
+- **run 结束显式列出未核验状态**（`src/workflow/design-to-test.ts`）：`uiDiff` 开启且契约含状态时，按实际 `comparedScreens` 计算未比对状态，返回 `ui-states-not-verified`（含数量与前 12 个名称/id）；原 `ui-not-verified` 保留。
+- **验收**：starbuckstw 现有 flows 投影为 `主屏 19 · 状态 18`，`n6dGB（行動預點-下滑，父屏 Z4OR6X）` 进入契约；随后 run 的 `uiCoverage.contractNotComparedStates` 会列出未比对状态，`ui-states-not-verified` 给出名称，不再只有一条 summary。
+- **测试**：`ui-contract`（状态 pen → presentation/parent/counts、重复 label 去重、状态 pen 改指纹）；`ui-auto-check`（contractStates 与未覆盖状态拆分）；`workflow-design-to-test`（有 states 默认 `includeStates:true`；显式 false 时 `states-not-read` 含 n6dGB）；`ui-contract.test` 现有主屏用例保持。
+- **边界/后续**：状态用例生成（下滑手势、展开/收起点击、弹窗触发）尚未自动生成，仍由人工/后续计划补；旧 flows 没有状态 PNG 时只告警，不伪造视觉阅读；原始 28 个 state 中同 label/父屏同名的 10 个按去重规则折叠为 18 个。
+
+### 13.258 新增（Web 资产类型：package / materials / scripts）
+
+> 2026-10-28。Plan 3 Task 3b：Web 任务需要携带安装包、测试材料与 Maestro 脚本包，资产类型从「仅 Excel」放开为四类。
+
+- **类型**（`src/db/types.ts`）：`WebAssetKind = "excel" | "materials" | "package" | "scripts"`；Memory/File/PG 三实现只按字符串存 `kind`，无需迁移。
+- **上限**（`src/web/assets.ts`）：新增 `webAssetMaxBytes(kind)`——excel 20MB、materials 50MB、package **200MB**、scripts 20MB；`WEB_ASSET_MAX_BYTES` 保留为 excel/scripts 旧常量（20MB），per-kind 表直接用该常量。`WEB_ASSET_KINDS`/`isWebAssetKind`/`webAssetExtensions` 供调用方枚举。
+- **传输上限**（`src/panel/limits.ts`）：`MAX_PANEL_ASSET_UPLOAD_BYTES = 210MB`（含 multipart 头开销）只用于 `POST /panel/api/projects/assets`（HTTP 服务 `src/http-server.ts` 与独立 `panel --web` 的 `src/panel-command.ts` 同步）；其余面板动作/未知路径仍用 `MAX_PANEL_IMPORT_BYTES`（≈20MB）。否则 21MB 安装包会在传输层被 413，永远到不了 `storeWebAsset`。
+- **内存边界（已知限制）**：multipart 目前整包缓冲，峰值约为请求体的 3 倍（rawBody + FormData/File + 内容寻址写入的 Buffer），故 200MB 包峰值可达 ~600MB；200MB 是首版可接受边界，**流式写 CAS 为后续任务**，在此之前不宜再抬高 package 上限。
+- **扩展名白名单**：package `.apk`/`.ipa`；materials `.zip`/`.json`/`.csv`/`.txt`；scripts 仅 `.zip`；excel 仅 `.xlsx`；大小写不敏感，文件名仍只取 `basename`；含 `\`（Windows 路径分隔符）直接拒绝 `invalid-filename`，不做静默截断。`metadata?: Record<string, unknown>` 透传到资产行（缺省 `{}`）；`metadata.secret=true` 标记 secret materials，且仅 `kind=materials` 允许（其他 kind 传 `secret=true` → 400 `invalid-metadata`）。
+- **package 元数据**：上传不要求中心解析 AndroidManifest/Info.plist；包名/版本以项目 `appPackage` 为准、安装后由 runner 回报（Task 8）。
+- **API**（`src/panel/actions.ts`）：`POST /panel/api/projects/assets` 的 `kind` 接受四类（未知 kind → 400 `未知 kind "…"`）；multipart 先把 `kind` 当文本字段解析，故按全类型扩展名并集接收、上限取最大 kind＋64KB 头开销，再由 `storeWebAsset` 按 kind 精确校验（扩展名不匹配 400 `invalid-extension`、超限 413 `too-large`）；新增 `secret=true` 文本字段 → `metadata.secret`。审计 `asset.upload` 的 refs 仍含 kind。
+- **UI 现状**：控制台资产页（`?section=assets`）仍只列出 Excel 版本/上传入口；package/materials/scripts 目前只能经 API 上传，页面暴露见 Task 9/10。
+- **测试**：`test/web-asset-kinds.test.js`（各 kind 上限与边界、扩展名大小写/白名单、package 重复内容新版本复用 CAS、未知 kind 与 basename/反斜杠、secret metadata 与非法 secret、API 四类上传与 typed 400/413）；`test/http-server.test.js` 21MB package 走真实 HTTP → 200；`test/web-assets.test.js` 原「未知 kind」用例改用 `binary`，另加 kind/扩展名不匹配 400。
+- **边界**：不实现资产删除/保留期、包解析与安装（Task 8）、secret 加密存储与 job 级下发（后续任务）、大文件流式传输。
+
+### 13.259 新增（重上传工作副本：系统列 journal 显式 inherit / human）
+
+> 2026-10-28。Plan 3 Task 3c：Plan 1 的 journal 归属把「非空且无 journal 的系统格」视为人工冻结；用户下载工作副本、编辑用例后再上传时，旧版本的 8 个系统列会永久变成「人工格」。本任务让重上传显式声明系统列归属，而不是静默冻结或静默信任。
+
+- **模块**（`src/web/workbook-reupload.ts`）：`detectSystemColumns(headers, caseIdHeader)` 按 `建议｜`/`执行｜` 前缀识别用例编号列右侧的系统列候选（`执行｜备注` 等非 8 列固定表头只算候选、不重播种）；`resolveCaseIdHeader(headers, preferred)` 先认显式/已保存映射的表头写法，再退回 `COLUMN_ALIASES.caseId` 别名表；`parseSystemColumnMode`/`DEFAULT_SYSTEM_COLUMN_MODE="human"`；`rebaseWorkbookJournal({store, rootPath, previousAssetId, newAssetId, sheetName?, workbookPath, systemHeaders?, mode?, caseIdHeader?, headerRow?, actor?, writtenAt?})`。
+- **用例编号/工作表来源**：`rebaseWorkbookJournal` 在 `inherit` 下以**上一版本保存的列映射**为准——`sheetName` 缺省取 `mapping.sheetName`、用例编号表头缺省取 `mapping.columnMap.caseId`（多表工作簿不再默认读第一张表）；无映射且调用方未显式给 `sheetName`/`caseIdHeader` 时**告警并全部冻结**（`上一版本没有保存列映射…`），不返回静默 0/0、也不写 journal。
+- **inherit 判定**：逐格读取新工作副本（`cellText` 与写回同口径，公式取缓存值；合并格跳过），只处理**非空**系统格；与 `lastExcelWritebackByCellKey(rootPath, previousAssetId, sheetName, caseId, columnKey)` 比对——一致才为新 asset 追加一条 journal 行（`cellRef` 用新格地址，`columnKey` 用固定 8 列 key）；上一版本无 journal/值为空 → frozen；值不同 → frozen 并记入 `mismatched`（`用例编号「表头」`）。**只写 journal，绝不改单元格内容**。`inherit` 下未识别到 8 个固定系统列（`located.size === 0`）也带告警返回，不静默。
+- **单格失败**：每格的 journal 读写都在自身 try/catch 内——失败只把该格计 frozen 并附 `重播种失败：…` 告警，已落地的行仍计入 `rebased`（响应/审计反映真实部分重播种；外层 catch 只兜「扫描前」的错误，此时尚无写入）。
+- **human（缺省）**：不写 journal，所有非空系统格计 frozen；上传 API 未传 `systemColumns` 即此模式。
+- **幂等**：同一 `newAssetId` 重复 rebase 先查新 asset 的最新 journal——同值只计 `rebased` 不重复追加；不同值（rebase 后已真实写回过）保持冻结不覆盖。
+- **计数口径**：`rebased` 按格（本次写入或已存在同值行）、`frozen` 按非空系统格（含 `mismatched`，不含空格外的人工格）、`mismatched` 只列与上一版本 journal 有值且不同者（最多 100 条，超出告警）；响应还带 `mode/systemHeaders/warnings`。
+- **API**（`src/panel/actions.ts`）：`POST /panel/api/projects/assets` 新增可选文本字段 `systemColumns: "inherit"|"human"`；非 excel 携带该字段或值非法 → 400 `invalid-system-columns`。上传前先取「上一版本」`listWebAssets(rootPath,"excel")[0]`（登记新行后拿到的是自己）；无上一版本时只返回 frozen/mismatched，**不伪造 journal**。重播种在 `storeWebAsset` 之后执行，异常不阻断上传（资产已落盘，journal 留空＝全部冻结）；响应 `{ok, asset, systemColumns:{mode,rebased,frozen,mismatched,systemHeaders,warnings}}`（非 excel 不带该字段）；审计 `asset.upload` 的 summary/refs 追加 mode/rebased/frozen。
+- **不可变/安全**：读取的是 CAS 原件 `asset.storagePath`（只读），不碰工作副本；不改变 Plan 1「原件永不改写」约定。
+- **UI 现状**：控制台资产页上传表单仍是 human 缺省、未暴露切换（页面见 Task 9/10）；inherit 目前经 API 显式传字段。
+- **测试**（`test/web-workbook-reupload.test.js`）：原样重上传 → inherit 重播种后可被写回刷新；手改一格 → 该格 frozen 且入 mismatched、其余重播种；缺省/human 全冻结且 journal 不增；旧 asset 无 journal 全冻结不伪造；重复 rebase 幂等；前缀识别不误伤人工列 + 锚点左侧排除；已保存映射的自定义用例编号表头；API typed 400 与无 journal 时仍 200 如实计数；多表工作簿按映射的第二张表重播种（不读第一张表）；无映射 → 告警 + 全冻结；单格 journal 写入失败 → 部分重播种计数如实。
+- **边界**：不自动判断人工改动（只能比对上一版本 journal）；跨 sheet 迁移不支持（以映射 `sheetName` 为准，别名表只认表头）；无保存映射时 inherit 退化为冻结（显式 `sheetName`+`caseIdHeader` 仍可强制）。后续 Task 8 的 pending/confirmed journal 落地时，rebase 只写确认态行。
+- **后续（deferred，review 提出）**：重播种目前逐格 `lastExcelWritebackByCellKey`（每格最多 2 次查询）＋逐行 `recordExcelWriteback`，大表（≤10000 行 × 8 列）是 N×2 次 store 往返。本次不新增批量 store 方法（会牵动 Memory/File/PG 三实现与迁移），留待写回批量接口一并做。
+
+### 13.260 新增（Web 任务队列：spec 快照、设备预占与全局领取）
+
+> 2026-10-28。Plan 3 Task 4：把「网页测试任务」落成 `regression_tasks` 行——带不可变 job spec 与资产快照，下发时选机并预占设备，执行机按 host+serial 全局原子领取。本任务只做中心侧队列，不含 runner agent/工作目录/执行器。
+
+- **表结构**（`src/db/types.ts`、`src/db/postgres.ts`）：`regression_tasks` 增加 `job_spec TEXT`（JSON；普通回归任务为 NULL）、`device_serial TEXT`、`device_lease_id TEXT`（现有租约主键 `<hostId>:<serial>`，`device_leases` 无独立 id 列）；PG 走 `CREATE TABLE`＋`ALTER ... ADD COLUMN IF NOT EXISTS`，并加 `regression_tasks_web_claim_idx(status,target_host_id,device_serial)`。`CreateRegressionTaskInput`/`RegressionTaskRecord`/`updateRegressionTask` patch 同名可选字段，另加 `claimedHostId/claimedInstanceId/startedAt` 清空与 `expectDeviceSerialEmpty` CAS 守卫；Memory/File/PG 三实现与 `importLedger` 同步，旧行 normalize 为 null。`claimWebJob`/`listPendingWebJobs` 加入 `ProjectStore`；`releaseDeviceLeases` 增加可选 `serials`（只释放指定设备，避免并发 assigner 误删他人租约）。
+- **job spec**（`src/web/job-spec.ts`）：`WebJobSpec{kind:"web-test", assignment, devicePinned, targetHostId, deviceSerial, requirements, deviceLeaseId, excelAssetId, packageAssetId, materialsAssetId, scriptSetId, executionMode, caseFilter, retry, allowStaleScript, allowPartialUnresolved, assetSnapshot, reassignCount, pinnedWaitCount, assignmentError}`；`WebAssetSnapshot{kind,id,sha256,filename}`。`assertWebJobCombination` 硬校验：auto 忽略定向字段；manual 必须带 host；非空 `deviceSerial` 必须 `devicePinned:true`；**iOS Maestro 只允许 `deviceKind:"simulator"`**——`any`/`device` 一律 `ios-maestro-requires-simulator`（iOS 真机只走 LLM，`ios × deviceKind=device × llm` 仍允许但执行未接线）。`assertScriptSetMatch`：脚本集 metadata 的 `sourceExcelAssetId`/`packageAssetId` 至少声明一个，声明几个就精确匹配几个，不一致 `script-set-mismatch`；两者都缺失 → `script-set-unverified`（不静默放行，Plan 2 会写入绑定）；`allowStaleScript` 显式放行。`parseWebJobSpec` 防御式解析，损坏行跳过不猜。`canRunMaestroDiscovery` 仅作「Android 任意 / iOS 模拟器」判定（无设备只能产出 draft；本计划不下发发现任务）。
+- **错误码**（`WebJobDispatchError{code,status}`）：`invalid-assignment`/`invalid-requirements`/`manual-requires-host`/`device-serial-requires-pin`/`ios-real-device-requires-llm`/`ios-maestro-requires-simulator`/`unknown-execution-mode`/`asset-kind-mismatch` → 400；`project-not-found`/`asset-not-found` → 404；`project-archived`/`script-set-mismatch`/`script-set-unverified`/`device-not-on-host`/`device-busy` → 409。
+- **创建**（`src/web/jobs.ts#createWebJob`）：只允许 active 的托管 Web 项目；`getWebAsset` 校验 excel/package（必填）与 materials/scripts（可选）kind；构建 assetSnapshot；`selectWebAssignment` 选机后按**安全顺序**落库：先建 task（顶层 `device_serial/device_lease_id` 为空，claim 不可命中；jobSpec 保留目标 host/serial/lease 意图）→ `acquireDeviceLeases`（TTL＝`AOS_DEVICE_LEASE_MS` 或显式值）→ CAS（`expectDeviceSerialEmpty`+pending）绑定 serial/lease。租约竞争失败或绑定失败：按 serial 释放租约（不误删他设备）、任务置 `cancelled`（保留历史）、清空顶层 serial/lease 与 `jobSpec.deviceLeaseId`，manual 钉设备抛 `device-busy` 409；auto/manual 非钉设备遇到全部设备忙则建 pending 等待。manual 目标 host 离线/暂无候选时建 pending：保留 `targetHostId`，不写 serial/lease；`devicePinned:true` 再保留 serial；失败原因写入 `jobSpec.assignmentError{code,message,at}`。返回 `{task, assignment|null, pendingReason}`（pending 时 assignment 为 null）。
+- **补绑**（`assignPendingWebJobs`）：全局扫描 pending web job——跳过 `jobSpec.binding=true` 的创建窗口任务；`device_serial IS NULL` 的正常选机；已钉 serial 但**没有有效租约**（离线等待/租约过期）的也纳入，按该 serial 精确选机→预占→绑定。manual 只在目标 host 内选；无候选保持 pending 并记录原因（钉设备等待任务不覆盖回池告警）；serial 为空的绑定带 `expectDeviceSerialEmpty` CAS，两个 assigner 不能各绑一个设备（失败方按 serial 释放自己刚拿的租约）。返回成功绑定条数。
+- **回池**（`reassignExpiredWebJobs`）：扫描已绑定 pending，预占租约过期或目标 host runner 离线即处理：先按 serial `releaseDeviceLeases`；auto 清空 host+serial 回全局池；manual 未钉设备保留 host、清空 serial；manual 钉设备保留 host+serial，**不计入 reassignCount**（只累加 `pinnedWaitCount`，host 在线时尝试重新预占，失败原因按真实选择结果记录，不误标 host-offline；离线时生成「第 N 次检查，不计改派」告警），可无限等待。非钉设备 `jobSpec.reassignCount` 累加，超过 3 次 → `failed` + `assignmentError.code="unstable-assignment"`（`无法稳定分配`）。清理后统一调用 `assignPendingWebJobs` 重选。
+- **领取**（`claimWebJob`）：只命中 `status='pending' AND job_spec IS NOT NULL AND target_host_id=$host AND device_serial=$serial`，且该任务在 `device_leases` 有**未过期租约**（`task_id+host+serial`；没有租约一律 null，杜绝无预占领取/双占）；租约过期判定与 `claimed_at` 使用可选 `nowMs`（缺省 `Date.now()`，测试固定时钟不随墙钟漂移），**先按租约过滤再按 priority/createdAt 排序**（无租约的高优先级等待任务不会挡住租约持有者）；按 `priority DESC, created_at ASC` 取最旧；目标主机 `queue_paused=true` 时直接返回 null（与 §13.162 同口径；主机行不存在视为未暂停）；PG 单事务 `SELECT ... LIMIT 1 FOR UPDATE SKIP LOCKED` + CAS `UPDATE ... WHERE status='pending'`（pg-mem 不支持 SKIP LOCKED 时自动降级 `FOR UPDATE`，生产 PG 仍走 SKIP LOCKED）；**项目 runner 隔离**：`claimRegressionTask` 三实现均要求 `job_spec IS NULL`（web job 只能由 `claimWebJob` 领取），`releaseStaleClaims` 同样排除 `job_spec` 行，`src/runner/agent.ts` 领取后仍对 `jobSpec !== null` 做防御性释放。Memory 单线程同步写入；File 以进程内互斥**跨全部项目 bucket 汇总候选后全局排序**（priority DESC/createdAt ASC），并经 `hostMem.getHost` 检查队列暂停。成功后写 `claimed_by/claimed_at/claimed_host_id/claimed_instance_id`，返回 `{task, rootPath}`（PG join projects / Memory·File 查项目注册表）。重复领取返回 null。
+- **释放**（`releaseWebJob`）：`reason="cancelled"` 复用 `cancelRegressionTask` 语义（pending→cancelled；claimed/running→stopping 等执行机确认）并释放租约；`expired`/`reassign` 只释放租约、回 pending（清 `claimed_by/claimed_at/claimed_host_id/claimed_instance_id/started_at/lastProgressAt/deviceLeaseId`）并写 assignmentError；不改动/删除历史行。
+- **并发口径**：同一 `(host_id, serial)` 任一时刻最多一条有效 `device_leases` 行（Task 15 既有约束）；`claimWebJob` 只领取「已绑定 serial + 有有效租约」的任务，未绑定/无租约 pending 永不可领（必须先经 assign/重选）。
+- **测试**（`test/web-job-queue.test.js`，Memory + pg-mem + FileStore，22 例）：自动按平台/型号选机并落 jobSpec/lease；manual 归属校验、占用 409、host 内打分选设备；claim 只认 host/serial、并发只成功一个、重复 null、普通任务不可领；host 队列暂停阻断领取（Memory/PG/File）；auto 过期离线回池重选；钉设备 4 轮等待仍 pending、reassignCount 不变、无 unstable；非钉设备改派超限 failed；manual 未钉设备保留 host 后重绑；manual host 离线建 pending→上线 assign→claim；钉设备无租约不可 claim、上线 assign 预占后 claim、auto 不能抢同设备；租约写入前窗口 claim 为 null；两个 assigner 并发只绑定一个设备；auto 无候选原因可见→候选出现绑定；组合校验与发现设备判定；脚本集精确匹配/历史版本/allowStaleScript/未声明绑定拒绝；取消释放租约且保留 jobSpec；显式 nowMs 租约过期（不影响墙钟）；无租约高优先级等待任务不挡租约持有者；binding 窗口内 list/assign 跳过。
+- **边界**：不含发现任务、脚本集独立存储、runner agent/工作目录/下载/执行与结果回传（Task 5–8）；`executionMode=llm` 仅落类型与 spec，执行器未接线（Plan 2）；面板/HTTP 动作见 Task 9。
+- **评审修复（Task 4 fix round 1）**：① 钉设备等待不再计入 `reassignCount`（新增 `pinnedWaitCount`），4 轮离线仍 pending，不会误判 `unstable-assignment`；② `claimWebJob` 强制要求本任务在该 host+serial 上的未过期租约（Memory/File 检查、PG `IN (SELECT task_id FROM device_leases ...)`），并让 `assignPendingWebJobs` 接管「已钉 serial 但无租约」的等待任务（host 恢复后重新预占，此前 claim 恒 null，auto 无法抢占同设备）；③ 创建改为「建 task（顶层 serial/lease 空）→ 取租约 → CAS 绑定」，租约前窗口 claim 为 null，绑定失败按 serial 释放并撤销；④ FileStore 领取经 `hostMem.getHost` 校验队列暂停，并跨 bucket 全局按 priority/createdAt 排序；⑤ `updateRegressionTask` 增加 `expectDeviceSerialEmpty` CAS，两个 assigner 并发只能有一个绑定（失败方按 serial 释放自己的租约，不再误删胜者租约）；⑥ 脚本集两者都未声明资产绑定时 `script-set-unverified` 409（`allowStaleScript` 仍可放行）；⑦ 租约冲突撤销时清空顶层 serial/lease 与 jobSpec.deviceLeaseId；回池时清空 claimedHostId/claimedInstanceId/startedAt；钉设备在线重绑失败按真实原因（device-busy 等）记录，不再误标 host-offline。测试增至 19 例（含 FileStore、4 轮等待、租约前窗口、并发 assigner），全量 2620 绿。
+- **评审修复（Task 4 fix round 2）**：① `claimWebJob` 增加可选 `nowMs`（接口/Memory/File/PG），租约过期与 `claimed_at` 用同一时钟，测试固定 fixture 不再随墙钟漂移；② Memory 领取改为**先按本任务有效租约过滤再排序**，无租约的高优先级钉设备等待任务不会挡住后面的租约持有者（与 PG/File 同口径）；③ 创建窗口任务写 `jobSpec.binding=true`，`listPendingWebJobs` 与 assign/reassign 一律跳过；CAS 绑定成功写入不含 binding 的 spec（失败撤销同样清除），并发 assign tick 无法在租约前接管任务。测试增至 22 例，全量 2623 绿。租约续租仍归 Task 5。
+
+### 13.261 新增（Web job 工作目录：CAS 下载、secret 隔离与安装）
+
+> 2026-10-28。Plan 3 Task 6：runner 领取 job 后需要把中心资产落到本机。本任务给出确定性工作目录、sha256 内容寻址缓存、脚本 zip 安全解压与安装命令；执行器接线与结果回传仍归后续任务。
+
+- **全局取 job**（`src/db/types.ts`）：`ProjectStore.getWebJobById(taskId)`（Memory/File/PG）按 id 返回 `{task, rootPath}`，不限 pending——`listPendingWebJobs` 只回 pending，已领取 job 的 spec/资产端点不能靠它；未知 → null。File 扫描已登记项目 bucket；PG 单查 join `projects`。
+- **工作目录**（`src/runner/web-job-workspace.ts`）：`prepareWebJobWorkspace({jobId, projectSlug, workRoot, cacheRoot, assets, download, exec, env?})` 产出 `{jobDir, files, flowsDir, warnings}`；`jobDir = <workRoot>/<projectSlug>/<jobId>`，`projectSlug/jobId` 拒绝空、`.`/`..`、路径分隔符（`invalid-job-path`）。非密资产下载前/缓存命中后都校验 sha256（`verifySha256`），写入走 `writeFileAtomic`；CAS 路径 `<cacheRoot>/assets/<sha256>`，命中经硬链接（失败回退复制）进 job 目录，缓存内容损坏时告警 `asset-cache-corrupt:<sha>` 并重新下载。sha 不匹配 → `WebJobWorkspaceError{code:"asset-sha-mismatch"}`，**不写 CAS、不建 job 目录文件**；下载异常 → `download-failed`。
+- **secret materials**：`secret:true` 仅写 `jobDir/secrets/<filename>`（目录 `0700`、文件 `chmod 0600`），不进入 CAS、不落 `assets/`；job 结束/失败由 `cleanupWebJobWorkspace`（整目录）或 `removeWebJobSecrets(jobDir)` 删除。非密 materials 仍走 CAS。**失败即失败**：`prepareWebJobWorkspace` 的资产循环包在 try/catch 中，任一步失败先 `removeWebJobSecrets(jobDir)` 再删除整个半成品 job 目录并原样 rethrow——secret 与已落盘普通资产都不留在磁盘，已校验的缓存保留供重试。
+- **Excel 原件**：校验后只落 `jobDir/attachments/<filename>` 供排查，runner 不解析、不当作 case set；工作副本仍只存在中心。
+- **脚本包**：`scripts` 为 zip，校验后硬链接/复制到 `jobDir/assets/scripts/`，先 `unzip -Z1` 预扫描全部条目（5s 超时），拒绝绝对路径、盘符与任一 `..` 段；再 `unzip -o <zip> -d <jobDir>/flows`（5s 超时）。任一步失败 → `script-extract-failed`，越界条目**不执行解压**；成功返回 `flowsDir`。
+- **清理**：`cleanupWebJobWorkspace({workRoot, completedJobIds})` 只删除调用方显式标记为「产物已回传」的 job 目录（按 `<projectSlug>/<jobId>` 两层扫描），`lstat` 校验且**跳过符号链接**，未列出的目录与 `<cacheRoot>` 一律保留；无 `completedJobIds` 时不删任何东西。
+- **安装**：`installWebPackage({platform, deviceSerial, packagePath, exec, env?, timeoutMs?, deviceKind?, jobDir?})`——Android `adb -s <serial> install -r <path>`；iOS 模拟器 `xcrun simctl install <udid> <path>`；iOS 真机（`deviceKind:"device"` 或 `.ipa`）`xcrun devicectl device install app --device <udid> <path>`。安装前校验 serial 字符集（`[A-Za-z0-9._:-]`，非法 → `invalid-device-serial`，不执行命令）；传 `jobDir` 时 `packagePath`（resolve 后）必须位于该目录内（否则 `invalid-package-path`）。成功 `{ok:true, packageName, version}`（能从输出解析则填，否则 null）；失败 `{ok:false, reason:"unsupported-platform"|"exec-failed"|"install-failed"|"invalid-device-serial"|"invalid-package-path"|"ipa-extract-failed"|"invalid-ios-package"}`；命令失败返回 typed reason，文件系统/解压异常仍可抛出（调用方按 job 失败处理，不冒充成功）。`.ipa` 的 `Payload/*.app` 解压规则见 §13.264。
+- **中心端点**（`src/panel/actions.ts` + `src/http-server.ts`）：`GET /panel/api/jobs/:id/spec` 返回 `{ok, job:{id,status,deviceSerial,claimedBy}, spec, assets:[{id,kind,sha256,filename,secret,downloadUrl}]}`（**不再返回 rootPath**；`downloadUrl` 为相对 `/panel/api/jobs/:id/assets/:assetId`）；`GET .../assets/:assetId` 只允许 `jobSpec.assetSnapshot` 内且属于该 job 项目的资产（否则 404），`storagePath` 必须 realpath 落在 `<项目>/.artemis/web/assets` 内（逃逸/缺失 → 404），按文件流返回并带 `Content-Length` 与 `X-Aos-Sha256`。`secret` 取自资产 `metadata.secret`（只作标记，鉴权仍由 runner token + 主机绑定承担）。
+- **runner 鉴权 + 主机绑定**：两条端点仅认 `Authorization: Bearer <MOBILE_TESTING_RUNNER_JOB_TOKEN>`，sha256 摘要后 `timingSafeEqual` 常数时间比较；**未配置 token → 503 `runner-token-unset`、短于 16 字符 → 503 `runner-token-too-short`**（不回退 `MOBILE_TESTING_HTTP_TOKEN`/用户令牌/匿名），缺失/错误 → 401；非 GET → 405。全局 token 之外还要求 `X-AOS-Host-Id`，且必须等于该 job 的 `claimedHostId` 或 `targetHostId`，缺失/不匹配 → 403 `host-not-allowed`（没有主机身份可绑定的 job 一律 403）；避免任一 runner 拿全局 token 读取全部项目 spec/secret 资产。路由在全局管理员鉴权之前拦截，因此中心启用用户认证时 runner 仍可用专属 token；token 不放行任何其它路径。
+- **测试**（`test/web-job-workspace.test.js`，17 例）：首次下载写 CAS 与 job 目录、同 sha 第二个 job 命中缓存只下载一次；缓存损坏重下；sha 不匹配 typed error 且无落地；secret 先写后遇失败 → `secrets/` 与半成品 job 目录删除、缓存保留、`removeWebJobSecrets` 幂等；secret 目录/文件权限、不进 CAS、清理删除；Excel 只进 attachments；脚本先扫描后解压（5s）与 `..`/绝对路径拒绝；cleanup 跳过符号链接；Android/iOS 模拟器/真机安装命令与失败 reason、非法 serial 与越界 packagePath 不执行命令；Memory/File/PG `getWebJobById`；端点鉴权 401/503（含短 token）、主机绑定 403（缺失/错误）、spec 无 rootPath 与相对下载 URL、字节流/长度/sha 头、快照外/未知 job 404、storagePath 逃逸与跨项目资产 404。
+- **边界**：执行器调用与失败回池/结果回传（Task 7/8）尚未接线；脚本 zip 内 manifest 语义（Plan 2）不在本任务校验；不做资产删除/保留期与中心侧流式上传。
+
+### 13.262 新增（Web job Maestro 执行与逐用例结果）
+
+> 2026-10-28。Plan 3 Task 7：runner 领取 job 后在设备上跑 Maestro 脚本，并把 JUnit 逐用例结果映射为 `WebJobExecutionResult`；结果上传/写回仍归 Task 8。
+
+- **入口**（`src/runner/web-executors.ts`）：`executeWebJob({jobSpec, jobDir, flowsDir, device, exec, env, timeoutMs?})` → `WebJobExecutionResult{status:"passed"|"failed"|"partial"|"error", cases, startedAt, finishedAt, detail}`；每例 `{caseId, name, status:"PASS"|"FAIL"|"SKIP"|"ERROR", durationMs, failureStep?, failureReason?, screenshotPaths?, logPath?}`。`startedAt/finishedAt` 为 ISO 时间。
+- **前置校验（任一失败直接 `error`，不调用 exec）**：`executionMode="llm"` → `llm-execution-not-wired`（接口保留，Plan 2 接线；不伪造 PASS）；`device.serial` 非 `[A-Za-z0-9._:-]` 或以 `-` 开头 → `invalid-device-serial`；`scriptSetId=null/空` → `script-set-missing`；`flowsDir`（resolve 后）不在 `jobDir` 内 → `flows-outside-job`；顶层无 `.yaml/.yml` → `no-flow-files`。
+- **命令**：解析后的 maestro 路径（`AOS_MAESTRO_PATH` → PATH → 常见安装位置；Windows 含 `maestro.exe/.cmd/.bat`）执行 `test --udid <serial> --format JUNIT --output <jobDir>/junit.xml --debug-output <jobDir>/maestro <flowsDir>/`，argv-only；超时取 `timeoutMs` → `AOS_WEB_JOB_TIMEOUT_MS` → 默认 15min，透传 `env`。执行前清掉旧的 `junit.xml` 与 `maestro/`，避免复用上次产物；执行抛异常 → `maestro-exec-failed`。**已知限制（Task 8/后续）**：现有 `ExecFn` 超时只杀直接子进程，Maestro 的 JVM/驱动子进程可能存活并占住设备；需要进程组杀或包装器，本任务不重构 `ExecFn`。
+- **JUnit 解析**（无新增依赖，自带有界轻量 parser）：读取前 `lstat` 只认普通文件，>2MB → `junit-too-large`；`<!DOCTYPE`/`<!ENTITY` 一律拒绝（`junit-dtd-rejected`），防实体注入；仅解码 `&amp;/&lt;/&gt;/&quot;/&apos;` 与数字字符引用；未闭合 `testcase` → `junit-malformed`。`<testcase>` 按属性顺序无关解析，`time`（秒）→ `durationMs`；状态优先级 `<error>` > `<failure>` > `<skipped/>` > PASS，失败原因取标签文本（其次 `message` 属性，折叠空白、截断 2000 字）。**文件缺失/为空/无 `<testcase>` 一律 `error`**（`maestro-timeout` / `maestro-no-junit: exit=<code>: <exec error>: <stderr 摘要>` / `junit-empty`），绝不假 PASS。**退出码非 0 或 exec 报错/超时即使 JUnit 全 PASS 也返回 `error`**，`detail` 带 `maestro-exit:<code|error>`，用例仍保留供排查（不因 JUnit 全绿而假通过）。
+- **caseId 映射**：只认 `flowsDir` **顶层** `.yaml/.yml`（`subflows/` 或任意子目录是 Maestro 子流程，Plan 2 忽略、不计用例）；flow 文件 stem（`<caseId>.yaml`，Plan 2 约定）即 `caseId`；`<testcase name|classname>` 等于或包含 stem 即匹配（长 stem 优先）。未匹配 testcase 生成 `unmatched:<name>#<n>` 的 `ERROR` 用例并写 `unmatched-testcase` 告警，不静默丢弃；重复 testcase 首个生效、后续 `duplicate:<stem>#<n>` → `ERROR`；顶层重名 stem 记 `duplicate-flow:<stem>` 并出 `duplicate:<stem>#flow` → `ERROR`；JUnit 未覆盖的顶层 flow 出 `flow-not-in-junit` → `ERROR`。
+- **状态聚合**：exec 失败（非 0/超时/spawn 错误）优先 → `error`；否则任一 `FAIL/ERROR` → `failed`；其余含 `SKIP` → `partial`；全 `PASS` → `passed`；零用例 → `error`。SKIP 只计数，不计通过。`detail` 统一截断 4000 字，用例名截断 200 字。
+- **证据路径**：截图/日志只取 `jobDir/maestro/` 下真实存在的普通文件（递归有界、跳过符号链接）；截图按相对路径包含 caseId 归属（每例 ≤5 张），`maestro.log`（或首个 `.log`）存在时作为各例 `logPath`；不存在则留空，不发明路径。路径校验是词法 `resolve` 前缀（非 realpath），`jobDir` 由 Task 6 受控创建，不接受用户任意目录；符号链接逃逸边界在此说明，需要强保证时由工作目录层 realpath 化。
+- **测试**（`test/web-executors.test.js`，18 例）：三态映射与 failed 聚合、命令参数/默认与自定义超时/env；非零退出无 JUnit → error 保留 stderr、超时 → error、spawn 错误保留；非零/超时但 JUnit 全 PASS → error 且用例保留；无 scriptSetId/无顶层 yaml/越界 flowsDir 不执行；llm 未接线；截图/日志限定 jobDir 且跳过符号链接；`subflows/` 不计用例；未匹配 testcase 合成 ERROR；重复 caseId/flow 标记；partial/passed/零用例；DTD/畸形/超 2MB 拒绝；非法 serial 不执行。
+- **边界**：结果上传、写回与 token 计费归 Task 8；`executionMode=llm` 仅保留接口；不实现 Maestro 发现/脚本生成与多设备并行；不解析 `.maestro` 配置与子流程语义；超时进程组杀（I2）与 realpath 强校验为后续项。
+
+### 13.263 新增（Web job 结果入库：聚合、Excel 写回与两阶段 journal）
+
+> 2026-10-29。Plan 3 Task 8：runner 执行结束后上传 `WebJobExecutionResult` + 设备/包/证据/LLM token 信息；中心持久化结果、聚合任务终态、复用 Plan 1 写回引擎更新 Excel。
+
+- **入口**（`src/web/results.ts` `ingestWebJobResult` / `POST /panel/api/jobs/:id/results`）：body `{execution, device{serial,model,osVersion}, package{name,version,filename}, startedAt, finishedAt, evidence?, tokenUsage?, tokenArtifacts?{dataEngineDb?:{filename,base64},statusJson?:{filename,base64}}, allowClearedRefresh?}`。runner 路由复用 `MOBILE_TESTING_RUNNER_JOB_TOKEN`（≥16，未配置 503、缺失/错误 401）+ `X-AOS-Host-Id`（必须等于 job 的 `claimedHostId`/`targetHostId`，否则 403）；仅 POST，其他方法 405；`Content-Type` 非 JSON → 415，body 非法/非对象/空 → 400；该路由 body 上限 `MAX_PANEL_RESULT_BODY_BYTES`（16MB，面板动作仍 256KB），超限 413。HTTP 响应不回显 `resultPath`、单元格物理地址或中心绝对路径（warnings 中的项目根替换为 `<project>`）。
+- **幂等与并发**：归一化 payload（稳定键序 ＋ 工件 `filename+sha256`）的 sha256 即幂等键；整个入库持有 per-job 文件锁 `.artemis/web/results/<jobId>.lock`（`withFileLock`），锁内重读任务/结果——并发同内容上传两个都 200、只写一次 journal/工作副本。`result.json` 已有同 sha → 200 返回既有摘要（`idempotent:true`）；若任务仍 `running`（上次持久化后 CAS 前崩溃）重试 CAS 补终态，绝不把任务留在 running。已有不同结果且任务非 `running` → 409 `result-already-recorded`（不覆盖）。**迟到的首次结果**：任务已是 `completed`/`failed`/`partial` 且无 `result.json` 时允许上传并记录（写 `status-mismatch`/`late-result-status` 警告）；任务状态**只允许改差**——`completed` 遇到派生 `partial`/`failed` 时按更差状态回写，`failed`/`partial` 绝不因迟到结果改回 `completed`；`pending`/`claimed`/`stopping`/`cancelled`/`orphaned` 或已有结果时 409。**runner 必须先 POST 结果，再写终态**（Task 5 `writeTerminal` 的终态写入只用于上传失败兜底）。
+- **持久化**：`.artemis/web/results/<jobId>/result.json`（结果状态 `taskStatus` 与落库 `dbStatus`、gate 计数、device/package、起止、evidence、逐用例、token、写回状态/警告/已写格）；token 工件以 base64 内联上传（拒绝本机路径字符串，单件解码 ≤8MB），解码后按安全 basename 写到 `.../artifacts/<name>`，只记录结果目录内相对路径，不回显源路径。结果详情不依赖设备/网络。
+- **状态与聚合**：runner 上报的 `execution.status` 优先——上报 `error` 永远保留（exec 超时/非零退出时 JUnit 可能仍全 PASS，绝不因用例全 PASS 改判成功）；上报 `failed` 或任一用例 `FAIL/ERROR` → `failed`；否则按用例计算（空→`error`、含 `SKIP`→`partial`、全 `PASS`→`passed`）。上报与聚合不一致时写 `status-mismatch` 警告并以保留后的状态为准。结果契约 `taskStatus`：`passed→completed`、`partial→partial`、`failed→failed`、`error→error`；DB 无 `error` 枚举，落库 `dbStatus=failed`（结果文档/HTTP 同时给出 taskStatus 与 dbStatus，绝不假成功）。任务级 `error`/强制 `failed` 而用例全 `PASS` 时，Excel 不写逐例 `PASS`（避免假绿），其余列照常写。SKIP 只计数。
+- **写回**：用 job `excelAssetId` 取 excel 资产 + 最新列映射（`listExcelMappings`，`caseId` 表头必须存在）；缺资产/缺映射 → typed 409（`excel-asset-missing`/`excel-mapping-missing`），不创建结果目录、不写 journal、不伪造写回。复用 `withFileLock` + `ensureWorkbookCopy` + `writebackWorkbook`（原件 CAS 只读、工作副本 `.artemis/web/workbook/<assetId>.xlsx`、parts 校验）；每用例写 `执行｜结果/设备与系统/安装包/开始时间/结束时间/traceId`（trace 取用例或 tokenUsage）。写回异常/`failed>0` → `writeback-failed`：结果照常保存、任务状态保持聚合值，并写 `web.job.result` 审计与响应 warnings。
+- **两阶段 journal**：`excel_writeback_journal.status`（`pending`/`confirmed`，旧行/旧调用默认 `confirmed`）；写格前 `recordExcelWriteback(status:pending)`，工作副本替换后 `confirmExcelWriteback`，写入前落盘失败 → `journal-failed` 中止。`lastExcelWriteback*` 只看 confirmed；`listPendingExcelWriteback(rootPath, assetId)` 供恢复。`recoverPendingWriteback({store,rootPath,assetId,workbookPath?})`：pending 格值 === 记录值 → confirm；不一致 → 删除 pending 声明（下次写回按系统格重新判定，不把该格误锁成人工格；工作副本不可读则保留全部 pending）。每次写回前都先恢复。
+- **存量库迁移顺序**：`excel_writeback_journal_pending_idx` 只在 `MIGRATIONS` 中 `ADD COLUMN IF NOT EXISTS status` 之后创建，`SCHEMA` 不再提前建该索引。旧库缺 `status` 时若 SCHEMA 先建索引会在 `PostgresStore.init` 抛 `column "status" does not exist`，导致整个 PG 装配降级到文件台账（表现为「PostgreSQL 连接失败」但实际是迁移顺序问题）。同类约束：`regression_tasks_execution_mode_idx` 也必须在补 `device_serial` 列之后创建（否则该索引被 best-effort 吞掉、永不建立）。回归测试见 `test/db-init-tolerance.test.js`。
+- **人工清空**：默认仍冻结（当前空 + confirmed journal 有值 → 跳过并告警）；runner 上传 body 的该字段一律忽略并强制 false；仅内部 `ingestWebJobResult` 显式参数允许重新写入（当前无面板解冻入口），未确认的 pending 行不授予该权限。
+- **LLM token**：`executionMode=llm` 要求非空 `tokenUsage` + 两个内联工件；缺失/解码失败/写入失败 → `token-unavailable` warning（不按 0 计费、不伪造本地路径），结果仍保存。存在时持久化 `tokenUsage` 与四项合计（`tokenTotals`）；计费表留 Plan 4。
+- **错误码**：`invalid-result`(400)、`job-not-found`(404)、`task-not-running`(409，HTTP 码 `result-already-recorded`)、`invalid-job-spec`(409)、`excel-asset-missing`/`excel-mapping-missing`(409)。
+- **测试**（`test/web-result-ingest.test.js`，22 例）：PASS/FAIL/SKIP 聚合 + 6 类列写入 + 原件 sha 不变；空结果 → gate error / taskStatus error（DB failed）；同内容幂等不写 journal；HTTP token/host/404/非法 body/405/415/幂等/非 running 409；写回失败结果仍保存且状态不变；人工清空默认冻结 vs 显式解冻（confirmed）；pending 恢复 confirm/删除且不误判人工；LLM 内联工件与 `token-unavailable`；无 mapping/无 excelAssetId 不伪造写回；Memory/File/PG journal 状态语义一致；上报状态保留（error/failed + 全 PASS 不写 PASS）；并发同内容只写一次 + 崩溃后重复上传补 CAS；工件路径/超限/不安全文件名拒绝；迟到首次上传只允许改差（completed→partial）；>256KB 200 / >16MB 413 / 错误主机 403 / 短 token 503。全量 **2846 绿**。
+- **边界**：Task 10 的默认 CLI 执行器已自动 POST 结果（服务层契约见 §13.264）；不引入 token 计费表；Plan 1 既有写回语义与文案保持（新增 `allowClearedRefresh`/journal 为 opt-in 扩展）。
+
+### 13.264 新增（远端 Web 执行机：host 级 runner、下发预占、CAS 工作目录与结果回写）
+
+> 2026-10-29。Plan 3 Task 10：把 Task 1–9 的碎片接成一条可复现的远端 Web 测试链路，并用确定性 E2E 锁定。本任务只补「接线 + 文档 + 端到端证据」，不引入 LLM 执行（Plan 2）与计费（Plan 4）。
+
+- **执行机注册（Task 3）**：`web_runners` 是 **host 级**表（`host_id` 唯一索引 `web_runners_host_idx`），一行＝一台执行机，与项目目录解耦；心跳更新 `devices/tools/platforms/artifactBaseUrl/version/lastSeenAt`，`instanceId` 变化且旧行仍活跃 → `WebRunnerAlreadyActiveError`（双启保护，`activeWithinMs=0` 关闭）；`markWebRunnerStopped` 把 lastSeenAt 置纪元，重启立即接管。FileStore 把这部分写进台账目录的 `host-state.json`（`{v, updatedAt, state:{webRunners}}`，原子写、按 mtime 重载、同 hostId 磁盘胜），不要求任何项目 bucket。
+- **设备画像（Task 1）**：`RunnerDevice` 增必填可空 `model/osVersion`；`RunnerTools` 增必填 `maestro/devicectl`。Android 逐设备 `getprop`（设备间并行）、iOS 模拟器取 simctl runtime（`osVersionFromRuntime`）、iOS 真机 `ideviceinfo`；工具探测带 5s 超时、失败降级 false，`maestro` 走 `AOS_MAESTRO_PATH` → PATH → 常见候选解析链，缺失不 spawn；Windows 按 `maestro.exe/.cmd/.bat` 与 `%USERPROFILE%\.maestro\bin` 探测，执行器使用解析后的路径（`.cmd/.bat` 经 cmd shell），避免只装 `.bat` 时误报 `maestro:false`。
+- **下发与选机（Task 2/4）**：`regression_tasks` 增 `job_spec`（JSON，普通回归为 NULL）、`device_serial`、`device_lease_id`（租约主键 `<hostId>:<serial>`），另加领取索引 `regression_tasks_web_claim_idx(status,target_host_id,device_serial)`。`WebJobSpec` 携带 `assignment/devicePinned/targetHostId/deviceSerial/requirements/deviceLeaseId/资产 id+快照/executionMode/caseFilter/retry/allowStaleScript/allowPartialUnresolved/reassignCount/pinnedWaitCount/assignmentError`。`selectWebAssignment` 硬过滤（在线、平台、`deviceKind`、工具、无阻塞租约）＋软偏好（型号 +20/同系列 +10、OS 区间 +5 与邻近加分）；manual 必须带 host，`devicePinned:true` 精确校验 host+serial，非钉带 serial fail closed；auto 完全忽略定向字段。`createWebJob` 只允许 active 托管 Web 项目，按「建 task（顶层 serial/lease 空）→ `acquireDeviceLeases`（TTL＝`AOS_DEVICE_LEASE_MS`）→ CAS 绑定」落库，租约前窗口不可领取；manual host 离线/无候选建 pending（保留意图与原因）。
+- **领取与回池（Task 4/5）**：`claimWebJob({runnerId,hostId,deviceSerial,instanceId,nowMs})` 只命中 `pending` + 已绑定 serial + **本任务在该 host+serial 有未过期租约**，按 `priority DESC, created_at ASC`；Memory/File 同一口径，PG `FOR UPDATE SKIP LOCKED`（pg-mem 降级）。`reassignExpiredWebJobs` 对租约过期或 host 离线：auto 清 host+serial 回全局池，manual 未钉保留 host，manual 钉设备只累加 `pinnedWaitCount` 并写「第 N 次检查，不计改派」告警（可无限等待）；非钉 `reassignCount>3` → `failed`/`unstable-assignment`。
+- **host 级 runner（Task 5/10）**：`node dist/cli.js web-runner --name <n> [--artifact-base-url <u>] [--panel-base-url <u>] [--once]` 只连中心 PG（缺失/非 PG exit 2），不要求项目目录。未注入执行器时**启动即校验** `--panel-base-url`/`MOBILE_TESTING_PANEL_BASE_URL` 与 `MOBILE_TESTING_RUNNER_JOB_TOKEN`（≥16），缺任一 exit 2（注入执行器的测试除外）；**设备范围＝Android 与 iOS 模拟器**——iOS Maestro 在下发阶段要求 `deviceKind:"simulator"`，`any`/`device` 被 `ios-maestro-requires-simulator` 拒绝；iOS 真机只能等 Plan 2 的 LLM 执行（`llm` 允许建单但未接线）。启动盘点 → `upsertWebRunner` 心跳 → **每台设备一个 worker**（同 serial FIFO，单设备同一时刻一个 job）；心跳每 `AOS_RUNNER_HEARTBEAT_MS`（默认 30s，夹到租约 TTL/3）续租本机任务、`reassignExpiredWebJobs` + `assignPendingWebJobs`；执行前二次盘点（设备消失/不可用 → `device-unavailable`，他人租约 → `device-busy`，自己租约丢失 → `lease-lost`），任一路径释放领取与租约；优雅退出标记 stopped。`AOS_RUNNER_POLL_MS`（默认 5000）控制空闲轮询。
+- **默认执行器（Task 10 接线）**：`createDefaultWebJobExecutor({hostId?, panelBaseUrl, runnerToken, workRoot, cacheRoot?, exec?, env?, fetchImpl?, timeoutMs?})`（`src/runner/web-job-runner.ts`）串起：`GET /panel/api/jobs/:id/spec`（Bearer + `X-AOS-Host-Id`，host 缺省取任务的 `claimedHostId`/`targetHostId`）→ 解析 `spec`/`assets` → 按相对 `downloadUrl` 下载（sha256 不匹配即失败）→ `prepareWebJobWorkspace` → `installWebPackage`（包路径限定 jobDir）→ `executeWebJob` → `POST /panel/api/jobs/:id/results`。`workRoot`＝`AOS_RUNNER_WORK_DIR`（默认 `~/.aos/web-runner`），`cacheRoot`＝`AOS_RUNNER_CACHE_DIR`（默认 `<workRoot>/cache`）。**任一步（含结果上传）失败一律抛错**，由 Task 5 释放领取与租约并回池，绝不本地写终态冒充成功；secret 在 `finally` 抹除。
+- **工作目录与 CAS（Task 6）**：`prepareWebJobWorkspace` 使用 `<workRoot>/<projectSlug>/<jobId>`，非密资产先校验 sha256 再写 `<cacheRoot>/assets/<sha256>`（命中重验、损坏重下），硬链接（失败复制）进 job 目录；`secret:true` 的 materials 只写 `jobDir/secrets/`（0700/0600，永不进 CAS，失败即删半成品）；Excel 只放 `attachments/`；脚本 zip 先 `unzip -Z1` 拒绝绝对路径/盘符/`..`，再 `unzip -o` 到 `jobDir/flows`（Task 10 起 `flows/` 前缀包会解压到 `jobDir` 展平）。**Task 10 E2E 修复**：Plan 2 脚本包把用例放在顶层 `flows/` 目录（条目 `flows/<caseId>.yaml`），此前解压到 `jobDir/flows` 会得到 `flows/flows/…`，执行器只认顶层文件 → 0 用例；现在当全部文件条目统一带 `flows/` 前缀时改为解压到 `path.dirname(flowsDir)`（无前缀的旧包仍解压进 flowsDir）。`installWebPackage` 走 adb/simctl/devicectl，校验 serial 字符集与包路径必须落在 jobDir 内。**iOS `.ipa` 安装**：simctl/devicectl 只认 `.app`，`.ipa`（zip）先解压到 `<jobDir>/install`（`unzip -o`，120s 上限），要求 `Payload/` 下**恰好一个 `.app`**；缺失/多个 → `invalid-ios-package`，解压失败 → `ipa-extract-failed`，无 jobDir 不猜路径。iOS 模拟器与真机（devicectl）都安装解压后的 `.app`；`.app` 直接路径不变。
+- **执行与结果（Task 7/8）**：`executeWebJob` 以 argv-only 方式跑 `maestro test --udid <serial> --format JUNIT --output <jobDir>/junit.xml --debug-output <jobDir>/maestro <flowsDir>/`（超时 `timeoutMs` → `AOS_WEB_JOB_TIMEOUT_MS` → 15min），解析 JUnit 为逐用例 `PASS/FAIL/SKIP/ERROR`；JUnit 缺失/非法、非 0 退出、超时一律 `error`，绝不假 PASS；`executionMode="llm"` 在 spawn 前返回 `llm-execution-not-wired`。结果经 `ingestWebJobResult` / `POST /panel/api/jobs/:id/results` 入库：按上报状态保留 + 用例聚合，持久化 `.artemis/web/results/<jobId>/result.json`，用 Plan 1 写回引擎更新 Excel 工作副本（`执行｜结果/设备与系统/安装包/开始时间/结束时间/traceId`，原件 CAS 只读、sha 不变），两阶段 journal（`pending`→`confirmed`）与人工清空默认冻结。
+- **状态枚举口径（唯一契约）**：执行器（Task 7）`passed|failed|partial|error`；**上传层原样使用执行器状态**——`error` 上传 `execution.status:"error"`，中心返回 `taskStatus:"error"`、`dbStatus:"failed"`，**不得在上传层把 error 降级成 failed**；`failed`/`partial`/`passed` 原样上传。Task 5 runner 的本地终态仍为 `completed|partial|failed`（`passed→completed`、`partial→partial`、`failed→failed`、`error→failed`）——**runner 本地终态用 failed，结果上传保留 error**；上传成功后 Task 5 的终态写库因任务已终态而跳过。E2E 以 `RESULT_STATUS_FROM_EXECUTOR` / `RUNNER_STATUS_FROM_EXECUTOR` 锁定，并真实跑「无 JUnit → executor error → 上传 error → ingest taskStatus error/dbStatus failed」；`web-job-runner` 单测另断言上传体为 `error`、上传失败抛错。**迟到首次结果**：`dbStatus` 取既有终态与派生状态的更差者（如任务 `failed` + 迟到全 PASS → `taskStatus:completed` 但 `dbStatus:failed`），任务行同步为更差状态；`completed` 遇到派生 `partial`/`failed` 时改为更差状态，绝不保留假绿。
+- **runner 访问中心**：`GET /panel/api/jobs/:id/spec` 与 `GET .../assets/:assetId`、`POST .../results` 仅认 `Authorization: Bearer <MOBILE_TESTING_RUNNER_JOB_TOKEN>`（≥16；未配置/过短 503，绝不回退管理员令牌），并要求 `X-AOS-Host-Id` 等于 job 的 `claimedHostId`/`targetHostId`（否则 403）。spec 不回 `rootPath`，下载相对 URL；token 不授权任何其它路径。
+- **端到端证据**（`test/web-remote-e2e.test.js`，MemoryStore + 临时目录 + 手工 ZIP + fake exec，无设备/无外网/无真实 PG）：建 Web 项目 → 上传 Excel（带映射）/package/scripts（`flows/<caseId>.yaml`）→ 注册两台 host 级 runner → auto 选机（只在线的那台）并预占 → 同设备 manual 钉住 409、auto 建 pending 等待 → `claimWebJob` → 经 runner token 拉 spec、按 URL 下载并校验 sha → 假 unzip 解出 flows、假 adb 安装 → 真 `executeWebJob` 用假 Maestro 写 JUnit（PASS+FAIL）→ `ingestWebJobResult` 聚合 failed、Excel 12 格写入、原件 sha 不变、终态保留设备身份 → 再跑一条**无 JUnit** 的 error 路径（executor `error` → 上传 `error` → `taskStatus:"error"`/`dbStatus:"failed"`、0 格写入）→ 释放租约后等待任务补绑 → 租约过期 + host 离线触发回池并改派另一台 → manual 钉设备离线连续等待（`pinnedWaitCount` 递增、`reassignCount=0`、host-offline 告警、无租约）。
+- **执行次数与案例过滤**：web runner 在 `beginExecution` 前按 `attempts` 判定上限——`jobSpec.retry>0` 时上限＝`retry+1`，否则 `AOS_RUNNER_MAX_ATTEMPTS`（默认 3）；达上限写终态 `failed` + `jobSpec.assignmentError{code:"max-attempts"}` 并释放租约，**不再回池**；若此时任务已被取消为 `stopping`，则 ack 为 `cancelled` 而不是覆盖成 failed。`caseFilter.caseIds` 按 flow 文件名 stem 过滤（空集＝全部；过滤后无匹配 → `case-filter-no-match`）；`caseFilter.modules` 暂不支持（`case-filter-modules-unsupported`，留 Plan 2）。
+- **失联回收与队列暂停**：`recoverStaleWebJobs({store,nowMs,staleMs,runnerTtlMs,hostId?,instanceId?})` 扫描 claimed/running web job——领取实例不是该 host 在线 `web_runners` 的实例、或进度/领取时间超过 `MOBILE_TESTING_RUNNER_STALE_CLAIM_MS`（默认 900000；`0` 关闭时间判定）→ 释放租约、清 claimed/started/lastProgress、回 pending 并写 `stale-claim`；本进程实例跳过。web 心跳还会 `upsertHost`（`runnerSeenAt`）让面板/暂停可见；`assignPendingWebJobs`/`reassignExpiredWebJobs` 跳过 `queuePaused` host（暂停期间不改派、不增加 `reassignCount`）。
+- **安全与清理**：默认执行器给 unzip/adb/maestro 子进程只传白名单 env（PATH/HOME/ANDROID_*/MAESTRO_*/LC_* 与 AOS 工具路径），剔除 `MOBILE_TESTING_RUNNER_JOB_TOKEN`、`MOBILE_TESTING_DATABASE_URL`、任意 KEY/TOKEN/SECRET/PASSWORD；`storeWebAsset` 的 `materials(secret:true)` 落盘目录 0700、文件 0600。结果上传成功后（及执行次数达上限的永久失败）调用 `cleanupWebJobWorkspace` 删除该 job 目录，CAS 缓存保留。结果入库**不接受** runner body 的 `allowClearedRefresh`（只认内部 `ingestWebJobResult` 参数；当前没有面板解冻入口），runner 无法解冻人工清空。Maestro 超时取显式 `timeoutMs` → **未脱敏 env 的 `AOS_WEB_JOB_TIMEOUT_MS`** → 900000（该变量不进子进程白名单，但由执行器显式传入）。心跳登记临时错误只告警并重试；仅 `WebRunnerAlreadyActiveError` 致命退出。
+- **环境变量**：`MOBILE_TESTING_RUNNER_JOB_TOKEN`（runner 专用、≥16；中心与 runner 配置同一值）、`MOBILE_TESTING_PANEL_BASE_URL`（或 `--panel-base-url`，中心基址）、`AOS_RUNNER_WORK_DIR`（默认 `~/.aos/web-runner`）、`AOS_RUNNER_CACHE_DIR`（默认 `<workRoot>/cache`）、runner 相关 `MOBILE_TESTING_HOST_ID`、`AOS_RUNNER_TTL_MS`（在线判定，默认 90s）、`AOS_DEVICE_LEASE_MS`（预占/续租 TTL，默认 90s）、`AOS_RUNNER_HEARTBEAT_MS`、`AOS_RUNNER_POLL_MS`、`AOS_RUNNER_MAX_ATTEMPTS`（默认 3；`jobSpec.retry>0` 时上限＝retry+1）、`MOBILE_TESTING_RUNNER_STALE_CLAIM_MS`（web 失联回收窗口，默认 900000，`0` 关闭时间判定）、`AOS_WEB_JOB_TIMEOUT_MS`（Maestro 执行上限，默认 15min）。
+- **明确不可执行**：`executionMode="llm"`（含 iOS 真机）在 spawn 前返回 `llm-execution-not-wired`，等 Plan 2；脚本自动生成/脚本集独立存储、产物回传、token 计费同样不在 Plan 3。CLI `web-runner` 现已接入默认执行器；执行器单测（fake fetch/exec）覆盖成功链路、`error` 上传、上传失败抛错、缺基址/令牌 exit 2；iOS 模拟器的 `.ipa → Payload/*.app → simctl install` 由 `test/web-job-workspace.test.js` 的 fake unzip 单测验证，真机/真设备现场验收仍待做（不声称已端到端跑通）。
+- **已知边界（不在 Plan 3）**：`executionMode="llm"` 的生产执行器、脚本自动生成/脚本集独立存储、产物上传回中心、token 计费表（Plan 2/Plan 4）；Maestro 超时仍只杀直接子进程（JVM 可能存活，后续进程组杀）；控制台资产页仍以 Excel 为主，四类资产与 secret 标记主要经 API/runner 使用；同设备并发由租约保证，不做队列插队策略。
+- **明确残余风险**：① 结果入库的 per-job 文件锁（`withFileLock`）在进程崩溃后无 stale 回收，需等 30s 超时，后续应加 owner/pid 校验；② Excel 中存在但结果未上报的用例**不会补 SKIP**（保持空白，避免伪造）；③ scripts zip 只校验路径越界/盘符/`..`，未拒绝符号链接条目；④ `recoverStaleWebJobs` 与正常领取/取消之间是「先回收再 CAS」的竞态窗口（回收用 `expectStatuses` 守卫，但 owner 实例的进度写回仍可能晚到，最坏导致一次重复执行，不会双写终态）。
+
+### 13.265 新增（Web CSV 输入：编码识别、工作副本与结果 CSV 导出）
+
+> 2026-10-29。CSV/断言增量 Task 1：现有 Excel 管道接受 `.csv`，原件仍只读，CSV 在工作副本层转成规范 XLSX；本任务不涉及结果/断言列。
+
+- **编解码**（`src/web/csv.ts`）：`decodeCsv(buffer)` 固定顺序识别——UTF-8 BOM（剥离 BOM，`bom:true`）→ 合法 UTF-8（`TextDecoder(fatal)`）→ GB18030（`TextDecoder`，Excel 简体中文 CSV 常见），返回 `{text, encoding, bom}` 并保留检测结论。`parseCsv(text)` 按 RFC4180 解析引号字段（逗号、转义引号 `""`、内嵌换行）、CRLF/LF/单独 CR；空单元格与空行保留（行号与源文件一致），文件尾换行不额外造行，引号未闭合抛 `CsvError("unterminated-quote")`，不静默截断。`encodeCsv(rows,{encoding,lineEnding,bom})` 按需引用（含 `,`/`"`/换行）、写请求的 `\n|\r\n` 与编码；GB18030 无原生编码器，用解码器反向枚举双字节区（约 2.4 万项、首次懒建表缓存）＋四字节区线性公式编码补充平面，无法表示的码点抛 `CsvExportError("unencodable")`，不做有损替换。
+- **CSV → XLSX**：`csvToXlsxBuffer(buffer)` 生成单工作表 `csv`（`CSV_SHEET_NAME`），所有行/列按**字符串**写入（`001` 不退化成数字），空单元格保持为空；返回 `{buffer, encoding, bom, rows, columns}`。`parseExcel`/`readExcelHeaders` 新增可选 `format:"xlsx"|"csv"`；缺省按内容嗅探（zip 头→xlsx；否则无 NUL 且首行含逗号→CSV；其余仍按损坏 xlsx 报 `invalid-workbook`），CSV 结果附加 `format:"csv"` 与 `encoding`（xlsx 结果保持原字段，不新增键）。显式 `format:"xlsx"` 时 CSV 内容按损坏工作簿拒绝。单列 CSV（首行无逗号）会被当作损坏 xlsx 拒绝，是内容嗅探的刻意取舍。
+- **工作副本**（`src/web/workbook.ts`）：`ensureWorkbookCopy` 返回 `{format, encoding?, created}`；原件 `.csv` 或「非 zip 且内容像 CSV」时先转规范 xlsx 再以 `O_EXCL` 写副本，**绝不把 CSV 字节当 xlsx 复制**；副本已存在且有效时原样保留（人工/系统写入不回退）；损坏副本仍改名 `<copy>.corrupt-<ts>` 留档后重建；非 CSV 的损坏原件仍 `invalid-original`。
+- **资产**（`src/web/assets.ts`）：`kind=excel` 接受 `.xlsx|.csv`（同 20MB 上限，大小写不敏感），内容寻址路径保留原扩展名；CSV 上传自动写入 `metadata.format="csv"` 与 `metadata.encoding`（调用方 metadata 先展开、检测结论后覆盖，避免伪造）；xlsx 资产元数据不新增键。
+- **别名**（`src/web/excel-columns.ts`）：web 解析器补充 `用例ID`（caseId，归一等价）、`测试点`（name）；`期望结果`/`测试步骤`/`前置条件`/`测试数据` 既有别名继续覆盖。`实际结果` 是执行结果列、不是导入字段，**故意不进别名表**，避免把结果当预期读回。
+- **结果导出**：`exportWorkbookCsv(workbookPath, outPath, {encoding, lineEnding, bom, sheetName, overwrite, originalPath})` 从工作副本读第一张/指定表，跳过隐藏列、公式取缓存值，按 RFC4180 写**新文件**；`outPath` 等于工作副本或 `originalPath` 时抛 `same-path`，缺省不覆盖已存在输出（`output-exists`，`overwrite:true` 显式放开）；返回 `{outPath, sheetName, encoding, lineEnding, bom, rows, columns}`。结果 CSV 的“每轮新副本”由调用方另给新路径实现。
+- **边界**：本任务不写结果/断言列、不改 result ingest/writeback 与面板 UI；CSV 原件在套件执行前经既有 `ensureWorkbookCopy` 自动获得 xlsx 工作副本。
+- **测试**：`test/web-csv.test.js`（22 例：UTF-8/BOM/GB18030 识别、RFC4180 解析与空行、未闭合引号、编码/行尾/BOM 输出、不可编码字符、CSV→XLSX 保真、CSV 工作副本与原件只读、内容嗅探、损坏原件拒绝、资产扩展名与元数据、结果 CSV 导出/隐藏列/GB18030+CRLF/同路径与已存在输出）；`test/web-excel.test.js` 增 4 例（新增别名与 `实际结果` 忽略、CSV 直接解析、显式 format 拒绝、UTF-16 拒绝）；`test/web-assets.test.js` 负例改为 `.txt`/`.xls` 并增 HTTP 级 CSV 上传；`test/web-assets-ui.test.js` 锁定 `accept=".xlsx,.csv"` 与客户端校验。
+- **评审修复（同日）**：① 导出按 `sheet.rowCount`（最后行号）遍历，中间整行缺失/空白不会丢掉其后的数据（`actualRowCount` 只数有值行）；② GB18030 编码补全 **BMP 四字节区**（index 0..39419 用解码器反向枚举，约 12ms，双字节优先），U+00A0/U+3400 等不再误报 `unencodable`，仅孤立代理项拒绝；③ `decodeCsv` 在解码前拒绝 UTF-16 BOM（FF FE/FE FF）与含 NUL 的输入（`CsvError("unsupported-encoding")`），边界分别映射为 `ExcelMappingError`/`WorkbookCopyError`/`WebAssetError` 的同名 code（HTTP 400），不再误按 GB18030 解出乱码；④ CSV 维度在解析阶段边读边判（`SHEET_MAX_ROWS/COLUMNS`，与 xlsx 共享），超限 `too-large`（parseExcel 映射 `invalid-workbook`、工作副本映射 `too-large`），不先物化二维表或构造 ExcelJS；⑤ 控制台资产页 `accept=".xlsx,.csv"` 并放宽客户端校验/文案；⑥ GB18030 + `bom:true` 抛 `invalid-option`（不再静默忽略），输出路径是目录时 `output-exists` 文案明确为「目录」。
+
+### 13.266 新增（Web 预期结果归一化：结构化断言与隐藏断言列）
+
+> 2026-10-29。CSV/断言增量 Task 2a：把人工「预期结果」单元格分类成结构化断言 JSON，并写入 XLSX 工作副本的隐藏列 `__aos_assertions`；本任务不接结果写回、AOS/IOS 结果列，也不改面板。
+
+- **分类器**（`src/web/assertions.ts`）：`classifyExpectedResult({expected, steps, caseId})` → `AssertionDoc{version:1, source:"excel.expected", confidence, steps, manual, ambiguous}`。按物理行 → 语句（`；;。`，引号内不拆）→ 子句（`，,`，引号内/千分位逗号不拆；**无条件拆分**）逐层处理并保留 `sourceText`：`N.`/`N、`/`N)` 绑定步骤 N（不看行序；N 超出 `steps.length` 时进 `ambiguous`，不发明步骤号），`i.`/`iv.`/`a.`/`•`/`-` 绑定当前步骤，`--`/`备注`/`備註`/`Note` 视为上下文默认跳过；单行无编号预期在 `steps` 非空时绑定**最后一步**，多行无编号仍跟随当前步骤/否则 `ambiguous`。带冒号结尾的行按步骤标签处理。无展示动词的子句只在 ≤30 字且不以动作/指引动词（`點擊/点击/點選/点选/輸入/输入/選擇/选择/滑動/滑动/長按/长按/開啟/打开/操作/勾選/勾选/提交/展開/展开/收起/切換/切换/參閱/参阅/如圖/如图/見圖/见图/如下/詳情/详情/請稍候/请稍候`）开头时补软 `text`（`i.`/`ii.` 等子项标题豁免动作词，避免 `點擊後成功` 这类动作子句冒充预期）；`返回/確認` 在多子句内不补 soft text；导航结果按下方导航规则出硬 `visible`/`notVisible`，无页目标的动作/状态（`商品加入購物車`、`登入帳號`、`填寫手機號`、`上傳身份證`）保持 soft `text`，`確認後優惠券被清空` 等行为结果仍 soft。仅引号文本/`顯示X`/`展示X`/`彈出X`/`提示X` 等具体展示标签可升硬 `visible`。**结构化 UI 字段**（`標題/标题/內容/内容/按鈕/按钮：值`、`按鈕[...]`）在语句层直接 hard `visible`（值 1..200 字；空/超长/含 MANUAL 关键词、短值否定或否定开头、或 `VAGUE`/`LABEL_STATE`/`LABEL_PROSE`/`STATUS_WORD` → manual）；无展示动词的 `shortSegment` 若通过 `isConcreteLabel`（2..30 字、仅 CJK/ASCII/空格/`/ - _ . # +`/成对 `()`/`（）`、无句读、无动作/情态/状态词；先剥前导 `(若有)`；拒绝 `NEGATIVE`（含 `无按钮/无库存/无优惠/无结果` 等前缀，不用裸 `无`）/`VAGUE`/`LABEL_STATE`（`^已[\u4e00-\u9fff]{1,7}$` 规则化，`已用S Dollar`/`已用S Coupon` 因含 ASCII 放行）/`LABEL_PROSE`/`DISPLAY_STATE`、`無(?!障礙|線|限)` 前缀与中段 `無(?:現貨|效|權限|法|…)`、`無庫存/庫存不足/已達上限/缺貨/售罄/售完$/停用/失效/過期/不足/上限/暫停服務$/暫停$` 等状态词及英文谓词 `is/are/failed/success/loading/correct/sold out/out of stock/unavailable/disabled/expired/pass/fail/...`（`OK/Done/Ready` 作为按钮标签放行）；`有現貨/在購物車/價格為100元/到貨了` 等谓词短句拒绝）升级 hard `visible`，否则保持 soft `text`。导航目标（`跳轉到/跳转到/跳轉至/跳转至/進入/进入/返回/回到/停留在/前往/導向/导向/到達/到达/直達/直达` + 2..30 字且以 `首頁/首页/頁面/页面/頁/页/門市/门店/詳情頁/详情页` 结尾）→ 正向 hard `visible`，否定导航（`未進入/沒有進入/未停留在` 等）→ `notVisible`；无目标动作（`登入帳號/填寫手機號/上傳身份證/商品加入購物車`）不匹配。闭包结尾（`關閉/关闭/消失/隱藏/隐藏/不見/不见` + 2..30 字主体）→ `notVisible 主体`；非结尾闭包（`點擊後關閉彈窗`）不匹配。`不可以：X` → `notVisible X`（去冒号）。无展示动词的 `未展示/未提示/未包含/不支援/不支持` 按 `、` 逐标签 `notVisible`（去前导 `的`）；`未成功/未完成/不成功` 是动作失败、降 `manual`，不猜 `notVisible`；`不需要/不用/不會` 不算否定；简体 `无(?:按钮|庫存|库存|优惠|優惠|结果|結果)` 算否定，不添加裸 `无`（`無障礙`/`無線網路`/`無限次使用` 仍是合法标签）；`無權限/無效卡號/無網路連線/無此優惠/無紀錄/無回應/無貨` 等 `無` 前缀状态同样拒绝。soft-only 文档 confidence 为 medium、由 §13.268 门禁判 UNVERIFIED。
+- **断言提取**：简繁双语。引号文本（`“”`/`""`/`「」`/`『』`/`‘’`/`’‘`）按**引号所在标点段**的极性输出 `visible`/`notVisible`；`【...】` 作为显式可见标签，但 `【待確認/待确认/设计稿/設計稿/備註/备注】` 是标注位、不进断言。正向引号升 `visible` 前有门禁——整条语句 ≤60 字或引号所在标点段含展示动词（显示/顯示/展示/出现/出現/呈现/呈現/弹出/彈出/跳转至/跳轉至/跳转到/跳轉到/提示），否则整条语句进 `manual`/`ambiguous`（`【...】` 豁免）。`displayLabel` 与字段列表同样过 `VAGUE`/`LABEL_STATE`/`DISPLAY_STATE`/`LABEL_PROSE`/`LABEL_REJECT`，状态/散文（`登錄成功`、`已成功提交`、`載入失敗`、`同步完成`）落 manual，不产硬 visible。展示/包含/包括 + `、` 的字段列表逐标签 `visible`，要求：列表在子句末尾、≥2 个有效标签；标签以英文或中文/汉字开头（允许中文、空格、数字、`._/&()#+-`），去空白后 ≤24 字，先剔除 `功能正常/內容完整/正確顯示` 等 `VAGUE` 标签（不参与状态判定），再拒绝含 `並/且/可/需/以及/并/則/才/再`、状态/散文标签（`^已[\u4e00-\u9fff]{1,7}$` 规则化、以 `表示/完成後/返回/待` 开头、以 `正常/正確/正确/成功/失敗/失败/中` 结尾、`^無(?!障礙|線|限)` 前缀；`已用S Dollar/Coupon`、`最後更新` 等名词短语放行（`批量刪除` 是动作，不再放行））、锚定状态词（`載入中/加载中/^請稍候/^请稍候`）、尾标点；纯标点标签（`)`/`（`/`(`）在 `、` 列表中跳过，其他 `)`/`（`/`(` 开头标签拒绝。`等字段/等欄位/等/。；` 先剥离。任一标签命中状态/散文拒绝时整列回退到既有 text/manual 路径，不产硬 visible。**`包含/包括` 的列表额外允许英文逗号分隔**（千分位逗号不拆），恢复 `Used Date and Time, Member ID, ...` 一类记录字段；`顯示` 列表仍以 `、` 为准。展示子句里的金额/金额式/积分/百分比/时长（`$85`/`HK$500`/`-$10`/`170 points`/`15`/`85%`/`10 秒`）输出 `visible`，但**遵循子句否定极性**（`未顯示 $85` → `notVisible "$85"`）；仅当真展示动词存在，或 `對應` 且（语句含展示动词或子句以被描述值开头）时才出数值——裸 `是/為` 不再触发。跳过步骤号与日期。`最多/至多/上限/不超过/不超過`＋可选 `放/放入/儲存/储存/存入/存/有/為/是`＋数字（含中文/繁体数字）→ `count{max}`。`$82（165 ÷ 2 向下取整）`、`N ÷ M`、`a/b`、`= 预期` → `calc{expression, expected}`（`向下取整/四捨五入/向上取整` 先从表达式剥离，`expression` 归一为 `+ - * /`，`expected` 为数值；缺显式预期时按 floor/round/ceil 安全求值补齐；calc/count 与引号共存时保留 quote 断言）。无引号短句（≤30 字）→ `text`（去尾部 `；;。` 与「頁面顯示」类引导语；`功能正常`/`正確顯示`/`內容完整` 等模糊句不产 `text`；`圖片展示正常`/`Banner正确显示`/`正常` 等只判为 text/manual 或跳过，绝不 `visible`）；纯标点（含 `)`）不产断言；长句不臆造文本 → 有步骤进 `manual`、无步骤进 `ambiguous`。
+- **否定语义（fail-closed）**：`NEGATIVE` 支持 `未展示/未提示/未包含/未支援/未支持` 等；`不(?:需|用|須|须|會|会|要|再)` 不算否定。含 `未` 且无 NEGATIVE 匹配 → manual（不猜正向）；`不` 仅在 `不[顯示出現支援包含提示]` 动词位时同样 fail-closed，`不同/不僅/不過` 不阻断。
+- **人工/数据依赖**：`后台/後台/排序/最近/上次/GPS/刷新/配置/积分余额/積分餘額/至少/(?<!不未沒)存在/資料/数据/數據` 及英文 backend/server/sort/order/last/latest/refresh/config/balance/at least/exists/data → `manual`（步骤已知时同时落 `{type:"manual"}` 内联断言与 `manual[]` 记录；**整子句扫描，字段列表不屏蔽人工关键词**，`顯示後台配置的價格、名稱` 等保持 manual）；空预期（`null`/空白）→ `steps:[]`、`manual:[{step:null,reason:"无预期"}]`、`confidence:"low"`。置信度：有任一高确定性断言（visible/notVisible/count/calc）且**无 soft `text`**、无人工/歧义 → `high`；仅 soft `text` 或含人工/歧义 → `medium`；无任何可执行断言 → `low`。text-only 或混合 soft text 的 medium 由 §13.268 判 `soft-assertion-only`。
+- **隐藏列**（`src/web/assertion-column.ts`）：`writeAssertionColumn` 按表头（归一化后）定位用例编号列，在**最后一个非空表头之后**追加 `__aos_assertions`；已存在则原位复用（不再追加）；可选 `headerRow` 默认 1。只写传入 Map 命中的行，未知/空用例编号跳过并进 `warnings`，用例编号重复保留首行；**追加列**的目标数据行若已有零散人工内容（或公式），跳过该行并告警、绝不覆盖，其他行照常写入；`assertions` 为空 Map 时直接返回（不追加表头、不隐藏、不改字节）。既有单元格、其他工作表与列内容不改。列设 `hidden=true` 且写入时 `width=0`（ExcelJS 持久化会省略零宽、重载后回落到默认宽度，**隐藏标志才是实际生效语义**）。写前 `findUnsupportedParts` 拒绝图表/透视/宏等 exceljs 会丢的对象（`unsupported-parts`）；保存走临时文件 + `rename`，写后校验 OOXML part 未丢失（`parts-lost`）并回读临时文件核对表头/逐格 JSON（`write-failed`）才替换；错误码 `invalid-workbook`/`sheet-not-found`/`invalid-header-row`/`invalid-case-id-header`/`case-id-header-not-found`/`merged-header`/`unsupported-parts`/`parts-lost`/`write-failed`。`readAssertionColumn` 同样支持 `headerRow`，缺列返回空 Map，坏 JSON/结构不合法逐格跳过并 WARN；读取路径不因「下一列表头是合并区」而失败。
+- **边界**：隐藏列是工作副本派生数据，不写原件；Task 2a 不消费该列（结果 ingest/writeback/AOS/IOS 列留待后续任务），面板与 CSV 导出不受影响（CSV 导出本就跳过隐藏列）。
+- **测试**：`test/web-assertions.test.js`（82 例：编号多行/备注、子项与 count、S Dollar calc、人工数据依赖、空预期、单行绑定最后一步/多行歧义、长句、长设计说明引号门禁、超出步骤范围、繁体显示/否定/人工词、简体 `没有`、’愛心‘/【】/‘’ 引号对与标注位、字段列表与模糊标签、字段列表不吞人工词、非法 `、` 列表、金额/积分/数字/百分比/时长极性、裸 為/是不出数值、向下取整/四捨五入/向上取整、calc/count+引号、最多可放/放入/存入/儲存与繁体数字、text 清理与逗号拆分/子项标题、真实样例回归、中英混合字段与包含逗号列表、模糊子句、状态散文标签、中/待状态、模糊标签剔除、已用/最後更新、标点标签/跳过、动作指引子句、展示状态/soft-only、无展示动词 soft、结构化 UI 字段、具体标签升级/否定/状态/英文谓词、简体无前缀/规则化已状态/无前缀状态/已+状态复合词/结构化状态/指令短语/结构化英文谓词/字段名词列表/展示状态与英文谓词/谓词短句/OK-Done-Ready/名词后缀单行/字段名词含动作字、否定白名单/fail-closed、冒号否定、未成功/未完成降 manual、否定多标签、不需要正向、不可以冒号、追加/复用/中间列/合并区、追加位零散人工内容不覆盖、空 Map 不改字节、`headerRow`、未知编号告警、坏 JSON、读写往返与既有单元格不变）。
+
+### 13.267 新增（Web 结果双写回：平台结果列、8 列摘要与结果 CSV）
+
+> 2026-10-29。CSV/断言增量 Task 2b：`ingestWebJobResult` 在 8 列摘要之外写平台结果列与隐藏断言列，CSV 源额外导出结果 CSV；原件始终只读。
+
+- **列布局（新建工作副本固定）**：`原件列 …` → `AOS Result` → `IOS Result` → 8 列摘要（`建议｜脚本文件`…`执行｜traceId`）→ `__aos_assertions`（隐藏，最后）。追加顺序也按此执行（平台列先、8 列次、隐藏断言最后），保证重复入库与首次入库的列位置一致；已存在的同名列原位复用、不重复堆列。`writePlatformResults` 即使本轮没有逐例结果（空结果/任务级 error 抑制 PASS）也会补上两列，避免列布局随结果状态漂移。**旧工作副本**（已存在 8 列摘要、尚无平台列；含原件自带的摘要列）不插列（插列会移动既有 journal `cellRef`），平台列按同一规则追加在 8 列之后，返回 `layout:"legacy"`；**追加平台列的那一轮**同时写 `platform-columns-after-system` 警告（后续轮次只保留 `layout:"legacy"`，不重复告警）。新建副本 `layout:"fixed"`。结果 CSV 的列顺序跟随实际工作副本（旧副本即「原件 + 8 列 + AOS/IOS」）。
+- **平台结果列**（`src/web/platform-result.ts`）：`writePlatformResults({workbookPath,sheetName,caseIdHeader,platform,rows,headerRow?,sourceHeaders?,originalPath?})` 按归一化表头（大小写/空白/下划线不敏感）定位 `AOS Result`/`IOS Result`，缺失时在最后一个非空表头后按 AOS→IOS 追加；追加前检查候选列表头下方是否有非空数据（ragged 行/游离人工备注），有则右移到干净列并告警 `platform-columns-shifted: 第 X 列有游离人工数据，平台列追加到 Y`，后续轮次复用已追加列、永久保留人工数据；`originalPath` 与工作副本同路径时抛 `same-as-original`。只写 job `requirements.platform` 对应列（`PASS/FAIL/SKIP/ERROR/UNVERIFIED`），另一列保持原样（空或原件人工值）。**归属**：原件（只读源）没有该表头＝系统列（可跨轮刷新）；原件已有该表头时，状态值（`PASS/FAIL/SKIP/ERROR/UNVERIFIED`）视为系统结果、可跨轮刷新，自由文本（如 `PASS（人工确认）`、备注）冻结并告警，空单元格仍可写。平台列没有 journal，**已知状态值的人工改写会被下一轮系统结果覆盖**；需要保留人工结论请用自由文本或 8 列摘要之外的人工列。未知/重复用例编号、合并/公式单元格逐行告警跳过。写盘走临时文件 + OOXML part 校验 + 回读核对后 `rename`，错误码 `invalid-workbook`/`sheet-not-found`/`invalid-header-row`/`invalid-case-id-header`/`case-id-header-not-found`/`merged-header`/`unsupported-parts`/`parts-lost`/`write-failed`/`same-as-original`。任务级 `error`/强制 `failed` 而用例全 `PASS` 时与 8 列同口径写 `ERROR`（不假绿、不残留 PASS），平台列同样写 `ERROR`。
+- **隐藏断言列**：结果入库后解析**原件**（`parseExcel` + 已确认映射，CSV 显式 `format:"csv"`）用例/步骤/预期，`classifyExpectedResult` 逐例分类，`writeAssertionColumn` 写到 XLSX 工作副本；分类输入不取自结果列。原件解析失败只记 `source-unreadable` + `platform-result-skipped` + `assertion-column-skipped` 警告并跳过断言/平台列，不阻断 8 列写回、结果保存与结果 CSV 导出（判定口径见 §13.268：原件不可解析时 PASS 一律降级 UNVERIFIED）。
+- **结果 CSV（仅 CSV 源）**：`asset.metadata.format==="csv"` 时，用工作副本调 `exportWorkbookCsv` 写 `.artemis/web/workbook/<assetId>.result-<jobId>.csv`（`webResultCsvPath(rootPath,assetId,jobId)`，每个 job 独立快照，`overwrite:true`；`originalPath` 防覆盖原件）。编码/BOM/行尾由原字节 `decodeCsv` **独立检测**（UTF-8/GB18030、`\n`/`\r\n`），与 `parseExcel`/映射是否可解析解耦：只要 8 列写回成功就导出，即使平台列/断言列因映射缺列被跳过；隐藏断言列由导出器跳过；RFC4180 引用保证逗号/换行/引号保真。导出失败记 `result-csv-failed` 警告，结果照常保存。xlsx 源 `resultCsvPath=null`。**部分写回**：8 列写回抛错或存在失败单元格（`failed>0`）时结果 CSV 不导出（`resultCsvPath=null`），只保留既有 `writeback-failed` 警告并追加 `result-csv-skipped`，不把未完成的副本冒充结果文件。
+- **结果文档/响应**：`result.json` 与 `WebJobIngestSummary` 新增 `resultCsvPath`（绝对路径，xlsx/失败为 null）、`assertionCells`（隐藏列写入格数）、`platformResult`（`{column,header,appended,layout}`）；HTTP 结果接口回显 `resultCsvPath`（项目根替换为 `<project>`）。两阶段 journal 仍只覆盖 8 列摘要；平台/断言列是派生物，不写 journal。
+- **边界**：原件 CAS 字节不变（测试逐例校验 sha256）；工作副本与结果 CSV 是派生文件；CSV 结果文档不回显隐藏列。无新依赖、无网络、无设备。
+- **测试**（`test/web-result-csv.test.js`，11 例）：xlsx 已有 AOS/IOS 列（写 AOS、保留 IOS、人工 AOS 冻结告警、8 列 + 隐藏断言、原件 sha 不变、`platformResult`/`assertionCells`）；xlsx 无平台列（AOS/IOS → 8 列 → 隐藏列顺序）；平台列追加跳过游离人工数据（右移、二次复用）；原件已有空 AOS 列按状态刷新、自由文本冻结；CSV UTF-8（结果 CSV 同编码 CRLF、多行/逗号引用、隐藏列不进 CSV、xlsx 工作副本仍有断言、`resultCsvPath` 落文档）；CSV GB18030（同编码导出、原字节不变）；旧工作副本已有 8 列（`layout:"legacy"` + `platform-columns-after-system`，不插列）；CSV 映射缺 `steps`（解析失败仍写 8 列并导出结果 CSV，平台/断言跳过）；任务级 error + 全 PASS（平台列与 8 列结果均不写 PASS）；写回失败不导出结果 CSV；同资产两个 job 各自生成独立结果 CSV。
+
+### 13.268 新增（Web 断言门禁：UNVERIFIED、缺失用例 SKIP 与 assertionCount）
+
+> 2026-10-29。CSV/断言增量 Task 3：结果判定不再“脚本绿＝PASS”。PASS 必须同时满足 flow/JUnit 通过、人工 Expected Result 生成的断言文档可执行且无 manual/ambiguous、runner 上报 flow 硬断言数 > 0；否则中心派生 `UNVERIFIED`。原件中全部未执行用例补 `SKIP（未执行）`。runner 仍只上报 `PASS/FAIL/SKIP/ERROR`，UNVERIFIED 只在中心产生。
+
+- **判定模块**（`src/web/verdicts.ts`）：`assertionGate(doc, assertionCount)` 按顺序判定——无断言文档 → `assertion-doc-missing`；无任何非 `manual` 内联断言 → 有歧义或内联 manual 时 `manual-or-ambiguous`，否则 `no-executable-assertion`（空预期只有“无预期”注释走此分支）；有可执行断言但同时存在 `manual[]`/`ambiguous[]`/内联 manual → `manual-or-ambiguous`；`doc.confidence !== "high"`（仅 soft `text`）→ `soft-assertion-only`；`assertionCount` 缺失或 ≤0 → `assertion-proof-missing`；全部满足 → PASS。`deriveCaseVerdicts({payloadCases,sourceCases,assertions,caseFilter,suppressPerCaseResult})`：**fail-closed**——原件不可解析（`sourceCases=null`）时，除任务级抑制外所有 PASS 降级 `UNVERIFIED`（reason `source-unreadable`，`failureReason="未验证：原件不可解析，无法生成断言"`），计入 `unverified` 并告警 `verdict-unverified` + `verdict-source-unreadable`；缺失范围未知故不补 SKIP（missing＝0），也不伪造门禁通过。非 PASS 状态不改写；降级保留 duration/trace 等并写 `failureReason="未验证：<中文原因>"`。告警聚合为 `verdict-unverified: N 个 PASS 降级…` 与 `verdict-missing-result: N 个用例未执行…`（最多列 10 个），并返回 `reasons` 供调试/文档（不强制持久化）。
+- **用例范围**：`selectSourceCases` 空 `modules`+`caseIds`＝全部；否则按去空白后的模块或 caseId 精确匹配（源顺序保留），仅用于识别部分下发：过滤非空且未选中 >0 时告警 `verdict-partial-scope: 过滤条件仅选中 N/M 个用例，其余 K 个写 SKIP（未执行）`。**缺失判定覆盖全部原件用例**（不只过滤范围）：结果缺失＝全部源用例减去 payload 已出现 caseId（大小写保留、去空白）；追加 synthetic `{status:"SKIP", durationMs:0, failureReason:"未执行", synthetic:true}` 在 payload 之后，过滤任务因此必为 `partial`。任务级 `error`／强制 `failed` 且用例全 PASS 时：payload PASS 改写 `ERROR`（`failureReason:"任务级错误，未采纳逐例 PASS"`），缺失用例追加 synthetic `ERROR`（`failureReason:"任务级错误，未执行"`），不得留下旧 PASS；gate 计 errors。
+- **写回**（`src/web/results.ts`）：原件解析与断言分类提前到结果判定之前，`assertions` Map 只构建一次并同时供隐藏列写入（不再重复分类）。synthetic SKIP 只写 8 列 `执行｜结果 = SKIP（未执行）`，不写设备/包/时间/trace；synthetic ERROR（任务级错误）只写 `ERROR`；UNVERIFIED 写 `UNVERIFIED` 并保留可用字段。平台结果列同批写 `PASS/FAIL/SKIP/ERROR/UNVERIFIED`，synthetic 按状态写 `SKIP`/`ERROR`（Excel 摘要列才写「未执行」）。两阶段 journal 仍覆盖 normal 写回，synthetic/派生列不改人工格保护与 journal 归属语义。
+- **状态与聚合**：`WebResultCase.status` 扩为 `PASS|FAIL|SKIP|ERROR|UNVERIFIED`；runner wire 校验仍只收四种（`invalid-result` 拒绝 UNVERIFIED）；`assertionCount` 只收非负整数（负数/小数/非数字 `invalid-result`），`synthetic` 只由中心写入。`aggregateResultGate` 单独计数 `unverified`（为 0 时字段省略以兼容旧摘要），SKIP/UNVERIFIED 均使结果 `partial`，`passed` 只统计真正 PASS；任务状态由派生 gate 决定，`taskStatusFromGate` 保证 partial 绝不落 `completed`。`document.execution.cases` 保存最终（含 synthetic），`execution.status` 落派生状态；`status-mismatch` 比较 runner 上报与派生聚合。
+- **Runner 证据**（`src/runner/web-executors.ts`、`web-job-runner.ts`）：执行前读取每个**顶层** flow YAML（`flowsDir` 下的 `.yaml/.yml`，不跟随 `subflows/`），按行匹配 `^\s*-\s*assert(?:Visible|NotVisible|True|Condition)\b`（大小写敏感）计数；读失败计 0。仅命中 JUnit 的用例带 `assertionCount`，未匹配/重复/flow-not-in-junit 条目不带；上传 payload 透传该字段。
+- **面板**：逐例 `UNVERIFIED` 用 warning 徽标；任务详情门禁文本在 `unverified>0` 时追加「未验证 N」。`SKIP（未执行）` 只出现在 Excel，结果文档状态仍是 SKIP。
+- **限制**：只扫顶层 flow 文本、不解析 YAML/不展开 Maestro 子流程与 `runFlow`，也不验证断言是否真正执行（以 Maestro 退出码/JUnit 为准）；Plan 2 的 LLM/真机执行尚未接入断言证据，旧 runner 未上报 `assertionCount` 时统一降级 UNVERIFIED（不静默放行）。
+- **测试**：新增 `test/web-verdicts.test.js`（15 例：通过、manual、空预期、证据缺失、源缺失、非 PASS 保持、synthetic SKIP、过滤、任务级抑制、源不可解析、任务级抑制且源不可解析、assertionGate 边界、soft-assertion-only、UNVERIFIED 聚合 partial）；`test/web-result-ingest.test.js` 增加 4 例（缺失用例 SKIP→partial 且平台/8 列/隐藏断言同批落盘、缺 assertionCount→UNVERIFIED、空预期→UNVERIFIED、assertionCount 校验），既有 fixture 补 `期望结果` 列/映射、PASS 用例 `assertionCount`、列字母与 journal 计数随列位移；`test/web-result-csv.test.js` PASS 载荷补断言证据；`test/web-executors.test.js` 新增顶层 flow 硬断言计数（3/0）；`test/web-remote-e2e.test.js` 端到端上传带 assertionCount 并按新列位校验。
+
+### 13.269 新增（设计验收清单：figma-to-code-skill 检查项接入 gap analysis）
+
+> 2026-10-29。只做提示，不做自动判定：`figma_gap_analysis` 响应新增 `verificationChecklist`，把 figma-to-code-skill `references/verify.md` 的验收项带给生成用例/人工验收的 agent；不读运行时、不改变 gap 结果、不增加门禁。
+
+- **清单**（`src/figma/gaps.ts` 的 `buildVerificationChecklist(profile)`）：`automated:false`，每项 `status:"manual"`。固定项：对比度（WCAG AA 4.5:1）、`empty/loading/error/disabled/pressed` 状态、可见焦点/辅助功能焦点顺序、设计声明的断点/横竖屏、颜色/字号/圆角/间距断言必须引用 `tokens.json`/`ui-contract`（不从截图推断）、未修复差异必须报告。移动端（Flutter/RN/Android/iOS，或未检测到栈）额外加 `tap-target ≥44×44pt`；Web 不加。
+- **接入点**：`figma_gap_analysis` 的 JSON 响应追加 `verificationChecklist`（`source` 指向 figma-to-code-skill 的 verify.md、`items`、`note`）。`save` 落盘 `gaps.json` 同样包含。
+- **边界**：清单是流程提示，不是自动检查；不因为它存在就降低 `ui-parity`/`design_device_diff` 的门禁，也不把未确认项当 PASS。真正自动化的对比度/触控目标检查需要运行时控件几何与颜色对，当前未实现。
+- **测试**：`test/figma-flows.test.js` 增加 `buildVerificationChecklist` 用例（mobile 含 `tap-target`、web 不含、所有项 manual、未知栈按 mobile 处理、source 指向 figma-to-code-skill）。
+
+### 13.270 新增（design_device_diff：区域字号/行高像素估计，report-only）
+
+> 2026-10-29。借鉴 imugi `design-extractor` 的“文本行高中位数 × 0.7”思路，在区域核验结果里增加 report-only 的字号估计；不改变 diff 分类、severity 或门禁。
+
+- **实现**（`src/ui/text-size.ts`）：`estimateTextSize(RgbaImage,{lossless,maxLineHeight?})`。逐行统计与背景亮度差 >42 的像素，按连续行分组（允许 ≤4px 行内间隙，行高 6..120px），取有效行高中位数 ×0.7 作为字号估计；背景取边框像素亮度众数（按 8 级量化），避免文字贴边拉偏均值。输出 `{estimatedFontSizePx,estimatedLineHeightPx,lineCount,confidence,method:"line-height-median",reportOnly:true}`。
+- **置信度**：无损来源且 ≥2 行 → `medium`；单行/有损来源 → `low`（有损带 `reason:"lossy-source"`）。无文本行/图片过小 → 空估计 + reason。
+- **接入**：`design_device_diff` 的 `regionDetails[]` 在命中设计文本节点时追加 `textSize`（`src/diff/tool.ts`），与既有 `textStyle`（字重）并列。仅证据/人工复核使用，**不参与 PASS/FAIL、不改变 cluster severity**。
+- **边界**：像素估计受字体、字距、抗锯齿、缩放影响；多行/混合字号时中位数只代表典型行；不替代 `ui-contract` 的 `fontSize`/`lineHeight`，也不用于断言生成。
+- **测试**：`test/text-size.test.js` 5 例（双行中位数、单行 low、有损 low、无行/过小、深色背景）；`test/design-device-diff.test.js` 既有文案区域断言仍通过（`textSize` 为可选字段）。
+
+### 13.271 新增（design_device_diff：区域位移与整块偏移，report-only）
+
+> 2026-10-29。借鉴 smarteye-case `server/compare.js` 的 `bestShift`/整块垂直偏移思路，为差异区域增加位移诊断；只报告，不改变分类、severity 或门禁。
+
+- **区域位移**（`src/diff/shift.ts`）：对每个面积 ≤240×240 的差异区域，在设计工作图/设备工作图上用亮度 SAD 搜索 ±range（默认 32 工作 px，随设计降采样因子缩放）；先搜 dy 再搜 dx，撞到边界视为重复纹理误匹配（gain=0）；`gain ≥0.55` 且位移 ≥`4×factor` 才输出。结果换算回设计坐标像素：`regions[].shift = {dx,dy,gain}`，正数表示实际内容相对设计向右/下偏移。
+- **整块偏移**：`groupRegionShifts` 把同轴、幅度相差 ≤2px 的区域聚类；≥3 个区域才输出 `globalShifts: [{axis:"x"|"y",delta,regionCount,bbox}]`（中位 delta + 并集 bbox），避免把独立控件的小位移误报成整页问题。
+- **接入**：`design_device_diff` 顶层 `regions[].shift` 与可选 `globalShifts`；仍保留 `category`/`severity`/`pixelDiffRatio` 原口径。`globalShifts` 只是证据，不自动升级 severity、不改变 PASS/FAIL。
+- **边界**：位移搜索有 ±range 上限，超出范围的整块移动会被判为 ≥2 个独立差异；大面积区域（>240×240）不估算位移；平滑/重复纹理可能被边界保护丢弃。单位是设计坐标像素，不是设备 pt；需要 pt 时按现有 `alignment.scale`/`geometry.ratio` 换算。
+- **测试**：`test/diff-shift.test.js` 5 例（水平/垂直 10px、相同/小于阈值、同向聚合 ≥3、<3 不聚合）；`test/design-device-diff.test.js` 既有区域断言不变。
+
+### 13.272 新增（design_device_diff：颜色差异的设计/实际色值证据）
+
+> 2026-10-29。借鉴 smarteye-case `server/compare.js` 的 `designColor/actualColor`，把颜色差异从“只有 category”升级为可执行的色值证据；仍不改变 severity/门禁。
+
+- **证据**：`classifyRegion` 在设计节点可解析 `parentFill` 且节点覆盖率足够时，采样设备区域均值色；区域输出 `designColor`（父填充 hex）、`deviceColor`（设备均值 hex）、`colorDelta`（RGB 欧氏距离，0..441，保留 1 位小数）。颜色匹配（`colorTolerance`）时归 `missing`，否则归 `color`；两者都带颜色证据。
+- **接入**：`design_device_diff` 的 `regions[]` 直接输出这三个可选字段；原有 `bbox/category/severity/pixelDiffRatio/designNode` 不变。
+- **边界**：设备色是区域均值，不是逐像素主色；渐变/图片/阴影区域只作参考。`designColor` 只取单一 `parentFill`，不解析渐变/多填充。色值不参与 PASS/FAIL，也不自动升级 severity。
+- **测试**：`test/diff-color.test.js` 3 例（红/绿差异输出 `#ff0000`/`#00ff00` 与 delta>300、同色无差异、无 parentFill 不输出证据）；`test/diff-benchmark.test.js` schema 快照改为允许 `shift/designColor/deviceColor/colorDelta/globalShifts` 可选字段。
+
+### 13.273 新增（Web 结果人工状态：未实现/阻塞）
+
+> 2026-10-29。借鉴 smarteye-case 的状态分类，允许 maintainer 在 Web job 详情逐例标记 `未实现`/`阻塞`；只覆盖门禁与 Excel 结果，不修改 runner 上报的原始 status。
+
+- **API**：`POST /panel/api/jobs/<jobId>/cases/<caseId>/status`（maintainer+，`X-AOS-Console` 同源校验）；body `{project,host?,status:"NOT_IMPL"|"BLOCKED"|"",reason?}`（也接受中文 `未实现`/`阻塞`/空）。无 result.json → 404；用例不在结果 → 400；成功后写 result.json、Excel、审计 `action.jobs.case-status`。
+- **result.json**：`execution.cases[]` 增加 `manualStatus?: {status,reason,at,actor}`；原 `status` 保留 runner/中心派生值。门禁按覆盖层重算：`NOT_IMPL`/`BLOCKED` 单独计数（`gate.notImplemented`/`gate.blocked`，为 0 时省略），不计 `passed`，结果为 `partial`；重算以 `result.json.reportedStatus`（首次入库的 runner 上报/派生状态）和 `baseDbStatus`（首次入库的落库终态，不可变）为下界，`error`/`failed` 不会被人工状态升级成 completed；人工操作只改 `dbStatus`，不改 `baseDbStatus`，因此清除后可恢复。任务行在 completed/partial/failed 终态时同步为派生状态（清除后可按结果恢复 completed，但任务级 error 仍保持 failed）。
+- **Excel**：平台列只重写该用例一行（不拿旧 job 的其余用例覆盖新 job 结果）；8 列 `执行｜结果` 同步；`writtenCells` 按 cellRef 合并而不是覆盖；仍然只写系统格/journal 保护人工格；CSV 源同步重导结果 CSV。写回失败只记 `manual-status-writeback-failed`，不丢 result.json 状态。
+- **面板**：Web job 详情逐例增加“人工状态”选择器（自动/未实现/阻塞），结果徽标优先显示人工状态，门禁文本追加“未实现 N / 阻塞 N”；reason 进徽标 title。
+- **边界**：人工状态不改变 `execution.cases[].status`，不伪造 runner 结果；不计 PASS；审计记录 actor/reason。清除人工状态后重新按原始 status 聚合。
+- **测试**：`test/web-manual-status.test.js` 6 例（NOT_IMPL 写 result/Excel、任务 partial、清除恢复 PASS；BLOCKED 计数与写回；任务级 error 不可被人工状态升级；迟到 failed 不可升级；jobId/caseId 路径字符拒绝；无结果/未知用例报错）；`test/web-dispatch-ui.test.js` 断言选择器与阻塞徽标；`test/panel-actions.test.js` 断言路径角色为 maintainer。
+
+### 13.274 新增（生成用例检查点：视觉/功能/接口）
+
+> 2026-10-29。借鉴 smarteye-case 的 `checkpoints` 结构，在 `tests.json`/`tests.md` 增加人类验收用的三段检查点；不改 Excel 主表 12 列、不改执行器 taskDesc、不参与门禁。
+
+- **字段**（`GeneratedTest.checkpoints?`）：`{visual:string[],functional:string[],interface:string[]}`。视觉 = preflight hints + 各步 destination hints 去重（≤12）；功能 = 每步 `步骤 N → 目标屏`（≤12）；接口默认空，由 API 说明/pending 流程后续补充（当前不解析业务语义）。
+- **展示**：`tests.md` 每个用例在测试数据后追加“检查点：视觉/功能/接口”；接口在 `apiReview.status=provided` 时显示“见 API 说明”，否则“未提供”。`tests.json` 原样落盘；Excel 主表/隐藏执行器 sheet 不变。
+- **边界**：检查点是人工验收提示，不是断言、不计 PASS/FAIL；视觉 hints 仍来自设计文本，不新增颜色/字号/间距推断；接口为空不阻塞生成。
+- **测试**：`test/figma-testgen.test.js` 断言 `checkpoints.visual` 非空、`functional` 含 `Checkout`、`interface` 为空；既有 tests.md/xlsx 断言不变。
+
+### 13.275 新增（Figma 屏幕内容指纹与增量报告）
+
+> 2026-10-29。借鉴 smarteye-case 的 `nodeHash`/增量同步，给 Figma flows 增加每屏内容指纹，并在二次提取时报告 new/changed/unchanged/baseline/missing；不自动删除旧用例、不自动重生成测试。
+
+- **指纹**（`src/figma/node-hash.ts`）：对屏幕子树做 SHA1；bbox 相对画板原点（画布上移动不改哈希）、对象键排序、数字保留 2 位、跳过 `absoluteRenderBounds`；节点内容/层级/名称/子层变化会改哈希。`FlowScreen.nodeHash?` 写入 flows.json；pen 通道不产出。
+- **增量报告**（`compareFlowScreens`）：按 `screen.id` 对比旧 flows.json，输出 `sync:{new,changed,unchanged,baseline,missing}`；旧产物无 `nodeHash` 归 `baseline`，旧屏不在新图归 `missing`（只报告，不删除）。`figma_extract_flows` 在 `save!==false` 时读取上一次 flows.json 并写入本次 payload；首次提取无 `sync`。
+- **边界**：只做报告，不自动更新/删除旧用例、不自动重生成 tests、不重置结果；设计变更后的测试 stale/重生成仍由 `suite check`/`figma_generate_tests` 决定。`nodeHash` 不含绝对画布坐标，但包含屏幕名与节点 id。
+- **测试**：`test/figma-flows.test.js` 断言 nodeHash 稳定/内容变化；`test/figma-static-fallback.test.js` 端到端二次提取报告 unchanged/changed/missing。
+
+### 13.276 新增（Web 断言覆盖：soft text 由 flow 断言证明）
+
+> 2026-10-29。Plan 2 前的桥：runner 上报顶层 flow 的 visible/notVisible 断言文本，中心用它们覆盖 soft text 预期；只有全部覆盖才允许 medium 文档 PASS。
+
+- **runner**（`src/runner/web-executors.ts`）：`parseFlowAssertions` 逐行提取 `assertVisible`/`assertNotVisible` 的文本（对象写法只认 `text:`；跳过 `${var}`、>200 字、空值；≤100 条）；`WebJobExecutionCase.assertions` 随结果上传，`web-job-runner` 透传。`assertionCount` 仍保留。
+- **中心**（`src/web/results.ts`/`verdicts.ts`）：payload 可选 `assertions`（类型/长度校验）；`assertionGate(doc,count,flowAssertions)` 在 `confidence!=="high"` 时：
+  - 无 flow assertions → `soft-assertion-only`（旧行为）；
+  - 有但任一 soft `text` 未被 `assertVisible` 文本包含/被包含 → `soft-assertion-uncovered`；
+  - 全部覆盖且无 manual/ambiguous、`assertionCount>0` → PASS。
+  - `high` 文档仍走原硬断言路径；不因覆盖放宽 manual/ambiguous。
+- **边界**：只覆盖 `text`（visible/notVisible/id/变量/calc/count 不参与文本覆盖）；扫描顶层 flow + `runFlow` 引用的子流程（深度 ≤4、路径必须在 flowsDir、循环/越界保护）；其他形式（YAML 锚点/变量化路径）不展开；包含匹配是归一化后的双向 substring，可能偏宽，后续可收紧到精确/分段。
+- **测试**：`test/web-verdicts.test.js`（覆盖→PASS、未覆盖→soft-assertion-uncovered、无 flow assertions 仍 soft-assertion-only）；`test/web-executors.test.js` 断言 assertions 提取、runFlow 子流程计入、越界/循环不放大。
+
+### 13.277 新增（Web 脚本生成器：步骤分类与断言落点）
+
+> 2026-10-29。Plan 2A Phase 1：纯函数生成器把 Excel 步骤/断言文档变成 Maestro flow YAML；不接设备、不接 LLM、不写盘。范围与边界见 `docs/superpowers/specs/2026-10-29-maestro-assertion-generation-rationale.md`。
+
+- **模块**（`src/web/script-gen.ts`）：`generateFlow(input, options)` 与 `generateScriptSet(input)`；无 IO，输入 `caseId/steps/expected/preconditions`，输出 `status/yaml/assertions/assertionTexts/unresolved/warnings`。
+- **步骤分类**：动作（点击/选择/输入/滚动/返回/等待）、验证（查看/检查/确认/观察/找到/是否；不生成动作，只作为断言落点）、导航（`进入“X”` 默认 `navigation-unparsed`，显式 `inferNavigationTap` 才生成 tap）、代词回指（`点击该组件` 使用上一个具体标签）、不支持（扫描/条件/筛选/符号按钮）。
+- **断言**：`visible`/`notVisible` 生成 `assertVisible`/`assertNotVisible`；`text` 默认跳过并记 `assertion-soft-text-skipped`；`manual`/`ambiguous`/`count`/`calc` 不生成硬断言，只记 warning。断言按 `AssertionDoc.steps[].step` 插到对应步骤动作之后；越界显式 `assertion-step-out-of-range`。
+- **转义**：选择器文本先 `escapeRegExp`，再用 YAML 单引号标量；`inputText` 只做 YAML 标量、不做 regex 转义；`assertNotVisible` 的语义是“没有整段文本等于 X 的元素”，不是“页面任何位置不包含 X”。
+- **前置条件**：默认 `preconditionMode:"strict"`，非空 → `precondition-unparsed`；显式 `"assume-prepared"` 时视为环境已准备，`clearState:false` + `stopApp:false` 并记 `precondition-assumed`；不生成登录/积分/后台/优惠券 setup。
+- **appId**：按平台校验（Android 至少两段、字母开头、可下划线；iOS 允许连字符、至少一个点）；双端分别生成脚本集，manifest 带 `platform`。
+- **边界**：Phase 1 未接入 job/CLI/面板；Phase 2 已加脚本集资产写入（见 §13.278）。未做 testID 发现/LLM；`input-field-missing`、`navigation-unparsed`、`scan-unsupported`、`symbol-label`、`conditional-unsupported` 等保持 unresolved，不猜。
+- **Phase 0/1 实测**（真实样本，assume-prepared）：CSV 15/26 可生成（14 有硬断言）、XLSX 31/40（22 有硬断言）；strict 下 CSV 0/26（前置条件全阻塞）、XLSX 16/40。详见 rationale §4.5。
+- **测试**：`test/web-script-gen.test.js` 19 例：基本流程、验证步骤、输入字段、soft/manual、扫描/条件、前置模式、appId、regex/YAML 转义、代词回指、导航推断、符号按钮、滚动、notVisible、越界、集合统计。
+
+### 13.278 新增（Web 脚本集资产：确定性 zip、manifest 与幂等写入）
+
+> 2026-10-29。Plan 2A Phase 2：把生成器输出落成可下发的 `scripts` 资产；仍不接 job/CLI/面板。范围见 rationale §6.3/§6.8。
+
+- **确定性 ZIP**（`src/web/zip.ts`）：`buildZip(entries)` 仅 store 方式（无压缩）、固定 DOS 时间戳、按路径 codepoint 排序、UTF-8 名称、CRC32；拒绝绝对路径/`..`/空段/重复路径。相同输入字节完全一致，保证幂等 sha。
+- **组合**（`src/web/script-set.ts`）：`buildScriptSetBundle({appId,platform,sourceExcelAssetId,packageAssetId,cases,preconditionMode?...})` → `{manifest,files,zip,sha256,ready,unresolved}`。manifest 含 `schemaVersion/generator/generatorVersion/platform/appId/sourceExcelAssetId/packageAssetId/preconditionMode/inferNavigationTap/includeSoftText/assertionDocHash/counts/cases[]`；ready 用例写 `flows/<safeCaseId>.yaml`，unresolved 只进 manifest（`flow:null`）；caseId 清洗为 `[A-Za-z0-9._-]`，重名追加 `-2`。
+- **哈希**：`assertionDocHash` 对 `caseId/steps/expected/preconditions` 按 caseId codepoint 排序后 SHA-256；zip sha 用于幂等与资产寻址。
+- **写入**（`storeScriptSet`）：未同时绑定 Excel/包 → `invalid-bundle`；无 ready 用例 → `script-set-unusable`；先按 `sha256 + metadata` 查同项目 `scripts` 资产，命中返回 `{created:false}`；否则 `storeWebAsset` 写 metadata `origin:"generated"`、`generatedBy:"aos"`、`sourceExcelAssetId/packageAssetId/platform/generatorVersion/assertionDocHash/preconditionMode/appId/ready/unresolved`，返回 `{created:true}`。同内容不同绑定/平台会新建版本，但 CAS 文件复用。
+- **下发匹配**（`src/web/job-spec.ts`）：`assertScriptSetMatch` 增加 `platform` 校验；metadata 声明 platform 且与 job `requirements.platform` 不一致 → `script-set-mismatch`；`allowStaleScript` 仍显式跳过全部校验。
+- **边界**：不解析 Excel、不生成入口、不写 Excel 建议列；脚本集仍不可变，人工脚本不覆盖。`suite task`/面板接入见 Phase 3/4。
+- **测试**：`test/web-script-set.test.js` 9 例（manifest/flow、确定性、哈希变化、文件名清洗、zip 有效性与路径安全、写入/幂等、新绑定新版本、无 ready/缺绑定拒绝）；`test/web-job-queue.test.js` 增加 platform 不匹配拒绝。
+
+### 13.279 新增（Web 脚本生成入口：CLI 与面板）
+
+> 2026-10-29。Plan 2A Phase 3：把 Excel/CSV + 安装包资产接成用户可操作的“生成脚本”入口；仍不做下发预检与设备执行。
+
+- **服务**（`src/web/script-generation.ts`）：`generateScriptSetForProject({store,rootPath,excelAssetId,packageAssetId,platform,appId?,preconditionMode?,dryRun?})`。校验托管 Web 项目 active、平台已声明、资产 kind 匹配、Excel 路径在 `.artemis/web/assets` 内；读表头 → `semanticFingerprint` → 已保存映射（缺省 `suggestExcelMapping`）→ `parseExcel`；`appId` 取 `--app-id`/面板值，缺省项目 `appPackage`；`dryRun` 只返回 manifest，否则 `storeScriptSet` 写 `scripts` 资产。错误码 `project-not-found/archived`、`platform-not-supported`、`asset-not-found/kind-mismatch/path-invalid`、`excel-unreadable`、`no-cases`、`app-id-missing/invalid`。
+- **CLI**（`src/web-command.ts` + `cli.ts`）：`web scripts generate --project <dir> --excel <assetId> --package <assetId> --platform <android|ios> [--app-id <id>] [--strict|--assume-prepared] [--dry-run] [--json]`；文本输出逐例 ready/unresolved 原因，JSON 输出 manifest + asset 摘要；exit 0 成功 / 1 无 ready 用例或脚本集不可用 / 2 参数/项目/资产/解析错误。
+- **面板**（`/panel/api/projects/scripts/generate`，maintainer+；`src/console/pages.ts` assets 页）：“测试资产”页增加 Excel/安装包/平台/appId/前置模式/dry-run 表单与脚本集资产表；动作走同源校验、跨主机保护、审计 `web.scripts.generate`；JSON 视图 `web-assets` 增加 `packages/scripts/appPackage`。
+- **前置模式**：默认 `strict`（前置条件非空 → `precondition-unparsed`）；`assume-prepared` 显式选择，生成 `clearState:false` + `stopApp:false` 并记 `precondition-assumed`；CLI 用 `--strict`/`--assume-prepared`，面板用下拉。
+- **appId 来源**：项目已有 `appPackage` 作为缺省；双端项目应显式传 `--app-id`/面板值（Android package 与 iOS bundle id 不同）。
+- **测试**：`test/web-script-generation.test.js` 7 例（dry-run/写入幂等/项目平台资产 appId 错误/strict vs assume/CLI JSON/CLI 复用/参数错误）；`test/panel-script-gen.test.js` 3 例（dry-run/写入/viewer 403+非法平台）；`test/web-assets-ui.test.js` 增加生成表单、脚本集表、JSON 字段断言；`test/panel-actions.test.js` 增加角色映射。
+- **边界**：不自动保存列映射、不写 Excel 建议列、不做下发预检（Phase 4）、不做设备执行/LLM；脚本集仍不可变，人工脚本不覆盖。
+
+### 13.280 新增（Web 下发预检：无脚本/未就绪脚本拒绝）
+
+> 2026-10-29。Plan 2A Phase 4：把“无脚本直到 runner 才报错”改成下发前拒绝；unresolved 默认阻止，显式允许才部分下发。
+> **2026-11-04 已被 §13.302 取代**：无脚本改为下发时惰性生成；unresolved 默认允许并写 SKIP；过期脚本自动重建。本节保留为历史记录。
+
+- **错误码**（`src/web/job-spec.ts`）：`script-set-missing`（400，Maestro 执行但未选 scripts 资产）；`script-set-incomplete`（409，scripts 资产 metadata `unresolved>0` 且未显式允许部分下发）。
+- **预检**（`src/web/jobs.ts` `createWebJob`）：加载脚本并完成 Excel/包/平台精确匹配后：
+  - `executionMode=maestro` 且 `script===null` → `script-set-missing`；
+  - `script.metadata.unresolved` 为数字且 >0 且 `allowPartialUnresolved!==true` → `script-set-incomplete`；
+  - 通过后才建任务/预占。`executionMode=llm` 不受脚本预检影响（仍 `llm-execution-not-wired`）。
+- **面板**：下发表单提交前检查 `executionMode==="maestro"` 且无 `scriptSetId`，前端提示“Maestro 执行需要脚本集”并阻止提交；表单新增 `allowStaleScript` / `allowPartialUnresolved` 勾选并透传到 `createWebJob`；服务端仍为权威。
+- **测试**：`test/web-job-queue.test.js` 增加无脚本 400、unresolved 409、`allowPartialUnresolved:true` 放行；`test/web-dispatch-ui.test.js` 更新下发 fixture 带脚本并断言前端提示。
+- **边界**：不读取脚本 zip 内的 per-case manifest（只看 metadata 的 unresolved 计数）；不替代 Phase 5 真机执行/结果校验。部分下发时未执行用例由结果入库补 `SKIP（未执行）`（§13.268 同口径）。
+
+### 13.281 新增（Web 生成脚本的 runner 集成验证）
+
+> 2026-10-29。Plan 2A Phase 5 的自动化前置：不连真机，验证生成 flow 能被 `executeWebJob` 接受、JUnit 映射正确、生成断言被 runner 统计。
+
+- **测试**（`test/web-script-runner.test.js`）：`buildScriptSetBundle` 生成 `flows/TC-1.yaml` → 写入 job `flows/` → fake Maestro 写 JUnit → `executeWebJob` 返回 `passed`，`caseId=TC-1`、`assertionCount=1`、`assertions=[{type:"visible",text:"成功"}]`。
+- **边界**：fake exec 不安装/不启动真实 app，不证明选择器/设备行为；真机小样本仍需连接 Android/iOS 模拟器与可安装包，按 rationale §11 Phase 5 执行。
+- **当前状态**：本机 `adb devices` 无连接设备，Phase 5 真机验收 blocked；自动化集成已通过（2936 tests）。
+### 13.282 新增（Runner 控制面 HTTP API：web-runner 去 PG 化，ADR-0012）
+
+> 2026-11-02。中心侧新增 `/panel/api/runners/*` 控制面，把 web-runner 的心跳、领取、设备租约与任务生命周期从执行机直连 PG 收敛到中心；执行机只持控制面地址 + `MOBILE_TESTING_RUNNER_JOB_TOKEN`，不再需要 `MOBILE_TESTING_DATABASE_URL`。ADR-0012；首个范围是 web-runner，suite runner 仍保留直连 PG 兼容路径（其 project/case-set/run 数据面另行设计）。
+
+- **契约**（`src/runner/control/contract.ts`）：Zod 定义 heartbeat/claim/lease/task/stop 请求与响应；`z.infer` 派生类型；`claim` 与错误响应使用判别联合（`claimed|idle|paused|busy|exhausted`），避免 `task?` 可选字段；`RunnerControlRoute` 用静态表 + `tasks/:id/(begin|progress|terminal|cancel-ack|release)` 正则匹配。控制面请求体上限 1MB；不承载资产/结果。
+- **路由与鉴权**（`src/runner/control/http.ts` + `src/http-server.ts`）：所有端点仅 `POST`；先于全局面板鉴权匹配；优先每主机 token（`AOS_RUNNER_HOST_TOKENS=[{hostId,token}]` 或 `AOS_RUNNER_HOST_TOKENS_FILE` 文件（0600、mtime 热加载、优先于 env）；`X-AOS-Host-Id` 必须等于 token 所属主机，否则 403；token ≥16；配置非法 fail-closed 503），未配置时回退全局 `MOBILE_TESTING_RUNNER_JOB_TOKEN`（未配置 503、<16 503、错误 401）+ 非空 `X-AOS-Host-Id`（缺失 403）；不支持管理员 token 回退。`AOS_RUNNER_CONTROL=0` 关闭（404）便于灰度。
+- **端点**：`POST /panel/api/runners/heartbeat`（upsert host/web runner、active 任务进度与租约续租、返回 queuePaused/cancelTaskIds/leaseLostTaskIds/assigned/reassigned/recovered/serverTime）；`POST .../claim`（服务端内部 `assignPendingWebJobs`/`reassignExpiredWebJobs`/`recoverStaleWebJobs`，按设备领取；重试上限耗尽由服务端置 failed）；`POST .../leases/renew|release`；`POST .../tasks/:id/begin|progress|terminal|cancel-ack|release`；`POST .../stop`。原 `GET /panel/api/jobs/:id/spec|assets/:assetId`、`POST .../results` 保持不变。
+- **服务层**（`src/runner/control/service.ts`）：`WebRunnerControlService` 是直连 PG 与 HTTP 两条路径共用的唯一行为实现；`createStoreWebRunnerControl` 供未配置控制面的兼容路径/测试使用。领取时再次校验本机租约（mine/foreign → `busy`），避免旧直连路径的 `device-busy` 语义丢失；`terminal` 在 `stopping` 时 ack 而不是覆盖；`release` 对 `stopping` 走 ack。
+- **租约令牌**（`src/runner/control/lease-token.ts`）：web claim 返回 `leaseToken=HMAC(runnerToken, hostId|taskId|serial)`，renew/release 必须回传并常数时间比较；无数据库列；suite 资源 API 的 `leases/renew|release` 也校验 `leaseTokens`。
+- **客户端与执行机**（`src/runner/control/client.ts`、`src/runner/web-agent.ts`）：`HttpWebRunnerControl` 逐端点 parse 响应，409 `runner-already-active` 映射 `WebRunnerAlreadyActiveError`，网络/契约错误进入现有退避/告警路径。`web-runner` 新增 `--control-url` / `MOBILE_TESTING_RUNNER_CONTROL_URL`；设置后不打开 PG，仅 `MOBILE_TESTING_PANEL_BASE_URL`（缺省回退控制面）与 token；未设置时走原 `openCenterStore` 路径。`runWebRunner` 改为依赖窄 `WebRunnerControl` 接口，`WebJobExecutorInput` 增加 `projectSlug`（控制面不暴露真实 rootPath），旧 `rootPath` 字段保留同值兼容。
+- **边界**：控制面服务端与 `serve --http` 同进程、复用现有 store；不是 `ProjectStore` 的 HTTP 代理。suite runner 已另走 §13.283 的 suite 资源 API（未配置控制面仍可回退 PG）。鉴权优先每主机 token，未配置回退全局 token；HTTPS/mTLS 见 §13.284。
+- **测试**：`test/runner-control.test.js`（service：全链路、双启、stopping→cancel、重试耗尽、外部租约 busy）；`test/runner-control-http.test.js`（真实 loopback HTTP + MemoryStore：client 全链路、鉴权 401/403/400、agent 仅凭 control 跑完一轮、CLI `--control-url` 不需要 PG）；既有 `test/web-runner-agent.test.js` 23 例保持绿（直连 PG 兼容行为不变）。
+
+### 13.283 新增（suite runner 控制面资源 API：本地 FileStore + /suite/*）
+
+> 2026-11-02。补齐 ADR-0012 的 suite 分支：项目机 `suite runner` 配置 `MOBILE_TESTING_RUNNER_CONTROL_URL` 后，不再打开中心 PG；本地使用 FileStore 作为项目台账，任务/用例集/run/租约/runner 注册通过中心 `/panel/api/runners/suite/*` 资源路由（不是任意 SQL/ProjectStore 代理；旧 `/suite/op` 已移除）。未配置控制面时保留原直连 PG 路径。
+
+- **分层**：`suite-http.ts` 只做控制面开关/鉴权/HTTP 映射；`suite-routes.ts` 解析资源路径；`suite-service.ts` 的 `SuiteControlService` 以 typed 方法（`getTask`/`claimTask`/`updateTask`/`acquireLeases` 等）收口 host/project/task 校验与 store 操作；`suite-client.ts` / `suite-store.ts` 是执行机侧。
+- **数据面**：资源路由覆盖任务读取/更新/领取/开始/释放/取消确认、case set 列表、run 登记/查询、项目/主机/runner 注册、停止清扫、设备租约、定时回归与审计。所有路由先校验 runner token + `X-AOS-Host-Id`，再校验项目归属（`host_id`）与任务目标/领取主机；不是通用 RPC。
+- **hybrid store**（`createHybridSuiteStore`）：本地 FileStore 负责 project/LLM/usage/audit/本地产物；任务、case set、suite run、设备租约、runner 注册/停止、stopping 清扫覆盖为 HTTP。`scopeHost` 仍返回 hybrid，`kind` 保持 `file`，因此 `suite runner` 的 PG 硬检查只在未配置控制面时生效。
+- **Runtime 构建**（`buildRemoteSuiteRuntime`）：先 `upsertHost`（保证 project 外键），再用 `FileStore`（失败降级 MemoryStore）+ hybrid store 构造 Runtime；`Runtime.initialize` 走本地项目/LLM，任务/case set/run 走 HTTP。`runSuiteCommand` 在 `MOBILE_TESTING_RUNNER_CONTROL_URL` 存在时把它同时用于 runner 外层与内层 `suite run --task`，避免内层重新打开 PG。
+- **suite 租约令牌**：hybrid client 为 `leases/renew|release` 的每个 serial 计算 HMAC 租约令牌，资源 handler 逐 serial 常数时间校验；释放全部（缺 serials）仍按 host/task 作用域。
+- **范围与遗留**：控制面模式支持定时回归（`GET /schedules`、`POST /schedules/claim`、`POST /tasks`、`PATCH /schedules/:id`）与中心审计（`POST /audit`）；资源路由已替代 `/suite/op`，handler 已收薄到鉴权/路由层，业务校验与 store 操作集中在 `SuiteControlService`；新增 `GET /tasks/:id/bundle` 返回任务 + 项目 + 引用 case set，`suite run --task` 优先使用它减少往返。真实重跑 `suite run --task` 需要项目机上的用例文件/设备，测试用 fake executor + MemoryStore/HTTP 覆盖协调链路；未声称真实设备端到端已跑。
+- **测试**（`test/runner-control-suite.test.js`）：hybrid store 通过 loopback HTTP 读写任务/case set/run/租约、鉴权/host/未知路由、`buildRemoteSuiteRuntime` 本地 FileStore + HTTP 数据面、`suite runner --once` 仅凭 `MOBILE_TESTING_RUNNER_CONTROL_URL` 领取并执行一轮（fake executor，不开 PG）。
+
+
+### 13.284 新增（serve --http TLS/mTLS 与 runner 客户端证书）
+
+> 2026-11-02。中心 `serve --http` 支持直接终止 HTTPS；可选 mTLS 要求 runner 客户端证书。执行机无需额外依赖，runner 的 HTTP 客户端在配置 `AOS_RUNNER_TLS_*` 时改用 Node `https` agent。
+
+- **服务端**（`src/http-server.ts`）：`AOS_HTTP_TLS_CERT` + `AOS_HTTP_TLS_KEY` 同时配置时 `createHttpsServer`；`AOS_HTTP_TLS_CA` + `AOS_HTTP_MTLS=1` 时 `requestCert:true`/`rejectUnauthorized:true`，缺少 CA 或只配 half 配置启动失败。默认仍为 HTTP，不影响现有部署；启动日志标注 `https` 与 `mTLS`。
+- **runner 客户端**（`src/runner/control/tls-fetch.ts`）：`AOS_RUNNER_TLS_CA`（可选 `CERT`/`KEY`）触发自定义 `fetch`，使用 `https.Agent` 校验证书并携带客户端证书；未配置时回退全局 `fetch`。`buildRemoteSuiteRuntime`、`web-runner` 控制客户端与默认 Web job 执行器统一注入。
+- **证书要求**：服务端证书 SAN 必须匹配 runner 使用的中心地址（DNS/IP）；客户端证书需由 `AOS_HTTP_TLS_CA` 签发。私钥只放本机、权限建议 0600；不接受明文 passphrase 配置。
+- **运维**：`AOS_HTTP_TLS_CRL` 提供 CRL 文件；`AOS_HTTP_TLS_RELOAD_MS`（默认 30000）按间隔重读证书/key/CA/CRL 并 `setSecureContext`，失败保留旧材料；HTTP/2 在 TLS listener 上默认开启并保留 `allowHTTP1`。**OCSP stapling 由前置代理完成**（Node TLS 无对应 API；示例 `deploy/nginx/aos-mtls.conf`，见 `docs/tls-mtls-proxy.md`），mobile-testing 直连模式用 CRL。
+- **测试**：`test/runner-mtls.test.js` 使用测试 CA/服务端/客户端证书，覆盖带客户端证书 200、无客户端证书握手失败、HTTP/2 请求成功。
+
+
+### 13.285 新增（控制面超时与结果上传实例 fencing）
+
+> 2026-11-02。针对“网络分区导致空闲机器异常/迟到结果”的加固：控制面请求必须有界；结果上传必须绑定当前执行实例。
+
+- **控制面超时**（`src/runner/control/client.ts`、`src/runner/control/suite-client.ts`）：`HttpWebRunnerControl` 与 `SuiteStoreClient` 单次请求加 `AbortSignal.timeout`，默认 15s；`AOS_RUNNER_HTTP_TIMEOUT_MS` 可覆盖。超时进入 `network-error`，web-runner 心跳循环保留上次状态并在下一轮重试，不再无限等待。
+- **数据面超时**（`src/runner/control/tls-fetch.ts`、`src/runner/web-job-runner.ts`）：自定义 TLS fetch 默认 300s（避免大安装包被控制面短超时截断），并响应 `init.signal` 中止；默认执行器的 spec/资产/结果请求也带 `AbortSignal.timeout`。
+- **实例 fencing**（`src/panel/actions.ts`、`src/runner/web-job-runner.ts`）：结果上传请求增加 `X-Mobile-Testing-Instance-Id`（旧名 `X-AOS-Instance-Id` 兼容）；job 的 `claimedInstanceId` 非空时必须完全匹配，否则 409 `instance-mismatch`。执行器从 `WebRunnerControl.instanceId` 注入该头，spec/资产/结果请求统一携带。旧执行机未发送该头时，已绑定实例的 job 会被拒绝（需升级 runner 包）。
+- **保留语义**：未绑定实例的 legacy job 仍允许无头上传；`ingestWebJobResult` 的幂等/迟到结果/更差终态规则不变。
+- **测试**：`test/web-result-ingest.test.js` 增加已绑定 instance 缺头/错头 409；`test/web-job-runner.test.js` 断言 spec/结果均带 `x-mobile-testing-instance-id`；`test/runner-control-http.test.js` 增加控制面超时中止用例。
+- **suite 侧**（`src/runner/control/suite-client.ts`、`suite-http.ts`、`suite-service.ts`、`src/suite-command.ts`）：suite runner 在启动时生成 `AOS_RUNNER_INSTANCE_ID`，注入远程 Runtime 与 runner 子命令；suite 客户端所有写请求带 `x-mobile-testing-instance-id`。`SuiteControlService` 对 `updateTask` / `beginTask` / 带 `regressionTaskId` 的 `recordRun` 校验任务 `claimedInstanceId`，不匹配 409 `instance-mismatch`。读请求仍允许同 host 查看。`AOS_RUNNER_INSTANCE_ID` 只由 runner 内部分配，手工 CLI 不设置。
+- **遗留**：`releaseTask` / `finalizeCancellation` / `ackCancellation` 的实例校验依赖 store 自身；`suite run` 的手工路径没有实例头；网络分区超过 stale 窗口时仍可能留下旧 run 记录，但任务终态与结果写入受 CAS/fencing 保护。
+
+
+### 13.286 新增（工作区项目发现：标记、白名单与 registered 模式）
+
+> 2026-11-02。避免把 `src`/`dist`/`test` 等普通目录或测试临时目录当成项目进入总览。
+
+- **问题**：`buildPanelOverview` 原先对 `--workspace` 下每个非点目录都建行；服务仓库/代码目录、空 `.artemis` 目录、测试临时项目都可能被当成项目。
+- **发现模式**（`src/project-visibility.ts` + `src/panel/overview.ts`）：`AOS_PANEL_PROJECT_DISCOVERY`：
+  - `marker`（默认）：只收带标记的目录：`aos.config.jsonc`、`.artemis/ledger/state.json`、`.artemis/design/tests.json`、`.artemis/design/flows.json`；空 `.artemis/` 不算。
+  - `registered`：完全不扫描工作区目录，只显示台账/DB 已登记项目。
+  - `auto`：恢复旧行为（所有非点目录）。
+- **白名单**：`AOS_PANEL_PROJECTS`（项目名或绝对路径，逗号分隔）优先于标记检查，用于显式纳入无标记目录；同时收窄已登记项目的可见列表。
+- **排除**：既有 `AOS_PANEL_EXCLUDE_PROJECTS`、服务仓库默认隐藏不变；直接项目 URL/显式 `--project` 仍可访问，台账与 runner 不受影响。
+- **UI**：空态提示“带 aos.config.jsonc / .artemis 台账的项目”；`excludedProjects` 计数含白名单/排除隐藏项。
+- **测试**：`test/panel-overview.test.js` 新增默认 marker、auto、registered、白名单四态；既有工作区测试补 `.artemis/ledger/state.json` 标记。
+- **边界**：发现只影响面板/对比/切换器/搜索；已登记但磁盘不存在的项目仍按注册表显示（灰灯），便于排障。
+
+
+### 13.287 新增（执行机依赖工具镜像：Node/adb/JDK/Maestro）
+
+> 2026-11-03。中心不仅托管 runner 代码包，也托管执行机所需官方安装包，避免每台机器分别从外网下载。
+
+- **脚本**（`scripts/fetch-runner-toolchain.mjs`）：`npm run toolchain:fetch` 下载 Node.js 22.22.2（darwin-arm64 `.tar.gz` / win32-x64 `.zip`）、Android platform-tools（darwin/windows）、Temurin JDK 21.0.13+9（darwin-aarch64/windows-x64）、Maestro CLI 2.12.1（共享 zip）；固定 SHA-256，platform-tools 下载后计算；产物在 `dist-toolchain/files`，生成 manifest；`--platform` 可只取一端。
+- **服务端**（`src/panel/toolchain-route.ts` + `src/http-server.ts`）：`GET /panel/runner-toolchain` 需面板鉴权；Accept HTML 返回按平台分组的下载页，JSON 返回 manifest；`?file=<filename>` 流式下载，文件名必须在 manifest 中，`Content-Disposition`/`Content-Length`；`AOS_RUNNER_TOOLCHAIN_DIR` 可改目录。
+- **UI**：设备页「接入执行机」增加「下载 Mac/Windows 依赖工具」链接；原有 runner 包继续提供 `dist+node_modules`，不含工具链。
+- **边界**：Maestro 是 JVM CLI，Windows 原生 CLI 支持取决于 Maestro；若不支持，页提示使用 WSL/Linux 工具链。macOS iOS 模拟器仍需 Xcode，不镜像（Apple 许可/体积）；`dist-toolchain/` 与下载物不入 git。
+- **测试**：`test/runner-toolchain.test.js` 覆盖 JSON/HTML/文件下载/未知文件/未构建；设备页测试断言依赖页链接。
+
+
+### 13.288 新增（执行机完整离线包：runner + 平台工具）
+
+> 2026-11-03。修正“只提供 runner 代码包”的误解：Windows/macOS 包内置 Node.js/adb/JDK/Maestro，解压即用。
+
+- **构建**（`scripts/build-runner-bundle.mjs`）：先 `npm run toolchain:fetch`，再把 `dist-toolchain` 各平台工具解压进 `tools/`：`node/`、`platform-tools/`、`jdk/`、`maestro/`；生成 `runner.cmd`（Windows，设置 PATH 并调用内置 `node.exe`）和 `runner.sh`（macOS，设置 PATH/JAVA_HOME 并调用内置 node）；包根 `README.md` 只保留 3–4 步接入说明，不再复制项目根 README。
+- **平台**：`win32-x64.zip`、`darwin-arm64.tar.gz` 为 full（`includesTools:true`）；`linux-x64.tar.gz` 为 app-only（无工具链下载）。`--platform=darwin-arm64` 可只重建一端，并合并 manifest，避免重打 600MB 的另一端。
+- **边界**：macOS iOS 模拟器仍需 Xcode；Windows Maestro 使用包内 `maestro.bat` + JDK；工具版本由 toolchain manifest 固定。完整包约 600MB，下载仍受面板鉴权；`dist-runner/` 与 `dist-toolchain/` 均不入 git。
+- **测试**：`test/runner-toolchain.test.js` 覆盖工具下载页；包内容通过 `tar -tzf`/`unzip -l` 抽查 `tools/node`、`platform-tools`、`jdk`、`maestro` 与 runner wrapper。
+
+### 13.289 修复（顶栏「切换项目…」占位项无法回首页）
+
+> 2026-11-04。用户反馈：顶栏项目切换器选中「切换项目…」后页面没有更新；该占位项应回到首页。
+
+- **原因**：切换器 `<select>` 的占位项 `value=""`，`onchange` 为 `if(this.value)location.href=this.value`，空值分支直接跳过，因此选择占位项不会导航（仍停在当前项目页）。
+- **修复**：`renderConsoleShell` 在 `<select>` 上写入 `data-home`（取 `brandHref`，面板为 `/panel`，独立统计进程为 `/usage`）；`onchange` 改为 `location.href=this.value||this.dataset.home`。选择具体项目仍打开该项目首页，选择占位项回对应控制台首页。
+- **测试**：`test/console-shell.test.js` 断言 `data-home` 与新的 `onchange`，并覆盖独立统计进程回 `/usage`。
+
+### 13.290 修复（面板页面陈旧：轮询不刷新顶栏、reload 命中进程内缓存）
+
+> 2026-11-04。用户反馈下发项目/已上传 Excel/顶栏项目偶发「丢失」，复核为**页面没有刷新**（陈旧 UI），不是数据丢失或主机切换语义问题。
+
+- **根因**：① `livePollScript` 只替换 `#console-main`，顶栏 `.c-switcher` 与 `.c-topbar-meta` 保持首屏；项目/资产变化后主区已更新、顶栏仍显示「切换项目…」。② 轮询 `fetch(location.href)` 未带 no-store，浏览器可能复用缓存。③ 独立 `panel --web` 的 `/panel`、`/panel.json`/`/panel/api/hosts` 未发 `Cache-Control: no-store`；HTTP 模式只给 `/panel` 发了。④ 手动 reload 仍可能命中 5s 进程内缓存（写动作会 clear，runner 心跳等外部变化不会）。⑤ bfcache 返回旧页。
+- **修复**：轮询同时替换顶栏切换器（焦点保护）与 top meta，fetch 带 `cache:"no-store"` + `X-AOS-No-Cache:1`；两个服务端对 `/panel`、`/panel.json`、`/panel/api/hosts` 统一 `Cache-Control: no-store`；`handlePanelRequest` 支持 `noCache`（识别 `X-AOS-No-Cache` / `Cache-Control: no-cache|max-age=0` / `Pragma: no-cache`）绕过进程内缓存；shell 注入 `pageshow`（`e.persisted` → reload）。
+- **撤回**：本轮早前为上述症状加的「下发切换主机保留 project」与「切换器注入当前项目」兜底已撤回，恢复 §13.155 的主机切换语义；真实根因是顶栏未刷新，不是主机切换丢项目。
+- 2026-11-04 §13.296 重新引入「切换主机保留显式 project」，并补目标主机未登记项目的保留+提示，避免静默清空。
+- **测试**：`console-shell` 断言轮询 header/顶栏替换/pageshow；`panel-web` 断言 `noCache` 绕过 TTL；`panel-command` 断言 `/panel`、`/panel.json` 带 no-store。
+
+### 13.291 修复（面板表单对齐与控件规格统一）
+
+> 2026-11-04。用户反馈控制台「不对齐问题有点多」，截图集中在定时任务表单；同类问题在网页测试、测试资产、新增项目与隔离表单也存在。
+
+- **控件规格**：`src/console/tokens.ts` 为 `.c-main` 内文本/数字/日期/搜索输入、`select`、`textarea` 统一字体、36px 最小高度、内边距、边框、圆角、焦点环与禁用态；复选框/单选框统一 16px + `accent-color`；文件选择按钮改成 CSDC 胶囊按钮样式，与「上传」按钮同高。
+- **表单布局**：`.c-form` 改为无 max-width 的 18px 间距网格；`.c-form-row` 两列（主字段 `1fr` + 间隔字段 `auto`）；`.c-form-field` 标签与控件同行且不换行；`.c-form>p` 的旧式行表单自动变为标签在上、控件等宽、`auto-fit` 换行的栅格；`.c-check-grid` 改为 `repeat(auto-fit,minmax(10rem,1fr))` 等宽列；`.c-form+.c-empty/.c-table-wrap` 补 18px 间距；≤768px 降为单列。
+- **页面**：定时任务（名称/间隔/功能/端/空态）；网页测试（移除与外层卡片标题重复的 `fieldset/legend`，表单接 `.c-form`）；测试资产（上传/生成脚本/列映射三表单接 `.c-form`）；新增项目与隔离表单接 `.c-form`，复选框标签用 `.c-form-check` 保持同行。
+- **验证**：Edge headless 1600px 与 390px（CDP 设备指标）截图检查；`impeccable detect --scope layout` 0 项；全量 **2971 绿**，lint 0 error（2 条既有 warning）。
+
+### 13.292 修复（下发端多选 / runner 在线 TTL / iOS 门禁 / 预览回执绑定）
+
+> 2026-11-04。Matt Pocock 两轴复核后，先修明确的功能 bug（不动「单一向导 vs 网页测试」的 IA 决策）。
+
+- **端多选**：`dispatchPlatforms` 用 `URLSearchParams.getAll("platforms")` + 逗号拆分 + 去重排序；`dispatchFormSignature` 与 `computeDispatchPreview` 同源。此前两处都用 `get("platforms")`，GET 表单重复参数只读第一个，勾选 iOS 后预览会丢端，两端无法一起确认。
+- **runner 在线**：`runnerCandidates` 改用 `isRunnerOnline(..., runnerTtlFrom(env))`（默认 90s），删除硬编码 `5 * 60_000`；避免确认摘要把早已失联的执行机显示成在线。
+- **iOS 门禁**：`precheckTask` 改为 `osPlatform === "darwin"`，不再用 `kind === "mac"` 兜底（D3：iOS 仅 darwin）。
+- **预览回执**：`dispatchPreviewId` 哈希加入 `selectedHostId` 与项目 `rootPath`；页面与 `POST /panel/api/tasks` 的 `checkDispatchPreviewFreshness` 同式复算，换主机/项目即 409，不能复用旧回执。
+- **测试**：`test/console-dispatch.test.js` 新增重复 platforms 两端、runner 120s 失联/TTL 可配、iOS 非 darwin 拒绝、previewId 随 host/项目变化；相关页面/动作测试更新为带 `rootPath` 复算。全量见完工验证。
+
+### 13.293 调整（套件回归/网页测试分流；仅主机入口显式选项目）
+
+> 2026-11-04。Matt Pocock Spec 复核后处理两项遗留：下发向导 IA 与「只给 host 自动猜项目」。
+
+- **流程决策**：保留两条执行管线（套件回归 `section=dispatch`；网页测试 `section=jobs` + 测试资产），不把 Web job 合并进套件向导——执行方式、资产（Excel/安装包/脚本）与选机合同不同，合并会混淆语义。以显式分流代替隐式共用一个「下发」入口：
+  - 导航「下发」改名 **「套件回归」**；网页测试导航改名 **「网页测试（安装包）」**；
+  - 套件页顶部常驻 `c-flow-switch`（套件回归当前 / 网页测试链接，带 project+host）与 **安装包 callout**（「要下发安装包（APK/IPA）？」→ 去网页测试上传/选择）；确认区也有同样链接；
+  - 网页测试页顶部反向 switch 回套件回归；
+  - 套件页「来源」区常驻 Excel 指引：套件 Excel 走 **用例库导入**（`section=library#library-import`，导入后作为用例集再下发），网页测试 Excel 走 **网页测试**，不再把 web 资产误认为套件用例集。
+  - **安装包上传**：`测试资产` 上传表单增加类型（Excel / 安装包），支持 `.xlsx/.csv/.apk/.ipa`；上传卡移到页面最上方并带 `#asset-upload` 锚点；新增「安装包资产」版本表；网页测试页安装包下拉为空时给「去测试资产上传 .apk/.ipa」按钮（带 `kind=package#asset-upload`，打开即预选安装包并滚到上传卡），上传后即可在网页测试选择并下发。上传区复用 `c-dropzone`：支持点击、键盘 Enter/Space 与**拖放文件**；drop 只校验类型并填充文件名/提示「已选择文件，点击『上传资产』」，**不自动提交**（避免一次拖放就产生资产版本）。
+  - **Excel 双向通用**：用例库 `importTestDocument` 成功后把源 Excel 副本登记为 Web 测试资产（`kind:excel`，按 sha256 去重；登记失败只追加 warning，不阻断导入）；测试资产 Excel 行新增「导入用例库」按钮，`POST /panel/api/import {project,assetId}` 直接以该资产的 `storagePath` 导入，并以上传资产原始 `filename` 作为 sourceId/basename（重复导入同一资产按 existingSets skip，不产生重复用例集）；同 sha 的自动登记会跳过。同一份 Excel 因此不再需要分别上传两次；已有历史导入的源副本可通过测试资产一次性上传补齐。
+  - 原 shape brief 的「①来源 Excel 导入」由上述用例库导入入口承接；若要真正的单向导内嵌上传，另立任务（不在本次）。
+- **仅主机入口**：`buildView` 删除「取该主机 `lastSeenAt` 最新项目」的自动回填，改为渲染「未选择项目」下发页并列出该主机全部项目（`computeDispatchPreview` 对空 rootPath 跳过「未登记项目」告警，追加「请先选择项目」提示）；项目下拉保留 `（选择项目）`，未选项目时确认禁用。对齐 spec §12.1「只给 host 时列出项目让用户选，不猜」，覆盖 DESIGN §13.155 的自动回填。
+- **FileStore 主机作用域项目列表**：`scopeHost(hostId).listProjects()` 改为逐 bucket 读取该 host 的项目（此前直接返回全局 registry 且 `hostId` 恒 NULL，导致文件台账下主机项目下拉为空）；未作用域 `listProjects()` 保持 NULL-host 兼容。MemoryStore 的 `listProjects()` 保持全量（取消清扫 `allHosts` 依赖中心视图），下发/队列深度调用方按 `hostId` 过滤。`hostQueueDepth` 改用作用域项目列表并过滤 host。
+- **测试**：`panel-dispatch-project-priority` 的「缺 project 选最近项目」改为「列出全部项目、无 selected、确认禁用」；`console-dispatch` 断言 flow switch、Excel 导入指引；`web-dispatch-ui` 断言反向 switch。
+
+### 13.294 调整（HTTP/1 keep-alive 65s，Windows runner fetch failed）
+
+> 2026-11-04。Windows runner 5s 轮询与 Node HTTP 默认 `server.keepAliveTimeout=5s` 在边界竞争，偶发 `fetch failed`。
+
+- **实现**：非 TLS HTTP 服务创建后设置 `keepAliveTimeout=65_000`、`headersTimeout=66_000`（`src/http-server.ts`）；TLS/HTTP2 分支保持默认（HTTP/2 无同款 keep-alive 竞争）。
+- **测试**：`test/http-server.test.js` 用 `http.get('/healthz')` 断言响应 `Keep-Alive: timeout=65`。
+- **边界**：只影响 HTTP/1 连接生命周期，不改请求/响应语义；Windows runner 仍应按 `AOS_RUNNER_POLL_MS` 轮询。
+
+### 13.295 新增（Web 手工 Excel：简繁英解析、尽力生成与 LLM 规范化）
+
+> 2026-11-04。用户反馈英文手工 Excel 在网页测试生成 0 ready/409；根因不是上传，而是生成器 all-or-nothing：任一步骤未识别即整条用例 unresolved，且 `splitLines` 把 `(A random code)` 这类续行当独立步骤。
+
+- **续行合并**（`src/web/excel.ts` `splitStepLines`）：仅当块内存在编号/项目符号行时才把无编号行合并到上一步；无编号块保持原有逐行行为；首个编号行之前的说明/标题行丢弃，不当作步骤（避免步骤号与断言错位）。`preconditions` 仍用 `splitLines`。
+- **语言覆盖**（`src/web/step-parse.ts`）：简/繁/英统一动作词表——`点击/點擊/點一下/輕觸/按下/選取`、`输入/輸入/填寫/鍵入`、`查看/檢查/驗證/核對/檢視/瀏覽`、`进入/進入/前往/轉到`、英文 `go to/tap/input/verify/check/scroll/back/wait`。标签保留原文，不翻译。
+- **相对定位**：`ParsedSelector{text,relation?}` 支持 `rightOf/leftOf/below/above`；`next to/beside` 先推断 `rightOf` 并记 `relation-inferred:rightOf`；`right of/left of/below/above/under` 映射对应关系。生成 YAML 用 `tapOn:\n    rightOf: 'X'`。
+- **手工英文输入**：`Tap the "OK" button` → `tapOn "OK"`；`Input invalid referral code (A random code)` → 字段 `referral code` + 确定性 `AOSINVALID0001`（`input-value-generated`）；`e.g A23b8C --> a23B8c` → 值 `a23B8c`（`input-value-example`）；`check/verify` 只作为断言落点，不生成点击。
+- **尽力生成**（`ScriptGenOptions.bestEffort`）：未识别步骤不再让整条用例失败，而是写 `# aos:manual step=N reason=CODE` + `# aos:manual-text ...` + `takeScreenshot: aos-<caseId>-step-N`，继续执行其余步骤。`assertion-step-out-of-range`/`assertion-text-invalid` 在 bestEffort 下同样转 manual 标记+截图（`partial`），不静默跳过断言后让其余断言把用例判绿。strict 行为不变。
+- **计数与写入**：`ready`＝完整可执行；`partial`＝有 manual 的可执行；`unresolved`＝无 flow；`runnable=ready+partial`。`storeScriptSet` 用 `runnable===0` 拒绝（旧 bundle 回退 `ready`），0 完整但有 partial 时允许写入。manifest 增加 `bestEffort`、`counts.partial/runnable`、`cases[].partial/manualSteps`、`normalizer/llmCases/normalizerWarnings`。
+- **不假绿**：runner 从顶层 flow（含 `runFlow` 子流程）解析 `# aos:manual`，上报 `manualSteps`；`deriveCaseVerdicts` 对 `status=PASS` 且 `manualSteps.length>0` 的用例降级 `UNVERIFIED`（reason `manual-step`），写回 Excel `UNVERIFIED`；PASS 口径不变。脚本集 metadata 同时写 `manualCases`，中心 ingest 读取它作为**旧 runner 漏报 manualSteps** 的兜底：脚本集标记 partial 的用例即使 payload 没有 manualSteps 也降级。
+- **受控 LLM 规范化**（`src/web/step-normalizer.ts`）：active LLM 可用时把每个手工用例转成受控 JSON `{steps:[{step,actions,confidence,note}]}`；只允许 `launch/tap/input/verify/scroll/back/wait/manual`；`target.text` 必须在原文（步骤/用例名/预期/前置）或系统标签白名单中，模型发明的标签直接拒绝并回退规则；动作类型必须匹配步骤动词（tap/input/launch 步骤不能只剩 verify/launch）；input 值必须出现在原文，或为 `A random code` 场景生成的 `AOSINVALID0001`；`next to`→`rightOf`、`right of/left of/below/above/under` 映射；`Complete TC_XX`→`manual depends-on:TC_XX`；模型不直接写 YAML。失败/超时/非法 JSON → 回退规则并记 `llm-normalize-failed:<caseId>`。
+- **前置条件 auto**：面板/CLI `preconditionMode:"auto"` 在 `bestEffort=true` 时解析为 `assume-prepared`（`clearState:false/stopApp:false`，记 `precondition-assumed`），否则 `strict`；manifest 记录解析后的模式，不记录 `auto`。
+- **入口**：面板「测试资产 → 生成 Maestro 脚本」默认勾选「尽力生成」、前置条件 `auto`、AI 解析 `auto`；请求字段 `bestEffort/useLlm/preconditionMode:"auto"`，响应 `ready/partial/runnable/unresolved/normalizer/llmCases/llmModel/normalizerWarnings`，结果表增加「手工步骤」，脚本集资产表增加 `partial` 列。CLI `web scripts generate` 支持 `--best-effort`、`--precondition-mode auto`，`--best-effort` 与面板一致启用 `inferNavigationTap`，exit 0 以 `runnable>0` 为准。
+- **边界**：本段不实现设备上的 LLM 观察执行器/发现；manual 步骤仍需人工或后续 agent；LLM 规范化只处理文本，不读取设备截图；计费/token 明细仍按后续计划。
+- **测试**：`web-script-gen`（续行/繁体/英文/相对定位/bestEffort/断言越界/不安全断言）、`web-script-set`（partial/runnable/旧 bundle 回退）、`web-step-normalizer`（受控 JSON/幻觉标签/动作类型/输入值/回退）、`web-script-generation`（normalizer/auto/CLI 导航推断）、`web-executors`/`web-job-runner`（manual 上报/子流程/payload）、`web-result-ingest`/`web-verdicts`（PASS→UNVERIFIED/脚本集 metadata 兜底）、`panel-script-gen`/`web-assets-ui`（面板字段/partial 列）；全量 3013 绿，lint 0 error。
+
+### 13.296 修复（套件下发切换主机保留显式项目）
+
+> 2026-11-04。用户反馈在「套件回归 → ⓪ 主机与项目」切换目标主机时，已选项目被清空；根因是 `dispatch-host-nav` 显式丢弃 `project`（§13.155/§13.290 语义）。
+
+- **host nav**：切换主机时同时带上当前 `project`（仅当项目选择器有值）；仅 `host` 入口仍不自动猜项目，缺 project 时列出该主机项目并提示选择。
+- **目标主机未登记项目**：显式 host + 项目路径经 `resolveProjectKey` 工作区兜底解析；`computeDispatchPreview` 保留 `<option ... selected>项目（当前项目）</option>` 并显示「该主机尚未登记项目」，确认禁用；不再静默清空，也不把项目串到其他主机。
+- **边界**：套件下发仍要求项目在目标主机登记；网页测试走 `section=jobs`，执行机不需要项目目录。
+- **测试**：`test/panel-dispatch-project-priority.test.js` 覆盖 host nav 保留 project、目标主机未登记时保留当前项目+禁用确认；全量 3013 绿，lint 0 error。
+
+### 13.297 修复（网页测试/主机选择保留与同类审计）
+
+> 2026-11-04。用户指出 `win-mini-01` 不需要登记 ESSO-GU；审计 host/project 选择丢失与“项目登记”假设。
+
+- **网页测试项目选择**：`section=jobs&host=X` 且未选项目时，`buildView` 保留 `hostParam`；项目选择链接用 `data.hostId ?? choice.hostId`，选项目后不再丢主机。
+- **套件空态 CTA**：无项目主机的「网页测试」链接带当前 host（`dispatchHostQuery`），不再跳到无 host 的 jobs 页。
+- **设备页任务链接**：设备上运行中的 web job 详情链接带 `host=<设备所属主机>`。
+- **套件来源空态**：目标主机未登记项目时，来源卡片不再只渲染空下拉；用例集选择禁用，显示「该主机未登记项目，套件回归没有可用用例集」，顶部 callout 直接给出去网页测试的 CTA（保留 host）。用例集仍从**目标主机作用域 store**读取，不把其他主机/项目的数据串过来。
+- **审计结论**：套件链路（`computeDispatchPreview`、面板 `createTask`、`suite-service`）的「未登记项目」是套件 runner 需要项目目录/用例集的前提；网页测试是 host 级执行，不要求项目登记。已验证 `section=jobs/assets/library` + `host=win-mini-01` + ESSO-GU 均 200，`/panel/api/jobs/preview` 返回该主机的设备。`usage --host` 的项目过滤只影响查询，不阻断执行。顶部项目切换器仍按项目自身 host 导航（全局导航，不携带当前执行 host）。
+- **测试**：`test/web-dispatch-ui.test.js` 新增「无项目 jobs 页保留 host」；`test/panel-dispatch-project-priority.test.js` 覆盖空态 CTA 保留 host、来源空态原因/禁用/网页测试出口；全量 3014 绿，lint 0 error。
+
+### 13.298 新增（测试资产：materials 上传与绑定 UI）
+
+> 2026-11-04。用户反馈网页测试「测试资料」下拉只有「不指定」，不知道去哪里补充。
+
+- **测试资产页**：上传类型增加「测试资料（materials）」，支持 `.zip/.json/.csv/.txt`；`secret` 复选框仅对 materials 生效。上传后新增「测试资料资产」表（文件名/版本/大小/secret/sha256/时间）。
+- **网页测试表单**：`测试资料` 下拉读取 materials 资产；修复空资产时出现两个「不指定」占位的问题（`assetOptionsWithPlaceholder` 统一只输出一个占位 + 资产项）。
+- **API**：复用既有 `POST /panel/api/projects/assets`（`kind=materials`、可选 `secret=true`）；`storeWebAsset` 对 secret materials 落 0700/0600，runner 下载到 `jobDir/secrets/`，不进 CAS。
+- **边界**：本次只做上传/版本/绑定 UI；把 materials 键值注入 Maestro `-e` 的格式与 secret 安全通道仍待接线（不能把 secret 放命令行）。`materialsAssetId` 已进入 job spec 并由 runner 下载。
+- **测试**：`web-assets-ui` 覆盖 materials 类型/secret/资产表/客户端扩展名；`web-dispatch-ui` 覆盖 materials 下拉只有一个占位；全量 3014 绿，lint 0 error。
+
+### 13.299 调整（导入用例集 markdown 不重复真实数据条款）
+
+> 2026-11-04。用户反馈 case-set `.md` 每个 `mobile_run_task` 块都重复完整【真实数据】条款，像提醒刷屏。
+
+- `renderImportedMarkdown`：人类可读 md 顶部只提示一次执行约束；代码块中的 taskDesc 去掉 `REAL_DATA_CLAUSE` 整行。
+- `tests.json` / xlsx 隐藏执行器 sheet 的 taskDesc 仍保留完整条款，`suite check` 的【真实数据】硬门禁不变。
+- 已有项目 case-set md 已按同一规则回填（仅展示层，不改 JSON/taskDesc）。
+- **测试**：`workflow-excel-import` 断言 md 只出现一次 marker、code fence 不含完整条款、JSON taskDesc 仍含 marker；全量 3014 绿，lint 0 error。
+
+### 13.300 新增（产物 Markdown 阅读器：用例卡片/步骤/预期/折叠执行器指令）
+
+> 2026-11-04。用户反馈 case-set `.md` 以原始 Markdown 打开，像代码页、不美观；要求“有秩序”。
+
+- **阅读器**：`.md` 产物在浏览器 `Accept: text/html` 下渲染阅读器；`?raw=1` 或非浏览器请求仍返回原始 `text/markdown`。
+- **结构化用例**：识别 `# 导入测试用例集` 结构——顶部来源/导入时间/执行约束（黄色 meta），每个用例一张卡：编号 badge、标题、模块 pill、前置、编号步骤、预期结果 callout；`mobile_run_task` 折叠为「执行器指令 / agent 读取」。
+- **通用 Markdown**：其他 `.md` 走轻量渲染（标题/引用/列表/代码围栏）；原始 HTML 转义，不生成 `javascript:` 链接。
+- **展示层**：现有 case-set md 无需重新导入；同一文件即按新阅读器展示。原始 Markdown 仍可一键查看/复制。
+- **测试**：`panel-artifact-route` 新增 Markdown 阅读器、结构化用例卡、XSS 转义；全量 3016 绿，lint 0 error。
+
+### 13.301 调整（档案产物索引按用例集分组）
+
+> 2026-11-04。用户反馈产物索引把同一用例集的 md/json/xlsx/source 拆成多行，路径重复、时间列拥挤，不像索引。
+
+- **分组**：`case-set` 按文件 stem 分组（去 `.md/.json/.xlsx/.source.xlsx`），一行显示名称 + `MD / XLSX / JSON / 源 Excel` 格式 chips；其他 kind 保持单行（目录/报告/差异/崩溃/轨迹）。
+- **列**：`类型 / 名称 / 位置 / 更新时间 / 大小`；位置对用例集只显示目录 `.artemis/design/case-sets`，完整路径放在 chip `title`；更新时间只渲染一次；大小显示 `N 文件 · 总大小`。
+- **计数**：卡片 subtitle 与分页显示 `本页 X 组 · Y 个文件`，不再把 13 个文件说成 13 项。
+- **测试**：`console-pages` 新增用例集 md/json/xlsx 分组断言；全量 3017 绿，lint 0 error。
+
+### 13.302 新增（数据源 P0：默认部分下发、来源解耦、脚本集惰性生成/重建、过滤生效）
+
+> 2026-11-04。外部评审「小修后通过（无 K）」后修订并实施 P0（R1/R2/R3/R4/R11）；完整方案见 `docs/superpowers/specs/2026-11-04-data-source-restrictions-design.md` v2。旧平台 spec（2026-10-28）的 `allowPartialUnresolved` 默认值已被本节取代。
+
+- **状态**：P0 已实现；全量 3037 测试绿、lint 0 error。R5/R6/R7/R10 与 L2/L6 仍待排期。
+- **数据源归项目，执行归主机**：套件回归的来源读取不再依赖目标主机是否登记项目；目标主机未登记时仍禁止执行，但来源可见并显式示因（`DispatchPreview.sourceStore{tier,hostId,error}`，读取失败不回落空下拉）。目标主机登记项目时永远读目标 store，保持预览/执行一致。
+- **脚本集惰性生成**：Web 测试不选脚本集也可下发；`createWebJob` 在 maestro 且无脚本时按当前 Excel/包以 rules-only + bestEffort + precondition auto + inferNavigationTap 生成；`runnable=0` 才拒绝。生成失败映射 400 `script-generation-failed`，墙钟超时 400 `script-generation-timeout`（下发路径 `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` 默认 30000，0 关闭；手工生成默认不设墙钟，env 显式设置才生效），未预期异常仍 500 并留审计。
+- **幂等**：`web_assets.dedupe_key` 可空列 + `(root_path,kind,dedupe_key)` 唯一索引；生成的脚本集写 sha256，普通上传保持 NULL（不改变“重复上传=新版本”语义）。`storeScriptSet` 在文件锁内查/插，Postgres 命中 23505 时读回已有行；不新增 PG advisory lock。生成 manifest 无时间戳/随机字段，同输入 sha 稳定（测试守卫）。
+- **过期重建**：显式脚本集与当前 Excel/包/平台不匹配（含未声明绑定）时，默认自动重建并替换；响应带 `rebuiltScriptSet{from,to}`、warning `script-set-rebuilt`，审计 `web.scripts.generate` 的 `trigger=rebuild`；重建失败 409 `script-set-rebuild-failed`。`allowStaleScript:true` 保留旧脚本并 warning `stale-script`。
+- **过滤生效**：脚本 manifest 的每个 case 带 `module` 与 `flow`；runner 从 `flowsDir` 父目录读 manifest，按 `caseIds`（原始 caseId，支持中文/空格）与 `modules` 过滤，并把选中的 flow 文件路径传给 Maestro（不再只过滤结果映射）；旧 manifest 回退 stem 匹配，无 manifest 的模块过滤仍显式 `case-filter-modules-unsupported`。
+- **评审后修复**：旧 PG schema 先 `ALTER TABLE ... ADD COLUMN` 再建 dedupe 唯一索引（避免 SCHEMA 先跑导致升级失败）；runner 解压 `manifest.json`＋`flows/` 到 jobDir 同级（否则嵌套 `flows/flows` 导致 `no-flow-files`）；目标主机未登记但 owner 有用例集时来源下拉保持可用；`storeScriptSet` 加跨进程文件锁；全不可用错误带逐例 caseId；面板手工生成超时映射 400 `script-generation-timeout`；中文/空格 caseId 的截图按 flow stem 映射；显式脚本 `runnable=0` 拒绝；`executionMode=llm` 不触发脚本重建。未就绪用例实际写 `SKIP（未执行）`。
+
+### 13.303 新增（Web 下发过滤预览：匹配数 / 未就绪数）
+
+> 2026-11-04。接 §13.302 R7/L5：过滤条件填了不匹配值时，不再等到结果页才发现。
+
+- **端点**：`GET /panel/api/jobs/script-preview?project=&excelAssetId=&packageAssetId=&platform=&caseModules=&caseIds=`（只读，viewer 也可用）。内部 `generateScriptSetForProject({dryRun:true,bestEffort:true,preconditionMode:"auto",inferNavigationTap:true})`，rules-only、不写 scripts 资产、不调 LLM。
+- **返回**：`matched`（过滤后用例数）、`filteredOut`（总用例−匹配）、`ready`/`partial`/`unresolved`/`runnable`、`unresolvedByCode`、`warnings`。`caseModules`/`caseIds` 支持逗号分隔与重复参数；两者同时给时取交集。
+- **面板**：用例范围下方「检查匹配」按钮；显示“匹配 N 条：可执行 X（完整 Y / 部分 Z）/ 未就绪 U（将 SKIP）”，0 条时提示检查模块/用例 ID；不选 Excel/安装包时提示先选择。
+- **测试**：`web-dispatch-ui` 覆盖匹配/过滤数、未知模块 0 条、dry-run 不写资产、坏 Excel → 400 `excel-unreadable`、表单按钮/端点存在；全量 3038 绿。
+
+### 13.304 新增（APK/IPA 推断 appId）
+
+> 2026-11-04。接 §13.302 R6：项目未配置 `appPackage` 且未传 `--app-id` 时，best-effort 从安装包推断。
+
+- **入口**：`generateScriptSetForProject` 的 appId 解析顺序 `显式 appId → 项目 appPackage → 安装包推断`；推断失败仍抛 `app-id-missing`（提示可手填/配置/上传可解析包）。
+- **APK**：用 `jszip` 读取 `AndroidManifest.xml`；文本 XML 直接取 `<manifest package>`；二进制 AXML 解析 string pool + start element 的 `package` 属性（无 `aapt2` 依赖）。
+- **IPA**：读取 `Payload/*.app/Info.plist`；XML plist 正则取 `CFBundleIdentifier`；二进制 plist 在 macOS 经 `plutil -convert xml1` 转 XML，其他平台 best-effort 失败返回 null。
+- **边界**：只推断，不改项目配置/资产；推断结果经平台 appId 正则校验，非法/失败不采用；manifest/plist 单文件上限 5MB；不引入 `aapt2`/Android SDK 依赖。
+- **测试**：`package-inspect` 覆盖 AXML、文本 APK、IPA、坏 zip；`web-script-generation` 覆盖项目未配置 appPackage 时从 APK 推断。全量 3042 绿。
+
+### 13.305 新增（用例库导入支持 CSV）
+
+> 2026-11-04。接 §13.302 R5：用例库不再只收 `.xlsx`。
+
+- **读取**：`readCaseSheet` 按扩展名分派；`.csv` 用 `src/web/csv.ts` 的 `decodeCsv`（UTF-8/GB18030 + BOM）与 `parseCsv`（引号/单元格内换行/逗号），上限沿用 10000 行 × 200 列；首行表头，空行尾部裁剪。
+- **归档**：CSV 导入仍生成 `tests.json/md/xlsx` 三件套；源副本按源扩展名保存为 `.source.csv`，跳过导入时按 `.source.xlsx`/`.source.csv` 查找；CSV 同时登记为 Web 测试资产（metadata `format:"csv"`）。
+- **边界**：不把 CSV 当 xlsx 解析；不做合并单元格/多 sheet（CSV 无此概念）；导出仍为 xlsx。
+- **测试**：`workflow-excel-import` 覆盖 CSV → 三件套 + `.source.csv` + Web 资产 + 重复导入 skipped。全量 3043 绿。
+
+### 13.306 实现中（P0 Node 骨架）：Web LLM 执行接线（R10）
+
+> 2026-11-04。P0 Node 骨架已落地（领取隔离/设备网关/worker/ARTEMIS 适配/Excel 用例/center-only UNVERIFIED/Node 脱敏/L1/CLI）；ARTEMIS 侧 hooks、gateway 安装控制面与面板接线仍未完成，`executionMode=llm` 暂不应在生产开启。完整方案见 `docs/superpowers/specs/2026-11-04-llm-execution-design.md`。
+
+- **路线（2026-11-04 决策：必须远程）**：中心 LLM 执行 + 远程设备网关；runner 只做设备宿主/租约/健康检查/安装，中心主动不连 runner，runner 用 SSH 反向隧道（WSS 可选）连中心。P0 单实例、隧道与 worker 同宿主；runner 内置 ARTEMIS 或动作 RPC 仅作备选。
+- **Key/数据边界**：LLM key 只在中心；Excel/taskDesc 可发 LLM，但账号/密码/token/邮箱/手机号等在进 LLM 前脱敏，执行时用 `<secret:alias>` 占位符注入；未绑定账号在严格模式直接拒绝。**强制点在 ARTEMIS hook（观察/动作/trace/usage）+ 中心入口，不在 Worker 外层假装完成；hook 不可用则 fail-closed。**
+- **Android 隧道**：ARTEMIS Android 实际走 adb/uiautomator2（不是 Appium）；P0 转发 runner 本机 **adb server**，USB 设备无需 `adb tcpip`；Appium-Android 仅作 P1 备选。安装走 gateway 控制面，不把大包塞 adb 隧道。
+- **证据**：L1 确定性检查在**原始未脱敏证据**上评估（不过模型）；L2 可选 reference pack；L3 独立 verifier 只看脱敏证据、只能降级不能升级。无 L1/L2 → `UNVERIFIED`，不判 PASS；散文无锚点不产 L1。
+- **UNVERIFIED 契约**：现有 `WebResultVerdictStatus`/Excel/聚合已支持；缺的是中心 LLM Worker 直连 ingest 入口。**不把 UNVERIFIED 加进 runner 上报枚举**，HTTP runner 仍只收 PASS/FAIL/SKIP/ERROR。
+- **计费**：`data_engine.db`/`status.json` 必须回传；token 缺失写 `token-unavailable`，不写 0；首跑/重试/verifier 的所有 token 都计入，按 attempt/phase 拆分；计费事件幂等键含 requestId/attempt。
+- **预算**：任务上限按用例数×单例超时×(1+重试) 派生，默认 8h 上限；per-case 步数/token 超限 `budget-exceeded`。iOS Web LLM 支持 `AOS_WEB_LLM_MAX_STEPS`（覆盖 iOS 默认 30 步）与 `AOS_WEB_LLM_MAX_TOKENS_PER_CASE`（主模型/视觉/验证累计，超过即 `failed`，已发生 token 仍计费）；用例超时会 abort 执行 signal，不再继续轮询。
+- **已实现（P0 Node 骨架）**：
+  - `regression_tasks.execution_mode` 列 + `claimWebJob(executionMode)` 双端硬过滤；
+  - `web_runners.gateway` + runner SSH `-R` 网关（`AOS_GATEWAY_*`）、端口冲突 409；
+  - `web llm-worker`：领取/逐例执行/预算/超时/取消/租约释放；
+  - `executeAndroidLlmCase`：`mobile_run_task`→`mobile_manage_task`→trace/status/`data_engine.db`，token 读取，ARTEMIS `test_summary` + 预期文本 L1；
+  - `loadLlmCases`：Excel/CSV → taskDesc；`ingestLlmResults`：center-only UNVERIFIED、Excel 写回；
+  - Node 侧 secret inventory/脱敏/占位符注入；未绑定账号 fail-closed。
+- **iOS P0b（2026-11-04，代码完成/真机待验）**：
+  - **Appium 网关**：runner 建第二条 `ssh -R`；`AOS_GATEWAY_APPIUM_PORT`（中心侧，默认 15038）、`AOS_GATEWAY_LOCAL_APPIUM_PORT`（runner 侧 Appium HTTP，默认 4723）、`AOS_GATEWAY_APPIUM_URL`（外部已可达的完整 URL，设置后不建隧道）。未设置覆盖时，建隧道前探测 `GET /status`，不可达则不转发并写 `appiumUrl:null`（中心任务 `ios-appium-unavailable`）；WDA 8100 由 Appium 经 USB 管理，不直接转发。
+  - **按 host 隔离**：worker 按 `targetHostId` 读 `web_runners.gateway.appiumUrl`，构建 Runtime 时覆盖 `AOS_APPIUM_URL`（不污染进程 env），缓存键含 URL；不同 host 不复用会话。
+  - **执行与结果**：`executeIosLlmCase` 走 `mobile_run_task`/`mobile_manage_task`，读 `status.json`/`run.json`；远程 iOS 模拟器直接 `ERROR ios-remote-simulator-unsupported`；iOS 只要求 `status.json`，不因缺 `data_engine.db` 报 `token-unavailable`。下发阶段显式 `deviceKind:"simulator"` 直接 400 `ios-llm-requires-device`；`any` 在选机时归一为真机，不把模拟器当远程目标。
+  - **判定一致性**：Android/iOS 共用 `summaryStatus`（有 failed → FAIL；passed>0 且 inconclusive/unchecked 均为 0 → PASS；否则不判 PASS）与 L1 文本锚点；证据不可读（Android `data_engine.db`/schema、iOS `run.json` 缺失）时不按 L1 失败，落 `UNVERIFIED`（`artemis-evidence-missing`/`ios-evidence-missing`）。
+  - **Node 侧脱敏**：`src/ios/redaction.ts` 覆盖 taskDesc、观察节点、截图、输入占位符、run/status 落盘；截图按敏感节点 bbox 涂黑，敏感节点缺 bbox 时默认丢弃截图（`AOS_IOS_REDACTION_STRICT=0` 时保留中心侧证据但**不发给模型**）；`<secret:alias>` 只在实际输入动作前还原。Android ARTEMIS hook 同步改为：**任一**敏感节点缺 bounds 即整图 fallback（`AOS_LLM_REDACT_IMAGE_FALLBACK=drop|blur|none`），不再保留部分遮罩的截图。
+  - **安装边界**：远程 iOS 只接受 `.ipa` 的 HTTP(S) URL（资产 `metadata.url`）或已安装应用 `locked_app_package`；中心本地路径一律拒绝（`iosAppUrl`）；无 bundle id 且无 URL 时任务 `ERROR ios-app-package-required`。
+  - **计费**：`ChatOptions.onUsage` 不改变 `ChatFn` 签名；run loop 累计主模型/视觉/验证调用到 `token_usage`，iOS 适配层映射为带 `caseId/traceId/model/attempt/phase` 的 `tokenUsage` 行。
+  - **真机待验**：Appium 4723 可达性、iOS UI 树 bounds 覆盖率、`.ipa` 下载 URL、登录/个人页截图脱敏、取消/超时与 Excel 写回。
+- **未完成**：ARTEMIS 进程内 H1–H4 hooks 的真实设备联调、面板无预期列确认、gateway `/install`（P0 Android 已用 ARTEMIS `app_path` 安装替代，iOS 走 HTTP URL/预装，runner 端点留 P1）、真实设备联调。
+- **iOS ARTEMIS 同级执行器（设计/探索完成，开发暂停）**：为解决 Android（ARTEMIS agent core）与 iOS（P0b 单循环）的测试行为漂移，已完成设计 `docs/superpowers/specs/2026-11-05-ios-artemis-runtime-design.md` 与 Phase 0 Spike（`spikes/ios-artemis/REPORT.md`）。结论：设备驱动/控制器接缝可行，但 ARTEMIS `DevicePlatform`/`Agent.init`/MCP controller 仍是 Android-only，正式实现需先做平台接缝 patch。当前暂停，恢复条件见设计文档 §17；评审反馈处置（WDA 性能、UDID 锁、OCR provider、最小 data_engine、RPC token、脱敏责任矩阵）见 §18；Phase 1 启动门已确认，待排期。
+- **安全闸（当前）**：`executeAndroidLlmCase` 在 secret 非空且 `AOS_LLM_HOOKS_ACTIVE!=1` 时返回 `ERROR llm-secret-hook-unavailable`，带账号用例在 hooks 接通前 fail-closed。
+- **Hooks 版本守卫**：ARTEMIS patch 暴露 `AOS_HOOK_API_VERSION=1`；`npm run artemis:patch` 与 worker 启动都校验该标记，submodule 更新后缺 hook/版本不符直接失败，不裸跑。
+- **Worker 心跳**：P0 写 `hosts.env.llmWorker`（instanceId/lastSeenAt/pid），TTL `AOS_LLM_WORKER_TTL_MS` 默认 90s；`createWebJob` 无在线 worker 时返回 `llm-worker-offline` warning，面板提示等待。
+- **无预期列确认**：LLM 下发时解析 Excel；全部用例无预期列且未勾选「无预期列也执行」→ 400 `llm-no-expectation`；勾选后照常创建并 warning。
+- **安装**：P0 Android 把中心 APK 路径通过 `mobile_run_task.app_path` 交给 ARTEMIS（经设备网关 adb server 安装）；iOS 只接受 Appium 可下载的 HTTP(S) `.ipa` URL 或预装 `locked_app_package`，不把中心本地路径交给远程 Appium。不新增 runner `/install` 端点；多包缓存再评估 gateway 端点。
+- **L2 阈值校准（2026-11-05）**：`suite reference-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]` 离线读成对样本（`{pairs:[{name?,reference,device|traceId,expected:"passed"|"failed"}]}`；`device` 路径相对 manifest，`traceId` 从项目 `.artemis/traces/<id>` 自动取最终截图（iOS `run.json` postShot/shot、Android `data_engine.db`）），对 `pixelThreshold × minAreaRatio × systemBandRatio` 网格逐对运行 `diffScreens`，输出 caught/missed/clean/falseAlarm、accuracy/balancedAccuracy 与推荐阈值（排序：balancedAccuracy → accuracy → 漏报少 → 误报少 → 距默认阈值最近，避免小样本过拟合）；样本需同时包含 passed/failed 才给推荐，`--strict` 把漏报（expected=failed 未检出）判失败；报告默认落 `.artemis/design/reports/reference-calibration-<stamp>.json`。运行时阈值可由项目 `.env` 的 `AOS_L2_PIXEL_THRESHOLD`（默认 0.12）/`AOS_L2_MIN_AREA_RATIO`（默认 0.01）/`AOS_L2_SYSTEM_BAND_RATIO`（默认 0.05）覆盖，校准推荐值可直接写入，不需要设备。
+- **L2 reference（report-only 已接入）**：`reference` Web 资产支持 png/jpg/jpeg/webp/.pen（20MB）与 Figma URL；`.pen` 上传保存源文件到 `.artemis/web/assets/reference-sources/`，用 pen CLI 按顶层 frame 渲染 PNG，每个 screen 登记为独立 reference 资产（metadata 带 sourceType/screenId/screenName）；Figma URL 经 `FIGMA_ACCESS_TOKEN` 拉取指定 node/frame PNG（URL 需带 `node-id` 或显式 nodeId，metadata 带 sourceType/fileKey/nodeId）。**L2 比对（2026-11-05，report-only）**：每例取最终设备截图（iOS `run.json` 最后一步 `postShot`→`shot`；Android `data_engine.db` 最后一步 `post_image_name`→`pre_image_name`，图片在 `images/` 与 DB 同级），用 `diffScreens` 做确定性像素差异；结果写入 `execution.cases[].reference`（`passed/failed/unverified/missing` + `regions/reason`），面板逐用例“参考图”列展示；**默认 `jobSpec.referenceGate="report"`，不改变 PASS/FAIL**，避免参考图尺寸/动态内容误判；显式 `referenceGate="unverified"`（面板勾选“参考图差异时判 UNVERIFIED”）时，L2 failed 只把 PASS 降为 UNVERIFIED，不升级；缺参考图或截图 → `missing/unverified`，不伪造。**逐例参考图（2026-11-05）**：Excel `参考图` 列（别名 参考图/参考截图/期望截图/基准图/reference/referenceImage/refImage）优先，值为资产 ID、`asset:<id>`、文件名或去扩展名（同名多版本取最新）；缺省回退 job 级 `referenceAssetId`；显式值未匹配记 `reference-asset-not-found:<值>`，不回退到 job 级，避免用错图。**Maestro L2（2026-11-05，opt-in）**：`jobSpec.l2Screenshots=true`（面板「上传最终截图用于 L2（Maestro）」）时，runner 在结果中为每例上传一张最终截图（PASS 优先，单图 ≤2MB、合计 ≤6MB，超出则跳过；截图不作为 LLM 输入）；中心写入 `.artemis/web/results/<jobId>/screenshots/<caseId>-<filename>`，按逐例参考图解析后调用 `compareReference`，结果写 `execution.cases[].reference`；`referenceGate="unverified"` 时 L2 failed 只把 PASS 降为 UNVERIFIED，不升级；未上传截图/参考图缺失按 `unverified`/`missing` 如实记录。
+- **Gateway install（骨架）**：`src/web/llm/gateway-install.ts` 定义 host/device/sha 去重缓存与 backend 接口，fake 测试；真实 runner `/install` 端点留 P0b/iOS。
+- **Hooks 选定（2026-11-04 二评）**：**B 为主 + A 为辅 + C 为准入**。B 按 AGENTS patch artemis（观察层 hierarchy+screenshot 按 bounds 遮罩、storage/trace 清洗、动作注入）；A 只兜底 B 未覆盖的直接 LLM 创建路径（`ModelFactory.create_model`/`get_google_llm`，含 chunking/summarizer），带签名守卫；C 拒绝高风险用例 + 测试账号 allowlist，但不当作安全保证。B 铺开前先用真实设备验证 hierarchy bounds 缺失率。
+- **B 的落地方式**：artemis 是上游 submodule，下游改动以 `patches/artemis/0001-aos-web-llm-hooks.patch` 承载（`npm run artemis:patch` 应用，submodule 更新后重放）；parent pin 保持上游 commit，克隆不需要私有 submodule 提交。LLM worker 只在本机存在 `artemis/security/install.py` 时置 `AOS_LLM_HOOKS_ACTIVE=1`，否则所有 LLM 用例 fail-closed。
+- **状态**：P0 远程 Android 与 P0b 远程 iOS 代码已接线并全量测试通过；Android 真机端到端、iOS Appium/bounds 样本与真机验收待设备接入。实施计划：`docs/superpowers/plans/2026-11-04-web-llm-execution.md`；P0b 计划：`docs/superpowers/plans/2026-11-04-web-llm-ios.md`。
+- **默认值表（唯一事实源）**：
+
+| 配置 | 默认 | 显式值/说明 |
+|---|---|---|
+| `allowPartialUnresolved` | `true` | `false` → `unresolved>0` 仍 409；省略按 true（行为变更） |
+| 惰性生成 `bestEffort` | `true` | 脚本页可关闭 |
+| 惰性生成 `preconditionMode` | `auto` | `bestEffort=true` 时解析为 `assume-prepared` |
+| 惰性生成 normalizer | `rules` | 不调 LLM；脚本页可选 LLM |
+| `allowStaleScript` | `false` | 不匹配先自动重建；`true` → 旧脚本 + `stale-script` warning |
+| `l2Screenshots` | `false` | Maestro 最终截图上传（供中心 L2）；单图 2MB / 合计 6MB 上限 |
+| `AOS_WEB_INSTALL_TIMEOUT_MS` | `300000` | APK/IPA 安装（含设备端确认）超时；超时按 `exec-failed:timeout` 上报 |
+| `AOS_WEB_FORCE_INSTALL` | `0` | `1` 强制重装已存在的 Android 包；缺省已安装跳过（§13.308） |
+| `AOS_WEB_SCRIPT_GEN_TIMEOUT_MS` | `30000` | 请求内生成墙钟预算；超时 400 `script-generation-timeout` |
+
+- **过滤必须生效**：脚本集 manifest 携带 `module` 与 `caseId→flow`；runner 按 manifest 过滤模块/用例 ID，不再对模块直接报 `case-filter-modules-unsupported`；旧 manifest 回退 stem 匹配。
+- **保留不动**：PASS 硬断言、manual/未验证 → UNVERIFIED、资产 sha、secret materials 0600/不进 CAS、iOS Maestro 上游仅模拟器。
+
+### 13.307 新增（控制台 IA 收口：测试资产 / 新建测试 / 任务与结果；旧路由 302）
+
+> 2026-11-05。用户反馈控制台按流水线分页，同一资产/任务散落在多个页面；按 `docs/superpowers/specs/2026-11-05-console-ia-redesign.md` 收口为三段式 IA，并保留旧链接可达。
+
+- **一级导航**：项目 / **测试资产** / **新建测试** / **任务与结果** / 设备 / 档案 / 运维（审计/事件在项目页签内）。项目级页面仍携带 `project`（项目根）与项目 host；执行机 host 只出现在新建测试与任务详情。
+- **测试资产**（`section=assets`）：`tab=overview|case-sets|excel|packages|materials|reference|scripts`。用例集并入资产中心（原 `library`），Excel/CSV 原件、安装包、测试资料、参考图、脚本集同页；资产行显示 used-by（被哪些任务/用例集引用）。
+- **新建测试**（`section=create`）：landing 选择套件回归（`type=suite`，复用四步下发向导）或网页测试（`type=web`，原 `jobs` 表单 + 任务列表）。项目未登记为 Web 项目（`projectStatus=null`）时显示横幅与「新增项目」CTA（非 admin 提示联系管理员）；套件回归不受影响。
+- **任务与结果**（`section=tasks`）：套件回归与网页测试统一列表（类型徽标/状态/设备/门禁/失败域），客户端 25 条/页分页（保留 `q`/`filter` 搜索与筛选条件）；详情按类型显示套件 rerun 或 Web clone；网页任务详情保留逐用例结果、参考图列、证据与 Excel 写回。`view=review|stats` 作为该页子视图。
+- **旧路由 302**（`handlePanelRequest` 的 `legacyRedirect`，HTTP 模式与独立 `panel --web` 均启用；**只重定向 HTML `/panel`**，`/panel.json` 保留旧 `view` 契约，避免脚本/集成方因 302 改变行为）：
+  - `section=library` → `section=assets&tab=case-sets`
+  - `section=assets&kind=excel|package|materials|reference` → `section=assets&tab=<对应 tab>`（去掉 `kind`）
+  - `section=dispatch` → `section=create&type=suite`
+  - `section=jobs`（无 `job`）→ `section=create&type=web`（保留原下发表单 + 任务列表）
+  - `section=jobs&job=<id>` → `section=tasks&task=<id>`（删除 `job`）
+  - 无 `section` 且带 `task=<id>` → `section=tasks&task=<id>`
+  - `view=review|stats` → `section=tasks&view=<原 view>`
+  - 其余参数（`project`/`host`/`source`/`ref` 等）原样保留。
+- **统一任务详情**：`section=tasks&task=<id>` 按任务类型分派——套件回归渲染运行/引用/跨端差异与 rerun 等动作；网页测试渲染逐用例结果/参考图/证据/Excel 写回，并在终态且 dispatcher+ 时提供「重新下发网页测试」（`POST /panel/api/jobs/clone`）。`section=tasks&view=review|stats` 复用原裁决/统计视图。
+- **边界**：任务列表仍最多读取 100 条后在页面内分页（不分页查询存储层）；旧项目页 `?task=` / `?batch=` 详情仍保留兼容。
+- **测试**：`panel-legacy-redirect.test.js` 覆盖 library/dispatch/jobs/job 详情/裸 task/review/kind→tab 与参数保留；`console-pages` 覆盖新导航、未登记 CTA、任务分页与资产/新建/任务入口；`panel-web`/`web-dispatch-ui` 覆盖统一任务详情（套件与网页、clone 动作）。
+
+### 13.308 修复（Web job Android 安装识别：已安装跳过 / 失败后复查 / 回填包信息）
+
+> 2026-11-05。真机现场反馈：设备上已手动安装被测 APK，runner 仍反复执行 `adb install` 并等待设备确认；安装成功时 `adb install` 输出只有 `Success`，结果里的 `package.name/version` 为空，用户看不到“已识别到安装”。vivo 等机型还会因安装确认弹窗占用设备，影响后续 Maestro。
+
+- **参考已有实现**：ARTEMIS `helper_manager.provision()`（`artemis/artemis/runtime/helper_manager.py`）已用同一套语义管理 accessibility helper——`installed_version()` 读 `dumpsys package` 的 `versionCode`，已是最新跳过、旧了才升级、比 bundle 新不动，`install=False` 时缺包显式失败。本修复对齐该口径，避免“装了就不管版本”的粗粒度跳过。
+- **APK 版本解析**（`src/web/package-inspect.ts`）：新增 `inspectAndroidPackage(buffer)`，从 APK 的 `AndroidManifest.xml`（文本 XML 或二进制 AXML）解析 `package/versionCode/versionName`；`inferAppIdFromPackage` 复用它。二进制 AXML 读取 `<manifest>` 的 `versionCode`（int，`0x10/0x11`）与 `versionName`（string）；结构异常返回 null，不猜。
+- **已安装判定与跳过**（`src/runner/web-job-workspace.ts`）：`installWebPackage` 新增 `expectedPackageName`、`expectedVersionCode`、`skipIfInstalled`（默认 true）。Android 安装前执行一次 `adb shell dumpsys package <pkg>`：`Unable to find package` / 非 0 / 无 `Package [` 视为未安装；已安装且 `versionCode >= APK versionCode`（任一方未知时保守按已安装）直接返回 `{ok:true, packageName, version, skipped:true}`，不再执行 `adb install`；已安装但更旧则继续升级安装。包名按 Android 规则白名单校验，非法值忽略。
+- **失败后复查**：`adb install` 返回非 0 或超时（`code=null`）时，若已知包名则再查一次 `dumpsys package`；满足上述版本条件（典型：用户手动点了安装/确认）返回 `{ok:true, recovered:true}`，不再把任务判为安装失败；设备上仍是旧版本则保留原始失败，不静默使用旧包。成功路径回填 `versionName`；`skipIfInstalled:false`（`AOS_WEB_FORCE_INSTALL=1`）强制重装但仍回填包信息。
+- **iOS 同口径**（`src/web/package-inspect.ts`、`src/runner/web-job-workspace.ts`）：`.ipa` 解压后读 `Payload/*.app/Info.plist`（XML 或 macOS `plutil` 可转换的二进制）取 `CFBundleIdentifier/CFBundleShortVersionString/CFBundleVersion`；模拟器用 `xcrun simctl get_app_container <udid> <bundleId> app` 判断已安装并读容器内 `Info.plist` 版本，真机用 `xcrun devicectl device info apps --device <udid> --json-output -` 在应用清单里按 bundleId 查找。已安装且版本不旧（任一方版本未知时保守）→ 跳过 `simctl install`/`devicectl install`；旧版本 → 升级；安装失败/超时后复查已存在 → `recovered`。该路径与 Android 共用 `skipped/recovered` 语义，`AOS_WEB_FORCE_INSTALL=1` 同样适用；iOS 真机 Web job 仍属 Plan 2（llm 未接线），但安装层已就绪。
+- **runner 接线**（`src/runner/web-job-runner.ts`、`src/runner/web-agent.ts`）：执行器优先解析 APK 自身的 `package/versionCode`（解析失败回退脚本 `manifest.json` 的 `appId`），安装后通过新增 `onLog` 回调输出 `[web-runner] 设备 <serial> 已安装 <pkg> (<ver>)，跳过安装` / `已存在 …（安装命令未确认，按已安装继续）`；结果 payload 的 `package.name/version` 不再为空。
+- **可观测性**（`src/runner/web-executors.ts`）：Maestro 非 0 退出且无 JUnit 时，`detail` 保留 stderr 的**首尾**（各约 1.9KB，总预算 4KB），不再只截取尾部堆栈——根因（如 `DeviceServerDiedException`）在开头，堆栈尾在结尾，两者都保留；新增长 stderr 单测。失败时（无 JUnit、执行异常，或 JUnit 中存在 FAIL/ERROR 用例）best-effort 抓设备现场到 `<jobDir>/diagnostics/`：Android `adb logcat -d -t 400`（摘要并入 detail）、`dumpsys window windows`、`screencap`+`pull` 截图；iOS 模拟器 `simctl io screenshot` + `simctl spawn log show --last 2m`；路径随结果 `evidence` 回传，抓取失败不影响原始错误。新增诊断单测（含 JUnit 有失败用例的路径）。
+- **环境变量**：`AOS_WEB_FORCE_INSTALL=1` 关闭“已安装跳过”（Android/iOS 通用），用于必须覆盖安装/降级验证的场景；缺省按版本比较跳过。
+- **测试**：`test/package-inspect.test.js` 增加文本/二进制 APK 的 `versionCode/versionName` 解析与 IPA/Info.plist 的 bundleId/版本解析；`test/web-job-workspace.test.js` 增加 Android“已安装同版本 → 不调用 install”“旧版本 → 升级”“失败后复查 → recovered”“强制安装”，以及 iOS 模拟器/真机“已安装同版本跳过”“旧版本升级 + 失败复查 recovered”；全量测试与 lint 保持绿。
+
+### 13.309 修复（文件台账模式 `GET /panel/api/hosts` 返回真实主机台账）
+
+> 2026-11-05。现场反馈：mac mini 以 `mac-mini-01` 连过（`hosts.runnerSeenAt` 有记录），但 `GET /panel/api/hosts` 返回空；原因是该接口对 `store.kind !== "postgres"` 直接返回 `{ok:true,hosts:[]}`。文件台账的 `hosts` 实际由 web-runner 心跳写入，已具备台账能力，强制空列表会让单机/文件模式看不到接入主机。
+
+- **接口**（`src/panel/web.ts`）：`handlePanelHostsRequest` 不再按存储类型短路；文件/内存/PostgreSQL 统一 `listHosts()` 并走 `panelHostApiRow` 安全投影；空台账仍为 `{ok:true,hosts:[]}`，读取失败统一 503（不伪装空台账）。
+- **影响**：`panel --web` 与 HTTP 模式在文件台账下也能看到 `mac-mini-01` / `win-mini-01` 等主机；`section=devices` 的设备卡片仍要求主机有设备/租约（零设备主机只在主机台账/全局总览出现）。
+- **测试**：`test/panel-hosts.test.js` 原“文件/会话内存模式返回空列表”改为断言 MemoryStore 台账被投影返回；`panel-command`/`http-server` 的空台账用例保持 `hosts:[]`。
+
+### 13.310 修复（安装包版本展示按平台分组）
+
+> 2026-11-05。现场反馈：资产中心的安装包表把 Android APK 与 iOS IPA 放进同一个 `kind=package` 序列，显示成 v1/v2，看起来像同一个包的两个版本；实际是两台平台的不同产物。
+
+- **展示口径**（`src/console/pages.ts`）：包资产按扩展名归平台（`.apk`→Android、`.ipa`→iOS；脚本集按 `metadata.platform`），**每个平台从 v1 独立编号**；安装包表新增「平台」列，版本列显示该平台内的序号，下拉选项显示 `Android v1 · app.apk` / `iOS v1 · app.ipa`。脚本集表同样按平台独立序号（平台列保持）。
+- **存储口径不动**：`web_assets.version` 仍是 `(root_path, kind)` 全局递增（PostgreSQL 唯一索引依赖），仅面板展示层按平台重算；API/审计里的 `version` 仍可作为唯一行标识。这样避免数据库迁移与并发唯一键风险。
+- **测试**：`test/web-assets-ui.test.js` 新增“同一项目上传 APK+IPA → 两者都是 v1，且带平台列”；全量测试与 lint 保持绿。
+
+### 13.311 修复（Maestro Android driver 复用：不再每次重装两个包）
+
+> 2026-11-05。现场反馈：手动安装 Maestro 安装包后，任务仍报 driver 不可用。核对 Maestro 2.12.1 包结构：Android driver 由两个 APK 组成——`maestro-app.apk`（`dev.mobile.maestro`）与 `maestro-server.apk`（`dev.mobile.maestro.test`），都打包在 `lib/maestro-client.jar`；`maestro test` 默认 **每次重装 driver+server**。在 vivo 等需要安装确认的机型上，重装弹窗/未确认会让 driver 处于半装/被杀状态，表现为 `DeviceServerDiedException`（`deviceInfo`/`viewHierarchy` 的 gRPC 超时）。
+
+- **driver 预检**（`src/runner/web-executors.ts`）：执行 Maestro 前用 `adb shell pm path dev.mobile.maestro` 与 `dev.mobile.maestro.test` 检查两个包；**都在时**给 `maestro test` 加 `--no-reinstall-driver`，跳过每次重装；缺任意一个时保持 Maestro 默认安装（会补装缺失包），并通过 runner 日志说明 `Maestro driver 缺失：…（交给 Maestro 安装）`。两个包都在时日志显示 `Maestro driver 已安装，跳过重装`。
+- **强制重装**：`AOS_MAESTRO_REINSTALL_DRIVER=1` 关闭复用（升级 Maestro/怀疑 driver 版本不匹配时用）；已加入 runner 子进程 env 白名单，变量本身不落结果。
+- **验证**：模拟器上手动确认 `dev.mobile.maestro`/`dev.mobile.maestro.test` 均存在时，Maestro 2.12.1 Settings smoke 正常；`--no-reinstall-driver` 在 driver 缺失时仍会触发安装，存在时跳过重装。真实 vivo 上应重点检查这两个包是否都存在（用户只点了一个 Maestro 安装包时，`dev.mobile.maestro.test` 很可能缺失）。
+- **测试**：`test/web-executors.test.js` 增加两包都在 → `--no-reinstall-driver`、缺 server → 不加、`AOS_MAESTRO_REINSTALL_DRIVER=1` → 不加；全量测试与 lint 保持绿。
+
+### 13.312 新增（Android Web job 执行前预检门禁）
+
+> 2026-11-05。Maestro driver 在 vivo 上反复空跑 120s 才失败；把“设备/driver/app 是否就绪”前移到 Maestro 之前，失败直接给 typed reason。
+
+- **预检**（`src/runner/web-executors.ts`）：Android 且提供 `adbCommand` 时，执行 Maestro 前检查：
+  - `adb devices` 中目标 serial 为 `device`（否则 `adb-offline`）；
+  - `pm path dev.mobile.maestro` + `pm path dev.mobile.maestro.test` 都在（否则 `maestro-driver-missing`，detail 列出缺失包）；
+  - `dumpsys power` 非 Asleep/Dozing（否则 `device-asleep`）；
+  - `dumpsys window` 无 `mDreamingLockscreen/mShowingLockscreen/isStatusBarKeyguard`（否则 `device-locked`）；
+  - `pm path <expectedAppPackage>` 存在（否则 `app-not-installed`）；
+  - `dumpsys package` 的 `versionCode` 不低于 APK 的 `expectedVersionCode`（否则 `app-version-mismatch`）。
+- **失败形态**：不调用 Maestro，直接返回 `{status:"error", detail:"maestro-preflight:<reason>: <detail>"}`；同时 best-effort 调用失败诊断抓取（logcat/window/截图），随结果上传（§13.313）；中心结果可读，不再等 120s。
+- **开关**：`AOS_PREFLIGHT=0` 跳过预检（应急/兼容）；`AOS_MAESTRO_INSTALL_DRIVER=1` 允许 driver 缺失时交给 Maestro 安装（首次装机）；`AOS_MAESTRO_REINSTALL_DRIVER=1` 仍强制重装。三者均加入 runner 子进程 env 白名单。
+- **数据来源**：`web-job-runner` 把 APK 解析出的 `appId` / `versionCode` 作为 `expectedAppPackage` / `expectedAppVersionCode` 传入；解析失败则不做 app 版本检查，避免误报。
+- **测试**：`test/web-executors.test.js` 覆盖 adb-offline / device-locked / app-not-installed / app-version-mismatch / `AOS_PREFLIGHT=0` 旁路 / 缺 driver 包；全量测试与 lint 保持绿。
+
+### 13.313 新增（Web job 失败诊断回传中心）
+
+> 2026-11-05。失败时 logcat/截图只落在 runner job 目录，中心面板打不开；把诊断随结果上传，中心落盘并加入 evidence，形成可诊断闭环。
+
+- **runner**（`src/runner/web-job-runner.ts`）：`executedPayload` 读取 `executed.diagnostics`（logcat/window/screen/syslog）以及 `cases[].logPath`（Maestro 日志），按文本 64KB、图片 2MB、合计 4MB 截断，编码为 `diagnostics: [{filename, base64}]` 随结果上传；不再把本地 job 相对路径塞进 evidence（中心会生成可访问路径）。
+- **中心**（`src/web/results.ts`）：`parseWebJobResult` 解析 `diagnostics`（最多 10 个文件、合计 4MB；复用 `parseArtifact` 的 base64 校验）；`ingestWebJobResult` 落盘到 `<项目>/.artemis/web/results/<jobId>/diagnostics/`，把相对路径去重后加入 `evidence`；落盘失败只加 `diagnostics:` warning，不影响结果入库。
+- **访问**：evidence 路径为项目根相对（`.artemis/web/results/<jobId>/diagnostics/<file>`），走既有 `/panel/artifact` 只读路由；中心不再依赖 runner 本地目录。
+- **测试**：`test/web-result-ingest.test.js` 新增 diagnostics 落盘 + evidence + 文件内容校验；全量测试与 lint 保持绿。
+
+### 13.314 新增（MCP 原生 adb-host 小包）
+
+> 2026-11-06。Android 真机接入改为 MCP 原生后，600MB 的 Maestro runner 兼容包对“只需要 adb”的场景过重；新增只含 platform-tools 的 adb-host 小包。
+
+- **构建**（`scripts/build-adb-host-bundle.mjs`）：`npm run bundle:adb-host` 从 `dist-toolchain` 取 platform-tools，产出 `dist-runner/mobile-testing-adb-host-<version>-win32-x64.zip`（约 8MB）与 `adb-host-manifest.json`；包内含 `platform-tools/`、`README.md`、`start-adb-host.ps1`、`firewall-add.ps1`/`firewall-remove.ps1`、`docs/android-mcp-native-testing.md`。当前只提供 Windows x64（macOS 本机可直接用系统 adb；远程 macOS 宿主后续按需扩展）。
+- **下载**（`src/http-server.ts`）：`GET /panel/runner-bundle?role=adb-host&platform=win32&arch=x64` 读取 `adb-host-manifest.json` 并流式返回；未构建时提示 `npm run bundle:adb-host`；`role` 缺省仍走 `manifest.json`（runner 兼容包）。
+- **面板**（`src/console/pages.ts`）：「设备 → 接入执行机」新增 adb-host 下载按钮（约 8MB），legacy runner 包单独标注；文案明确 MCP 原生不需要 Node/JDK/Maestro。
+- **边界**：adb-host 只启动 adb server（`adb -a -P 5037 server nodaemon`），不启动 web-runner；adb 无鉴权，仍需防火墙限定来源 IP 或 SSH 隧道。平台当前只构建 win32-x64；macOS/Linux 使用系统 adb 或 runner 兼容包。
+- **测试**：`test/http-server.test.js` 覆盖 `role=adb-host` 下载；`test/web-devices-ui.test.js` 覆盖面板文案；构建/测试/lint 保持绿。
+
+### 13.315 新增（原生回归 appPath：APK/IPA 安装透传）
+
+> 2026-11-06。MCP 原生回归（`run_regression` / `suite run`）此前假设被测 App 已由人工安装；Excel + 安装包的自动化链路缺少安装步骤。新增可选 `appPath`，透传 `mobile_run_task.app_path` 由 Artemis 安装。
+
+- **入口**：`run_regression` schema 新增 `appPath`（本地路径或 `http(s)://` URL）；CLI `suite run` / `suite loop` 新增 `--app-path <apk|ipa|url>`；`SuiteRunOptions.appPath` 统一承载。
+- **执行**（`src/figma/case-runner.ts`）：`executeCase` 在提交 `mobile_run_task` 时附带 `app_path`；`suite-runner` 把 `options.appPath` 传入每个用例上下文。已安装时可省略；重复传入由 Artemis 处理，不改变 PASS/FAIL 判定。
+- **边界**：`appPath` 不替代 `locked_app_package`（复位/锁定包名仍独立）；不写 job spec、不进 web 资产；iOS 真机仍受 Appium/WDA 路径约束（URL 由宿主侧安装）。
+- **测试**：`test/android-native-case-runner.test.js` 覆盖 `app_path` 透传；`test/workflow-run-regression.test.js` 覆盖 `appPath` 进入 execute options；全量测试与 lint 保持绿。
+
+### 13.316 新增（AOS_MAESTRO_WEB=0：禁用新建 Maestro web 任务）
+
+> 后续 §13.317 已移除 Maestro 路线；本节保留为历史记录。
+
+> 2026-11-06。Android 真机接入切到 MCP 原生后，仍可能从面板/API 新建 Maestro 网页测试任务；提供显式开关，默认兼容（开启），部署可关闭新入口，已有 legacy 任务继续执行。
+
+- **服务端**（`src/web/jobs.ts`）：`createWebJob` 在 `executionMode=maestro` 且 `AOS_MAESTRO_WEB` 为 `0/false/off/no` 时抛 `WebJobDispatchError("maestro-disabled")`（HTTP 409），文案指向 `run_regression` / `mobile_run_task`；LLM 模式与已有任务不受影响。
+- **面板**（`src/console/pages.ts`）：开关关闭时不渲染 `web-job-form`，只显示“Maestro 网页测试已禁用”的横幅；接入执行机页的 legacy runner 分区保留。
+- **错误码**（`src/web/job-spec.ts`）：新增 `maestro-disabled`（409）。
+- **边界**：只拦截“新建” Maestro 任务；`claimWebJob`/已有 pending/legacy 任务仍可执行；不删除 Maestro 代码。
+- **测试**：`test/web-job-queue.test.js` 覆盖 409；`test/web-dispatch-ui.test.js` 覆盖表单隐藏；全量测试与 lint 保持绿。
+
+### 13.317 移除（Maestro web-runner / 脚本生成 / runner 打包）
+
+> 2026-11-06。Android 真机自动化切到 MCP 原生后，Maestro 路线的执行引擎、脚本中间层和 600MB runner 包不再保留；历史 Web 任务/结果/设备记录只读保留。
+
+- **删除**：`src/runner/web-agent.ts`、`web-job-runner.ts`、`web-executors.ts`、`web-job-workspace.ts`、`src/device/maestro.ts`、`src/web/script-gen.ts`、`script-generation.ts`、`script-set.ts`、`step-normalizer.ts`、`step-parse.ts`、`step-types.ts`、`src/web/dispatch.ts`（web job 选机）、`src/runner/control/{client,http,service,web-control,contract}.ts`（web runner 控制面）；`scripts/build-runner-bundle.mjs`、`scripts/check-android-runner-env.ps1`。
+- **入口**：`node dist/cli.js web-runner` 与 `web scripts generate` 移除；`web llm-worker` 保留。`createWebJob` 对 `executionMode=maestro` 永久返回 409 `maestro-disabled`；面板网页测试表单不再渲染（仅历史只读）。`/panel/runner-bundle` 在 §13.318 起增加 `role=mcp-runner`；未知/旧 runner role 返回 410。
+- **工具链**：`npm run toolchain:fetch` 只下载 Android platform-tools；删除 Node/JDK/Maestro 镜像；`bundle:runner` 删除，保留 `bundle:adb-host`（约 8MB）。
+- **保留**：Web 资产/结果/任务数据模型、Excel/安装包/参考图资产、`/panel/api/jobs/:id/spec` 等历史读取、`web llm-worker`、suite runner 控制面。
+- **测试**：删除 Maestro/脚本生成/web-runner 测试；`npm test` **3068/3068** 通过，`lint` 0 error。
+
+### 13.318 新增（MCP runner 双端包：Windows Android / macOS iOS+Android）
+
+> 2026-11-07。Maestro runner 移除后，面板只剩 adb-host（只暴露 adb，中心反向连接）。现场拓扑需要“runner 在宿主本机执行、中心只下发任务”的 B 架构；新增双端 MCP runner 包，并保留 adb-host 作为远程 adb 兼容入口。
+
+- **构建**（`scripts/build-mcp-runner-bundle.mjs`、`npm run bundle:mcp-runner`）：产出 `dist-runner/aos-artemis-runner-<version>-win32-x64.zip`（约 63MB）与 `...-darwin-arm64.tar.gz`（约 65MB），写入 `mcp-runner-manifest.json`。包内包含：`dist/`、生产 `node_modules/`（排除 fsevents/.bin/@esbuild）、`artemis/` Python 源码（排除 `.venv/.git/traces/playground/缓存`）、对应平台 `platform-tools/`、`scripts/e2e-device.mjs` 与 `mobile-testing-call.mjs`、`docs/`、示例 `project/aos.config.jsonc` 与 `.env.example`。
+- **启动脚本**：Windows `setup.cmd`/`doctor.cmd`/`smoke.cmd`/`runner.cmd`；macOS `setup.command`/`doctor.command`/`smoke.command`/`runner.command`。`setup` 执行 `doctor --install-deps`（uv 安装 Artemis 依赖）；`doctor` 体检；`smoke` 调 `e2e-device.mjs` 跑单条 `mobile_run_task`；`runner` 以 `suite runner` 常驻领取中心任务。
+- **下载**（`src/http-server.ts`）：`GET /panel/runner-bundle?role=mcp-runner&platform=win32&arch=x64` 或 `...&platform=darwin&arch=arm64` 读取 `mcp-runner-manifest.json` 并流式返回；`.zip` → `application/zip`，`.tar.gz` → `application/gzip`。`role=adb-host` 继续原行为；未知 role 410。
+- **面板**（`src/console/pages.ts`）：「设备 → 接入执行机」主按钮改为 Windows/macOS MCP runner，adb-host 降为兼容入口；文案明确前置（Node 20+、uv、Python 3.12；iOS 需 Xcode/Appium/签名/隧道）与边界（Windows 不能执行 iOS）。
+- **边界**：包内不包含 Node/uv/Python 运行时（由宿主安装；`uv` 负责 Python 3.12）；iOS 真机必须连接 Mac，Windows 只支持 Android；MCP runner 与 adb-host 都只是设备接入方式，执行仍由 `mobile_run_task`/`suite run` 承担。
+- **测试**：`test/http-server.test.js` 覆盖 `role=mcp-runner` 的 zip/tar.gz 下载与 content-type；`test/web-devices-ui.test.js` 覆盖双端按钮与 adb-host 兼容入口；构建/测试/lint 保持绿。
+
+### 13.319 调整（MCP runner 走中心 LLM 代理，不再要求本机填 key）
+
+> 2026-11-07。§13.318 的 runner 包按独立 MCP 项目打包，`doctor`/`e2e-device` 仍要求本机 `.env` 填 `AOS_LLM_API_KEY`。这违背“runner 是执行端、中心持有编排与 LLM”的 B 架构；改为 runner 从中心取 **LLM 代理访问方式**，真实 provider key 不出中心。
+
+- **中心 `/llm`**（`src/runner/control/suite-routes.ts`、`suite-service.ts`、`llm-resolver.ts`）：`GET /panel/api/runners/suite/llm?rootPath=...` 复用 runner token + `x-aos-host-id` 鉴权；`assertLlmProject` 默认只允许项目所属 host，跨主机需中心显式 `AOS_RUNNER_SHARED_LLM=1`。返回 `name/provider=model/baseUrl=<中心>/panel/api/runners/suite/llm/proxy/<base64url(rootPath)>/apiKey=null`；真实 key/baseUrl 不下发。
+- **中心代理**（`src/runner/control/llm-proxy.ts`）：`POST/GET /panel/api/runners/suite/llm/proxy/<base64url(rootPath)>/*` 先鉴权，再用 `resolveCenterLlm`（store 优先、项目 `.env` 回退）取真实 provider 条目，替换 `Authorization: Bearer <provider key>` 并转发到 `${baseUrl}${suffix}`；响应流式回传，`accept-encoding: identity` 规避上游错误 gzip 头。真实 key 只出现在中心进程内存与上游请求头，不写日志/不落 runner。
+- **runner client**（`src/runner/control/suite-client.ts`、`src/llm/center.ts`）：`getLlm(rootPath)` 取代理 URL；`AOS_LLM_FROM_CENTER=1` 时 `Runtime.initialize` 拉取并注入 `transientEntry`（仅内存，`entries()`/`activeEntry()` 可见）；代理 URL 的 API key 使用 runner token。`artemis.jsonc` 只写 provider/model；子进程 env 由 `buildChildEnvForEntry` 带代理 URL + runner token。中心条目在 runner 内只读，`activateEntry` 拒绝本机切换。
+- **项目解析**：`/llm` 的 `rootPath` 可选（任务/项目明确时传入）；未带时用中心侧 `AOS_RUNNER_DEFAULT_PROJECT`。项目路径只存在中心，runner 只报 host/token，不需要也不应填 `AOS_CENTER_PROJECT_ROOT`。
+- **doctor**（`src/commands.ts`）：`AOS_LLM_FROM_CENTER=1` 时调用同一 `fetchCenterLlm`，显示“LLM 由中心提供”；中心不可用才回退本机 `.env` 检查。
+- **包**（`scripts/build-mcp-runner-bundle.mjs`）：所有 setup/doctor/smoke/runner 脚本设置 `AOS_LLM_FROM_CENTER=1`；`.env.example` 不再要求填 key，改为中心控制面 + `AOS_CENTER_PROJECT_ROOT`；README 说明中心 URL/token、`AOS_RUNNER_SHARED_LLM=1` 与“无需本机 key”。
+- **边界**：代理仅支持 OpenAI 兼容 provider；Google provider 显式 501，不伪装成功。跨主机共享 LLM 是受控内网/单机队模式（中心 `AOS_RUNNER_SHARED_LLM=1`）；多租户部署应改用按项目/主机的代理令牌，而不是共享模式。
+- **测试**：`test/runner-control-suite.test.js` 覆盖 `/llm` 不泄露真实 key、runner 注入代理 URL + runner token、代理替换 `Authorization` 并转发到 provider；`test/http-server.test.js`/`test/web-devices-ui.test.js` 覆盖 runner 包下载与面板文案；全量测试/lint 保持绿。
+
+### 13.320 新增（跨机 runner 任务包：中心默认项目 + tests/flows 下发）
+
+> 2026-11-07。§13.319 解决了 runner 不碰 key，但 `suite runner` 仍假设 runner 有与中心同路径的项目：claim/bundle/run 都按本地 rootPath 查中心，跨 Windows/Mac 会找不到任务，case set 的 `jsonPath` 也指向中心绝对路径。新增“中心默认项目 + 任务包内容下发”，runner 不需要复制项目或填写项目路径。
+
+- **中心默认项目**（`SuiteControlService.getDefaultProject`、`suite-routes.ts`）：`GET /panel/api/runners/suite/default-project` 返回 `AOS_RUNNER_DEFAULT_PROJECT` 对应项目 `{ found, rootPath, name }`；`assertRunnerProject` 允许 runner 访问该默认项目（其余仍按项目 host 校验）。`upsertProject` 保留中心已有 hostId，runner 不会把中心项目改成自己的 host。
+- **控制面 root 重写**（`SuiteStoreClient.controlRootPath`）：runner 本地项目路径与中心不同时，客户端把 claim/bundle/update/run/lease/schedule 等控制面调用的 `rootPath`/`input.rootPath` 统一改写为中心默认项目；本地 FileStore、trace、`.artemis` 仍用 runner 本地路径。`buildRemoteSuiteRuntime` 先取默认项目，再创建带 `controlRootPath` 的客户端；中心未配置默认项目时保持旧行为（同路径 runner）。
+- **任务包内容**（`ProjectStore.getTaskBundle` 类型、`SuiteControlService.getTaskBundle`）：除 task/project/caseSets 外，新增 `documents[]`（`caseSetId/featureKey/jsonPath/content`，读 case set tests.json）与 `flows`（flows.json 内容）。单文件上限 10MB、合计 20MB；缺失/超限不阻断 bundle，runner 执行时如实报“份不可读”。
+- **runner 落盘**（`suite-command.ts` `materializeTaskDocuments`）：把 documents 写到本地 `<configDir>/design/case-sets/<caseSetId>-<base64url(featureKey)>.json`，flows 写到 `<configDir>/design/flows.json`；`suiteRunTask` 把 `refs[].jsonPath` 指向本地文件后再执行。xlsx/md 不随任务下发（结果/报告仍在中心项目侧）。
+- **边界**：只下发 tests.json/flows；设计截图/UI contract/参考图等大资产不下发（UI diff 默认关闭；需要时另做资产包）。Excel 源文件/APK 资产上传链路仍沿用现有 Web 资产模型，不在本次范围。
+- **测试**：`test/runner-control-suite.test.js` 覆盖 `/default-project`、bundle documents/flows、不同本地 root 的 claim、`buildRemoteSuiteRuntime` 控制面 root 重写；`test/runner-task-materialize.test.js` 覆盖 JSON/flows 落盘与 null bundle；全量测试/lint 保持绿。
+
+### 13.321 清理（面板移除 Maestro 网页测试残留入口）
+
+> 2026-11-07。Maestro 已移除，但面板仍保留“网页测试（历史）”“MCP 原生执行”卡片、`type=web` 死页面、Web 任务列表与历史脚本集 tab，用户会误以为下发任务已消失。统一收口为只保留套件回归入口；历史 Web 任务数据不删除，但不再从面板展示。
+
+- **入口**：`/panel?...&section=create&type=web` 与旧 `/panel?...&section=jobs` 均 302 到套件回归（`type=suite`）/任务列表；`section=create` 落地页只保留「套件回归」卡片。
+- **页面**：删除 `renderWebJobsPage` / `renderWebJobPage` 与 `web-jobs`/`web-job` 视图；`section=tasks`、项目概览任务、全局搜索只列出 `jobSpec=null` 的套件任务，旧 Web 任务详情返回 404；资产页移除「脚本集（历史）」tab 与脚本生成卡片；设备页只合并 suite runner（不再合并历史 Web runner），移除 Maestro 文案。
+- **动作**：删除 `/panel/api/jobs/clone`（网页测试重新下发）与任务详情的 `clone-web` 按钮；任务详情只保留暂停/停止/释放/重新派发（套件）。
+- **保留**：`src/web/` 的 Web 资产/结果/任务数据模型、`/panel/api/jobs` 历史读取与 web LLM worker 后端不动；历史任务/结果仍在存储中，只是面板不展示。
+- **测试**：`test/console-pages.test.js`、`test/panel-web.test.js`、`test/panel-console-actions.test.js`、`test/panel-legacy-redirect.test.js`、`test/web-assets-ui.test.js` 同步覆盖；全量 `3094/3094` 通过，lint 0 error。
+
+### 13.322 新增（套件回归可选安装包：任务级 appAssetId + runner 预装）
+
+> 2026-11-07。套件回归此前要求设备预装 App，用户新建任务时无法选择安装包。新增任务级可选安装包：面板「② 参数」从项目 package 资产选择 APK/IPA，任务落 `appAssetId`；runner 领取后通过中心控制面下载并校验 sha256，再以 `app_path` 交给 Artemis 安装后执行。未选择时保持旧行为（设备需已安装）。
+
+- **数据**（`RegressionTaskRecord.appAssetId`、`CreateRegressionTaskInput.appAssetId`）：PG `regression_tasks.app_asset_id` 迁移；Memory/File 默认 null；任务包（`getTaskBundle`）附 `appAsset {id,filename,sha256,size}`，不泄露中心路径。
+- **面板**（`src/console/dispatch.ts`、`src/panel/actions.ts`）：下发预览读取项目 package 资产，新增「安装包（可选）」下拉并进入表单签名/预览过期校验；`POST /panel/api/tasks` 校验资产属于项目且 kind=package、APK↔Android / IPA↔iOS 与目标端匹配，随后写 `appAssetId`。
+- **控制面**（`src/runner/control/suite-service.ts`、`suite-routes.ts`、`suite-http.ts`、`src/http-server.ts`）：新增 `GET /panel/api/runners/suite/tasks/:id/app?rootPath=…`，runner token + host 鉴权、任务可见性校验、资产 realpath 越界校验；返回二进制流 + `X-Aos-Sha256`。`SuiteStoreClient.downloadTaskApp` 带 token 下载。
+- **执行**（`src/suite-command.ts` `materializeTaskApp`）：任务有 `appAssetId` 时优先经控制面下载到 `<project>/.artemis/cache/apps/<sha>.<apk|ipa>`（sha256 不匹配即失败）；本机中心模式回退 `getWebAsset.storagePath`；设置 `SuiteRunOptions.appPath`，CLI 显式 `--app-path` 优先。下载/校验失败在执行前退出 2，不进入用例。
+- **CLI**：`suite task create [--host …] [--project …] --app-asset <id>`；未知/非 package 资产 exit 2。
+- **测试**：`test/console-dispatch.test.js`（预览/表单/签名/未知资产）、`test/panel-console-actions.test.js`（落任务/平台校验）、`test/runner-control-suite.test.js`（bundle appAsset + 二进制下载 + 客户端方法）；全量 `3097/3097`、lint 0 error。
+
+### 13.323 调整（面板闭环修复：跨机下发 / 设备入口 / 结果链接 / 口径一致）
+
+> 2026-11-07。UX critique 发现主路径断点：下发页改 host/project 丢失向导状态；唯一在线 runner host 未在中心项目下登记导致“确认派发”永久禁用；资产页 `&section` 未转义生成伪项目；任务页 0 条与对比页 15 失败矛盾；任务详情没有批次/证据链接；设备页无操作入口。以下为 P0/P1 修复。
+
+- **下发向导**（`console/dispatch.ts`）：host/project 切换改用 `URLSearchParams(new FormData(form))`，保留来源/端/基线/安装包/优先级；显式 `section=create&type=suite`，不再生成 `section=create%26type%3Dsuite`。预览将 host 视为**执行机**：若中心侧项目存在且该 host 已注册 suite runner，则允许跨 root 下发并提示“使用中心项目目录执行”，不再要求 runner 主机重复登记项目。host 下拉只保留有 suite runner 的主机 + 项目 host + 当前选中 host，隐藏历史 Maestro host 重复项；预览列出执行机当前匹配设备。
+- **任务创建**（`panel/actions.ts`）：跨 root runner 场景任务写中心 store、`targetHostId=<runner host>`，不再使用目标 host 的空项目 store；仍校验安装包资产与平台。
+- **结果闭环**（`panel/web.ts`）：任务详情设备运行行新增「批次」（manifest basename）、「轨迹」（archive kind=trace&q=runId）、失败时「去失败分析」；批次链接使用 basename 以匹配 `batch` 路由。
+- **面板口径/入口**：对比页任务计数过滤 `jobSpec !== null`（历史 Web 任务不再显示 `失败 15`）；项目概览先列项目表再列主机/新增项目；`任务与结果` 空态给「新建测试」按钮；失败分析空态给 CTA；批量裁决默认不选并强制选择；`安装包` tab 预选 package 上传类型；`[hidden]` 强制隐藏；secret 复选框不再误显示；`&section` 链接转义并清理伪项目 `ESSO-GU§ion=create`。
+- **设备页**（`console/pages.ts`、`panel/web.ts`、`console/shell.ts`）：`?section=devices&project=…` 保留项目上下文/项目切换器；每行「去下发」携带 host+platform 进入向导；表格列宽与移动端导航换行改善。
+- **结果/运营细节**：任务详情的「去失败分析」带 `task=<id>`，失败分析按任务过滤并可一键查看全部；任务 CLI 命令加「复制命令」；全局搜索项目列显示项目名而非绝对路径；`/usage` 标题改「使用统计」，先展示有数据的工具概览，再展示 Token 消耗；运维页新增「接入配置」入口（项目接入/设备/资产）。
+- **运维在线配置**：运维页新增「项目配置」表单（LLM name/model/baseUrl/apiKey、Figma token、Jira site/email/token）；`POST /panel/api/projects/config` 仅 admin，LLM 走 `aosConfigure`（缺 key 时沿用 active key），Figma/Jira 走 `writeEnvUpdates` + `setFigmaToken`，响应只回 masked/站点信息，审计 `action.config`。对比页列头缩短为「最近批次/趋势/质量/待办/执行」，首列 sticky，降低 1440px 裁切。
+- **只重跑失败用例**：`RegressionTaskRecord.caseIds`（PG `case_ids` 迁移）记录任务级 caseId 过滤；任务详情汇总 `failedCaseIds` 并新增「重跑失败用例（N）」→ `POST /panel/api/tasks/rerun {failedOnly:true}` 创建带 `caseIds` 的新任务；runner `suite run --task` 把 `task.caseIds` 传给 `SuiteRunOptions.caseIds`，只执行失败用例。
+- **档案/搜索闭环**：任务详情新增「任务档案」到 `section=archive&task=<id>`；`listArtifacts` 支持关联 needles（task/runId/traceId/manifest basename）过滤，档案页显示任务过滤 chip 并可清除；搜索项目列显示显示名、支持清空、用例集结果加「用例库」入口；批量裁决提交前确认条数与裁决；表格在窄屏显示「左右滑动查看完整表格」提示；footer 贴底、顶栏 meta 去孤立分隔符。
+- **第二轮 critique 回归修复**：设备行「去下发」只转义一次（修复 `&amp;amp;` 死链）；未知 task/run 档案过滤返回 0 并显示关联过滤；项目页「单次运行」移出环境自查折叠层、trace 可点；失败分析空态指向项目页单次运行；表格滚动提示按实际 `scrollWidth` 显示（含 usage 表）；无 `type` 输入框纳入 CSDC 样式。
+- **P3 可读性**：概览项目表设计源警告改为“数量 + 折叠代码明细”；审计新增关键词 `q`（action/summary/actor/refs，Memory/PG 同口径）与清除；新建测试落地页补用例集/Excel/安装包统计条；资产表非 secret 项新增「打开」（xlsx/apk/ipa/zip/pen 走只读产物服务）。
+- **可访问性收尾**：section/details/div 锚点加 `scroll-margin-top:84px`，避免 sticky 顶栏遮住 `#tasks`；usage 自有表格在移动端同样使用 `data-label` 卡片行；资产隐藏 file input 退出 Tab 顺序（dropzone 保留键盘入口）。
+- **最终可读性 polish**：对比页口径说明折叠为 `<details>`；概览项目卡去掉与顶栏重复的项目数；新增项目表单折叠；用例集来源显示截断到 48 字符（title 保留原文）；下发目标端统一 `Android/iOS` 大小写。
+- **移动卡片/主机历史**：设备与对比宽表在 ≤640px 改为 `td[data-label]` 卡片行；概览接入主机按 hostname 合并，优先在线/已登记/最新并显示 `+N 历史`；审计失败 `action.config` 恢复入口指向运维配置。
+- **响应式/可达性**：移动导航改为换行展示（不再隐藏设备/档案/运维/使用统计）；dropzone 加 `:focus-visible`；减少动态时保留手动「刷新」；表格 `overflow-wrap` 从 `anywhere` 改 `break-word`，避免 `android`/项目名被拆成一字一行；对比表固定最小宽度 + 横向滚动。
+- **测试**：`test/console-dispatch.test.js`（安装包/表单）、`test/panel-console-actions.test.js`（跨机 runner 下发、appAssetId）、`test/panel-compare.test.js`（Web 任务不计入积压）、`test/panel-web.test.js`（批次/轨迹/失败分析链接）、`test/web-devices-ui.test.js`（项目上下文/去下发）；全量 `3101/3101`，lint 0 error。
+
+### 13.324 修复（定向下发 legacy 项目 + 中心 LLM 代理公开地址）
+
+> 2026-11-07。第一次真机 smoke（ESSO-GU My SMILES × win-runner-01）暴露两个跨机问题：中心项目是 legacy（host_id=NULL）时，`POST /panel/api/tasks` 用显式执行机仍被“未归属主机的历史数据”拒绝；`/llm` 代理地址按请求 Host 推导，runner 经回环/转发时拿到 `127.0.0.1`，跨机不可达。另 smoke 结果 3/3 failed、`unclassified`，失败证据只在 runner 本地（`artifactBaseUrl=null`），中心任务页只能显示 Windows 路径。
+
+- **执行机可观测**：项目页执行机表新增版本列（旧 runner 显示“未知”，提示更新）；`artifactBaseUrl=null` 时显示未广播产物基址告警，并提示检查 8770 占用、`AOS_RUNNER_ARTIFACT_PORT=0` 与 `AOS_RUNNER_ADVERTISE_URL`。
+- **runner 侧自愈**：`Runtime.refreshCenterLlm` 在每个 `suite run --task` 前重拉 `/llm`（跨机 runner 换中心地址/重启后无需重启 runner）；产物服务默认广告第一块非回环 IPv4（`AOS_RUNNER_ADVERTISE_URL` 可覆盖），避免 `os.hostname()` 在 LAN 无 DNS 时不可解析。
+- **定向下发**：`createTask` 的 legacy 拒绝仅在**未显式指定 host**时生效；显式 host（如 `win-runner-01`）走跨 root runner 校验：中心 owner 项目存在 + 该 host 已注册 suite runner → 写中心 store、`targetHostId=<runner host>`。
+- **中心公开地址**：`AOS_CENTER_PUBLIC_URL` 覆盖 suite 控制面的 `publicBaseUrl`；`/llm` 返回该地址下的代理 URL，避免 runner 拿到回环地址。`.env.example`/README 增加说明。
+- **smoke 结论**：任务 `aad7c37e-…` 已由 win-runner-01 领取并回写 3 条失败（`imp-4ee495af-19/20/21`，`unclassified`）；中心侧无 manifest/trace（runner 未广告 artifactBaseUrl），需要 runner 重启/配置 `AOS_RUNNER_ADVERTISE_URL` 或更新 runner 包后才能打开证据。
+- **远端证据标注**：任务详情检测 Windows/UNC manifestPath，显示「执行机本地清单 / 执行机本地 trace」并提示配置 `AOS_RUNNER_ADVERTISE_URL`；不再生成中心 404 的批次/trace 链接。
+- **应用包名**：回归任务新增可选 `appPackage`（Android package / iOS bundle id），面板下发表单与 `suite task create --app <package>` 均可填；runner 执行时转成 Artemis `locked_app_package`，执行前锁定并启动被测应用。未填时保持旧行为（不主动 launch，依赖设备当前前台应用）。
+- **中心 LLM 热更新重启**：`Runtime.refreshCenterLlm` 在每次任务前比对中心代理的 baseUrl/key/model 指纹；长驻 runner 的 Artemis 子进程仍在用旧指纹时 `markForRestart`，下次调用按新中心地址重启，避免旧地址连接失败导致用例集体超时。
+
+- **测试**：`npm test` 3101/3101、lint 0 error、类型测试通过。
+
+### 13.325 版本（0.2.0）
+
+> 2026-11-07。集中修复跨机 runner、记录闭环与面板交互后，版本从 0.1.0 升至 0.2.0；runner 包、adb-host 包文件名与 `AOS_MCP_VERSION` 同步更新；runner 包前缀改为 `aos-artemis-runner-`，避免与产品名/旧 Maestro runner 混淆。0.2.0 的 Windows runner 包含：任务级 `caseIds`（只重跑失败用例）、安装包自动安装、每任务刷新中心 LLM、默认 LAN 产物基址、运行结果/证据标注。升级时离线环境只需替换 `dist`（保留 `deps/`、`project/`、`.env`）。
+
+### 13.326 新增（回归任务应用包名 / 0.2.1）
+
+> 2026-11-07。真机 smoke 发现：任务只下发用例与安装包时，Artemis 不会主动 launch 被测应用，容易在设备当前前台停留到 15min poll 超时。回归任务新增可选 `appPackage`（Android package / iOS bundle id），面板「新建测试 → 参数」与 `suite task create --app <package>` 均可填；runner 读取任务字段后转成 `locked_app_package`，执行前锁定并启动应用。版本升至 0.2.1；未填包名保持旧行为（不主动 launch），不改变既有任务兼容性。
+
+### 13.327 诊断与修复（0.2.2）
+
+> 2026-11-07。真机 smoke 中应用已启动但 agent 无动作，trace `stderr.log` 为 `openai.APIConnectionError: Connection error` / `LLMExhaustedError`。0.2.2 增加可观测性：`Runtime.refreshCenterLlm` 在 `AOS_LLM_FROM_CENTER` 未启用时明确 WARN，成功时打印中心 LLM 的 `name/model/baseUrl`；`Runtime.prepareChildSpec` 打印 Artemis 子进程实际 `OPENAI_BASE_URL`（不含 key）。同时中心 LLM 指纹变化时对运行中的子进程 `markForRestart`，避免长驻 runner 复用旧地址。runner 包版本升至 0.2.2。
+
+### 13.328 执行进度与异常可见性（0.2.3）
+
+> 2026-11-08。真机 smoke 暴露控制面只有任务领取/最终结果，Artemis 子进程异常后 `status.json` 仍为 `running`，面板只能等待 15 分钟并显示假 running。
+>
+> - **进度协议**：`RegressionTaskRecord.progress` 保存最新快照（seq/phase/percent/caseId/traceId/message/errorCode/at），runner 经既有 `updateRegressionTask` 控制面主动上报；面板任务列表显示百分比与当前消息，详情显示阶段/更新时间/失败证据链接。
+> - **预检**：中心 LLM 模式下，suite run 在启动应用前用 1-token `chat/completions` 探针检查中心代理；失败直接任务 failed（`llm-unreachable`），不再启动应用空等。
+> - **快速失败**：case poll 同时检查 `status.error` 与 trace `stderr.log` 的 `CRITICAL ERROR`/`LLMExhaustedError`/`APIConnectionError`；命中立即失败；默认单用例超时 180s（`AOS_SUITE_CASE_TIMEOUT_MS` 可覆盖）。
+> - **取消终止**：轮询中检查 `shouldAbort`，命中即停止等待并对 Artemis 子进程 `markForRestart`。
+> - **证据上传**：runner 失败时 best-effort 上传 `status.json`/`stderr.log`/`stdout.log` 到中心 `.artemis/remote-evidence/<taskId>/<traceId>/`；白名单、单文件 256KB、总包 1MB；面板只给「查看失败证据」链接。
+- **每主机 token 免 host 头**：`AOS_RUNNER_HOST_TOKENS` 命中的 runner token 本身绑定 host；LLM 代理请求（Artemis/OpenAI 客户端只带 Authorization）不再强制 `X-AOS-Host-Id`，否则会 403。全局 token 仍要求 host 头。
+> - **版本**：runner 包与 `AOS_MCP_VERSION` 升至 0.2.3。
+
+### 13.329 代理绕过与重试诊断（0.2.4）
+
+> 2026-11-08。0.2.3 真机证据显示：中心预检已通过，但 Artemis 子进程持续 `Retrying request to /chat/completions`，180s 后超时。原因是 Windows 公司代理拦截了发往中心 LAN 的 Python 请求。
+>
+> - `buildChildEnvForEntry` 从 `MOBILE_TESTING_RUNNER_CONTROL_URL` 自动提取中心 host，合并到子进程 `NO_PROXY`/`no_proxy`（并保留 localhost/127.0.0.1）；不再要求用户手工改 `runner.cmd`。
+> - `traceTerminalError` 检测 `Retrying request to /chat/completions` ≥3 次，立即失败并提示检查中心代理/NO_PROXY。
+> - 版本升至 0.2.4。
+
+### 13.330 复盘（2026-11-06—08 Android 真机自动化返工）
+
+> 2026-11-08。完整事实、根因与验收闸门见 `docs/superpowers/specs/2026-11-08-android-runner-delivery-retro.md`。结论：三天返工不是单个测试脚本问题，而是四点叠加——①起点选型错（Maestro 把“确定性”排在真实环境的安装/运维成本之前，见 §13.317）；②runner 与 MCP 的边界未先对齐；③以“编译/单测/打包成功”代替端到端验收，导致每次都由用户在 Windows/真机上暴露下一个缺陷；④返工横跨 3 天、主会话跨两天，并中途扩大范围（面板 UX 等）。
+>
+> **新增交付闸门（P0）**：干净 Windows 主机上 `setup → configure → runner 60s 内上线 → 单用例下发 → 面板进度 → App 动作 → trace/结果回写` 全绿，且失败注入能在 180s 内给出 typed error；未通过前冻结新功能/UX 与非关键路径改动。**回归可用另需两条**：同一用例连续 5 次结果一致（不一致即 quarantine）、每条用例至少 1 条硬断言（只有 LLM `completed` 而无硬断言判 `inconclusive`，不得 PASS）；失败域补 `llm-failure`，只有经裁决确认的 `app-defect` 允许自动建 Jira。单例/单批 token 预算与熔断为**闭环后的后续项**，当前不挡门禁（先闭环，再优化成本）。替换执行栈前先做 ≤60 分钟真机 spike；若当前栈 5 次一致性失败且证据指向 LLM 规划，再做 1 天 Appium 对照（同设备/同 3 条用例/同断言）。架构边界先出一页图并由用户确认。该闸门只约束交付流程，不改变运行时行为。
+
+### 13.331 发布（runner 0.2.5：offline 包自动使用内置依赖）
+
+> 2026-11-09。0.2.4 offline 包的 `runner.cmd` 仍直接执行 `doctor --install-deps`，首次启动会走在线安装；`setup.cmd` 虽含 offline 分支，但用户直接运行 `runner.cmd` 时不会触发，离线/代理环境因此不可用。0.2.5 修复：`runner.cmd` 缺依赖时先检测 `deps\win32-site-packages.zip`，存在则 `call setup-offline.cmd`，否则才走在线 `doctor --install-deps`；`check-runner-bundle` 与契约测试同时接受 online/offline 两种依赖入口。版本升至 0.2.5。
+
+### 13.332 新增（Excel 导入检测设计上下文与提醒）
+
+> 2026-11-09。Excel 导入时新增只读设计上下文检测（`src/workflow/design-context.ts`）：flows.json、ui-contract.json、screen-map.json、acceptance.json、逐屏 `.pen`、设计截图目录、参考图资产（web_assets kind=reference）以及 Figma 凭证是否存在；同时读取 Excel 工作簿内嵌图片数量。导入结果新增 `design` 摘要（`available/sources/excelImages/designRefs/warnings/nextAction`），`run_regression` 与面板 `/panel/api/import` 原样透传；控制台在存在提醒时先显示“导入完成，但需注意…”，2.5s 后再刷新。
+>
+> - **提醒规则**：Excel 含内嵌图片 → 明确告知不会自动把图片当设计基线；有参考图但无 flows/ui-contract → 提示参考图不等于可校验契约；有设计基线但 Excel 无「设计引用」列 → 提示只能按「模块」名做 UI 对比；有引用 → 提示可运行 `suite run --ui-diff`；无任何设计上下文 → 提示本次仅按 Excel 文本执行。
+> - **边界**：只读检测，不触网、不调用 Figma/pen、不自动提取图片或参考图；未映射/未检测到显式披露，不伪造设计覆盖。
+> - **测试**：`test/workflow-excel-import.test.js`（内嵌图片、设计基线、提醒）、`test/workflow-run-regression.test.js`（design 透传）；现有面板导入测试保持全绿。
+>
+> 设计草案（待 review）：`docs/superpowers/specs/2026-11-09-design-assisted-excel-enrich.md`——Excel 行 + 设计 flows 的逐行映射/注入（保留 Excel 原步骤），P0 先做 deterministic preview；不在本阶段改实现。
+
+### 13.333 新增（Excel 模板 Section / Wireframe / Related TC）
+
+> 2026-11-09。真实模板 `GU Navigation Menu-Test Case.xlsx`（33 条、8 个 Section）驱动：`importTestDocument` 新增可见列 `Section`、`Wireframe`（设计引用/设计屏名）、`Related TC`。
+>
+> - **分组**：有 `Section` 时按 Section 拆集/生成 featureKey（`Module` 仅作 parent）；无 Section 回退 Module，旧 Excel 行为不变。
+> - **Wireframe**：按换行拆设计屏名（兼容 `)0.` 粘连），写入 `screens`、`designRefs.screens/nodeIds:[]` 与 taskDesc「设计引用：…」；无 Wireframe 的行保留 feature 名作屏名，不静默。
+> - **Related TC**：写入 `relatedCases`（只读展示，不参与匹配）。
+> - **模板差异**：列名自动识别只是默认别名，不是契约；MCP `columns` 可显式覆盖 Section/Wireframe/Related TC。导入响应 `design.columns` 回显实际映射；Wireframe 若为 URL/图片/路径、Related TC 若为 Jira 单号，则不写入 designRefs/relatedCases 并显式 warning。面板 `excel_mappings` 已加入这三列（资产页预览/保存），面板资产导入优先使用该资产最新映射；该资产无映射时按“工作表相同 + 映射表头全部存在于新资产表头”复用同项目旧资产映射（同一模板新文件），仍不匹配才自动识别；剩余缺口是 MCP `needs-info` 与设计索引校验。
+> - **实测**：33 条 → 8 个 Section 集；29 行带 Wireframe；26 个唯一屏名与 Figma depth=4 名称索引 exact 22 / near 4 / missing 0。near-match（Homepage/Forgot Password/MOGI `0.1_Register`）仍需消歧，不能靠短名误命中。
+> - **测试**：`test/workflow-excel-import.test.js` 增加真实列形状（Section 分组、Wireframe 换行/粘连、Related TC、designRefs）；`npm test`/lint 全绿。
+
+### 13.334 修复（面板工作区发现：空台账不再算项目）
+
+> 2026-11-09。现象：服务仓库下遗留 `ESSO-GU/`、`starbuckstw/`、`starbucks-ios-taiwan/` 空目录（只有 `.artemis/ledger/state.json`，`projects: []`），面板工作区发现把它们当作“未归属主机”项目，与 PG 中真实项目同名 → 同一项目出现两行（一行绑定主机、一行未归属）。
+>
+> - **根因**：`hasProjectMarker` 只判断 `.artemis/ledger/state.json` 是否存在；一次误跑生成空台账就会让目录变成“项目”。
+> - **修复**：标记只认 `aos.config.jsonc`、`.artemis/design/tests.json`、`.artemis/design/flows.json`，或 `state.projects` 中确实登记了该 root；空台账/`projects: []` 不算。工作区目录仍可经 `AOS_PANEL_PROJECTS` 显式白名单纳入。
+> - **测试**：`test/panel-overview.test.js` 增加“空台账不发现”“已登记项目不被同名空台账目录复制”；原有工作区未注册行用例改用 `aos.config.jsonc` 标记。

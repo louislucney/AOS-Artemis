@@ -123,6 +123,42 @@ test("linearizeFlows: chains consecutive interactions into a path and stops at b
   assert.equal(flows[0][2].back, true);
 });
 
+test("generateTestCases: Phase 1 structured actions 生成（tap/wait/back）", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  const identifiers = new Map([[normalizeElementLabel("Buy now"), "btn_buy"]]);
+  const cases = generateTestCases(graph, {
+    identifiers,
+    targetKind: "view-tag"
+  });
+  assert.equal(cases.length, 1);
+  const testCase = cases[0];
+  assert.equal(testCase.engine, "native", JSON.stringify(testCase.engineReason));
+  assert.ok(testCase.actions);
+  assert.equal(testCase.actions.length, 3);
+  assert.deepEqual(
+    testCase.actions.map((action) => action.action),
+    ["tap", "wait", "back"]
+  );
+  assert.deepEqual(testCase.actions[0].target, { kind: "view-tag", value: "btn_buy" });
+  assert.deepEqual(testCase.actions[0].fallbackTargets, [{ kind: "text", value: "Buy now" }]);
+  assert.equal(testCase.actions[0].expect.screen, "Checkout");
+  assert.ok(testCase.actions[0].expect.hints.length > 0);
+});
+
+test("generateTestCases: 无标识符时显式回退 artemis，不伪造 native action", () => {
+  const graph = buildFlowGraph(syntheticFlowDocument());
+  const cases = generateTestCases(graph);
+  assert.equal(cases.length, 1);
+  assert.equal(cases[0].engine, "artemis");
+  assert.equal(cases[0].engineReason, "actions-incomplete");
+  assert.ok(cases[0].actions);
+  assert.deepEqual(
+    cases[0].actions.map((action) => action.action),
+    ["wait", "back"]
+  );
+  assert.ok(!cases[0].actions.some((action) => action.action === "tap"));
+});
+
 test("generateTestCases: artemis task descriptions with locators and assertions", () => {
   const graph = buildFlowGraph(syntheticFlowDocument());
   const cases = generateTestCases(graph);
@@ -963,6 +999,11 @@ test("figma_generate_tests: element-map identifiers appear in step notes", async
   const payload = parseToolResult(await figmaGenerateTests(runtime, { save: false }));
   assert.equal(payload.ok, true);
   assert.match(payload.flows[0].steps[0], /a11y: buyNowCta/);
+  assert.equal(payload.flows[0].engine, "native");
+  assert.deepEqual(payload.flows[0].actions[0].target, {
+    kind: "resource-id",
+    value: "buyNowCta"
+  });
 });
 
 test("generateTestCases: inferred edges become exploration steps", () => {

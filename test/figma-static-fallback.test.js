@@ -275,3 +275,77 @@ test("mergeStaticEdges: static clue edges + layout chain connect unreachable scr
     )
   );
 });
+
+test("figma extract: node-id 走 /nodes 节点级拉取，不下载整文件", async () => {
+  const root = await mkdtemp(join(tmpdir(), "aos-node-scoped-"));
+  const originalFetch = globalThis.fetch;
+  const requested = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    requested.push(url);
+    if (url.includes("/nodes?ids=")) {
+      const nodeId = decodeURIComponent(url.split("ids=")[1] ?? "");
+      const page = FILE.document.children[0];
+      const node =
+        nodeId === "1:1"
+          ? page.children.find((entry) => entry.id === "1:1")
+          : page;
+      return new Response(JSON.stringify({ nodes: { [nodeId]: { document: node } } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    return new Response(JSON.stringify(FILE), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  const oldTtl = process.env.AOS_FIGMA_CACHE_TTL_MS;
+  process.env.AOS_FIGMA_CACHE_TTL_MS = "0";
+  try {
+    const byUrl = await figmaExtractFlows(
+      runtimeFor(root),
+      {
+        url: "https://www.figma.com/design/NodeScoped1/demo?node-id=0-1",
+        screens: false,
+        save: false
+      },
+      { figmaToken: "tok-node" }
+    );
+    const byUrlText = byUrl.content.find((entry) => entry.type === "text").text;
+    const byUrlPayload = JSON.parse(byUrlText);
+    assert.equal(byUrlPayload.ok, true, byUrlText);
+    assert.ok(
+      requested.some((url) => url.includes("/files/NodeScoped1/nodes?ids=0%3A1")),
+      "带 node-id 的 URL 走节点接口"
+    );
+    assert.ok(
+      !requested.some((url) => /\/files\/NodeScoped1(\?|$)/.test(url)),
+      "不请求整文件"
+    );
+
+    requested.length = 0;
+    const byArg = await figmaExtractFlows(
+      runtimeFor(root),
+      {
+        url: "https://www.figma.com/design/NodeScoped1/demo",
+        nodeId: "1-1",
+        screens: false,
+        save: false
+      },
+      { figmaToken: "tok-node" }
+    );
+    const byArgPayload = JSON.parse(byArg.content.find((entry) => entry.type === "text").text);
+    assert.equal(byArgPayload.ok, true);
+    assert.ok(
+      requested.some((url) => url.includes("/files/NodeScoped1/nodes?ids=1%3A1")),
+      "nodeId 1-1 归一为 1:1 并走节点接口"
+    );
+    assert.equal(byArgPayload.counts.screens, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (oldTtl === undefined) delete process.env.AOS_FIGMA_CACHE_TTL_MS;
+    else process.env.AOS_FIGMA_CACHE_TTL_MS = oldTtl;
+    await rm(root, { recursive: true, force: true });
+  }
+});

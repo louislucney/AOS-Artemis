@@ -266,13 +266,7 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
   }
 
   const webProject = await input.store.getWebProject(input.rootPath);
-  if (webProject === null) {
-    throw new WebJobDispatchError(
-      "project-not-found",
-      `不是托管 Web 项目：${input.rootPath}`
-    );
-  }
-  if (webProject.status !== "active") {
+  if (webProject !== null && webProject.status !== "active") {
     throw new WebJobDispatchError(
       "project-archived",
       `项目已归档（status=${webProject.status}）：${webProject.name}`

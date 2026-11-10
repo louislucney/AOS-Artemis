@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import ExcelJS from "exceljs";
@@ -10,6 +11,7 @@ import { storeWebAsset } from "../dist/web/assets.js";
 import { createWebJob } from "../dist/web/jobs.js";
 import { parseWebJobSpec } from "../dist/web/job-spec.js";
 import { ingestLlmResults } from "../dist/web/llm/ingest.js";
+import { persistLlmCasePlan } from "../dist/web/llm/cli.js";
 import { runLlmWorkerOnce } from "../dist/web/llm/worker.js";
 import { readWebJobResult } from "../dist/web/results.js";
 
@@ -220,6 +222,79 @@ test("runLlmWorkerOnce: 用例超时 → ERROR/case-timeout 并中止 signal", a
   assert.equal(result.jobs[0].results[0].status, "ERROR");
   assert.equal(result.jobs[0].results[0].failureReason, "case-timeout");
   assert.equal(signal.aborted, true);
+});
+
+test("createWebJob: 本地注册项目（无 web_projects 行）可创建 pending 任务", async () => {
+  const store = new MemoryStore();
+  const rootPath = `/tmp/aos-llm-local-${randomUUID()}`;
+  await store.upsertProject({ rootPath, name: "local" });
+  assert.equal(await store.getWebProject(rootPath), null);
+  await mkdir(rootPath, { recursive: true });
+  const excel = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "excel",
+    filename: "cases.xlsx",
+    buffer: Buffer.from("PK-fake-xlsx")
+  });
+  const pkg = await storeWebAsset({
+    store,
+    rootPath,
+    kind: "package",
+    filename: "app.apk",
+    buffer: Buffer.from("fake-apk")
+  });
+  const created = await createWebJob({
+    store,
+    rootPath,
+    assignment: "auto",
+    requirements: { platform: "android", deviceKind: "any" },
+    excelAssetId: excel.id,
+    packageAssetId: pkg.id,
+    executionMode: "llm",
+    caseFilter: { modules: [], caseIds: [] },
+    allowUnverified: true,
+    nowMs: NOW,
+    runnerTtlMs: 90_000
+  });
+  const project = await store.getProjectByPath(rootPath);
+  assert.ok(project);
+  assert.equal(created.task.projectId, project.id);
+  assert.equal(created.assignment, null);
+  assert.ok(created.pendingReason);
+  assert.equal(created.task.status, "pending");
+  assert.ok(created.task.jobSpec);
+});
+
+test("persistLlmCasePlan: Excel 生成的 taskDesc 落盘可追溯", async () => {
+  const rootPath = `/tmp/aos-case-plan-${randomUUID()}`;
+  await mkdir(rootPath, { recursive: true });
+  const job = {
+    task: { id: "task-plan-1" },
+    rootPath,
+    spec: { excelAssetId: "excel-asset-1" }
+  };
+  const cases = [
+    {
+      caseId: "TC-1",
+      name: "登录",
+      module: "登录",
+      taskDesc: "【真实数据】\n用例：登录\n步骤：输入账号密码",
+      expected: "进入首页",
+      reference: "login.png"
+    }
+  ];
+  const file = persistLlmCasePlan(job, cases);
+  assert.equal(
+    file,
+    join(rootPath, ".artemis", "web", "jobs", "task-plan-1", "case-plan.json")
+  );
+  const payload = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(payload.taskId, "task-plan-1");
+  assert.equal(payload.excelAssetId, "excel-asset-1");
+  assert.equal(payload.cases[0].caseId, "TC-1");
+  assert.equal(payload.cases[0].taskDesc, cases[0].taskDesc);
+  assert.equal(payload.cases[0].expected, "进入首页");
 });
 
 

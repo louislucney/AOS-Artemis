@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -10,7 +11,12 @@ import { resolveHostReference } from "../center/store.js";
 import { LEGACY_HOST_REASON } from "../host/legacy.js";
 import { exportProjectData, type ExportWhat } from "../export/index.js";
 import { errorMessage, log, maskSecret, writeFileAtomic } from "../util.js";
-import { importTestDocument } from "../workflow/excel-import.js";
+import { importTestDocument, type ImportColumns } from "../workflow/excel-import.js";
+import { designAssistedImport } from "../workflow/design-enrich.js";
+import { figmaExtractFlows, type ExtractFlowsArgs } from "../figma/flows.js";
+import { listFigmaFrames } from "../figma/inventory.js";
+import { penExtractFlows, type PenExtractFlowsArgs } from "../pen/flows.js";
+import type { Runtime } from "../runtime.js";
 import { writeEnvUpdates } from "../env-file.js";
 import { aosConfigure } from "../tools/configure.js";
 import { syncFigmaTokenEnv } from "../figma/token.js";
@@ -38,7 +44,8 @@ import {
   previewExcelAsset,
   saveExcelMapping
 } from "../web/excel-mapping.js";
-import { ExcelMappingError } from "../web/excel.js";
+import { ExcelMappingError, normalizeExcelHeader, readExcelHeaders } from "../web/excel.js";
+import { suggestExcelMapping } from "../web/excel-columns.js";
 import {
   DEFAULT_SYSTEM_COLUMN_MODE,
   parseSystemColumnMode,
@@ -51,6 +58,7 @@ import { parseWebJobSpec, WebJobDispatchError, normalizeCaseFilter, type WebJobE
 import { createWebJob } from "../web/jobs.js";
 import { PenReferenceError, storePenReference, type PenReferenceResult } from "../web/pen-reference.js";
 import { FigmaReferenceError, storeFigmaReference } from "../web/figma-reference.js";
+import { inferAppIdFromPackage } from "../web/package-inspect.js";
 import {
   compareOsVersions,
   parseOsVersion,
@@ -1304,6 +1312,30 @@ function excelMappingErrorResponse(error: unknown): PanelWebResponse | null {
   return null;
 }
 
+/** 已保存的 Excel 模板映射 → importTestDocument 的列覆盖；未保存/空映射返回 undefined（走自动识别）。 */
+function importColumnsFromMapping(
+  columnMap: Record<string, string> | undefined
+): ImportColumns | undefined {
+  if (columnMap === undefined) return undefined;
+  const value = (key: string): string | undefined => {
+    const raw = columnMap[key];
+    return typeof raw === "string" && raw.trim() !== "" ? raw.trim() : undefined;
+  };
+  const columns: ImportColumns = {
+    ...(value("name") !== undefined ? { name: value("name") } : {}),
+    ...(value("steps") !== undefined ? { steps: value("steps") } : {}),
+    ...(value("expected") !== undefined ? { expected: value("expected") } : {}),
+    ...(value("preconditions") !== undefined ? { preconditions: value("preconditions") } : {}),
+    ...(value("module") !== undefined ? { module: value("module") } : {}),
+    ...(value("section") !== undefined ? { section: value("section") } : {}),
+    ...(value("caseId") !== undefined ? { displayId: value("caseId") } : {}),
+    ...(value("testData") !== undefined ? { testData: value("testData") } : {}),
+    ...(value("wireframe") !== undefined ? { wireframe: value("wireframe") } : {}),
+    ...(value("relatedTc") !== undefined ? { relatedTc: value("relatedTc") } : {})
+  };
+  return Object.keys(columns).length > 0 ? columns : undefined;
+}
+
 async function previewExcelMappingAction(
   deps: PanelWebDeps,
   resolved: { rootPath: string; hostId: string | null },
@@ -1710,6 +1742,15 @@ async function createTask(
     }
     if (lower.endsWith(".ipa") && !uniquePlatforms.includes("ios")) {
       return json(400, { error: "所选 IPA 与目标端不匹配：需要勾选 iOS" });
+    }
+    try {
+      const derived = await inferAppIdFromPackage(
+        await readFile(asset.storagePath),
+        asset.filename
+      );
+      if (derived !== null) appPackage = derived;
+    } catch {
+      /* 读不到安装包时保留手填值/空；执行机会沿用设备当前应用 */
     }
     appAssetId = rawAppAssetId;
   }
@@ -2739,6 +2780,336 @@ function safeUploadBase(filename: string): string {
   return cleaned === "" ? "upload" : cleaned;
 }
 
+async function designImportPreflight(
+  runtime: Runtime,
+  excelPath: string,
+  columns: ImportColumns | undefined
+): Promise<{ hasWireframe: boolean; indexKind: "flows" | "ui-contract" | null }> {
+  let hasWireframe = columns?.wireframe !== undefined;
+  if (!hasWireframe) {
+    const buffer = await readFile(excelPath).catch(() => null);
+    const isCsv = path.extname(excelPath).toLowerCase() === ".csv";
+    const headers =
+      buffer === null
+        ? null
+        : await readExcelHeaders(buffer, isCsv ? { format: "csv" } : {}).catch(() => null);
+    if (headers !== null) {
+      hasWireframe = suggestExcelMapping(headers.headers).wireframe !== undefined;
+    }
+  }
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const flows = path.join(designDir, "flows.json");
+  const contract = path.join(designDir, "ui-contract.json");
+  const exists = async (target: string): Promise<boolean> =>
+    stat(target)
+      .then((info) => info.isFile())
+      .catch(() => false);
+  const indexKind = (await exists(flows))
+    ? "flows"
+    : (await exists(contract))
+      ? "ui-contract"
+      : null;
+  return { hasWireframe, indexKind };
+}
+
+async function runDesignImport(
+  runtime: Runtime,
+  excelPath: string,
+  sourceName: string | undefined,
+  columns: ImportColumns | undefined,
+  apply: boolean
+): Promise<PanelWebResponse> {
+  const preflight = await designImportPreflight(runtime, excelPath, columns);
+  const baseDesign = {
+    hasWireframe: preflight.hasWireframe,
+    indexKind: preflight.indexKind
+  };
+  if (!preflight.hasWireframe) {
+    return json(200, {
+      ok: true,
+      mode: "design-preview",
+      design: {
+        ...baseDesign,
+        available: false,
+        reason: "no-wireframe",
+        message: "Excel 没有 Wireframe/设计引用列；设计增强不适用，可直接普通导入。"
+      }
+    });
+  }
+  if (preflight.indexKind === null) {
+    return json(200, {
+      ok: true,
+      mode: "design-preview",
+      design: {
+        ...baseDesign,
+        available: false,
+        reason: "design-index-missing",
+        message:
+          "未找到 .artemis/design/flows.json 或 ui-contract.json；设计增强需要先生成设计索引（Figma/pen 提取），或选择普通导入。"
+      }
+    });
+  }
+  const result = await designAssistedImport(runtime, {
+    excelPath,
+    ...(sourceName === undefined ? {} : { sourceName }),
+    ...(columns === undefined
+      ? {}
+      : { columns: columns as unknown as Record<string, string> }),
+    save: apply,
+    apply
+  });
+  if (!result.ok) {
+    const needs = result.needs === "info";
+    return json(needs ? 409 : 400, {
+      ok: false,
+      ...(needs
+        ? {
+            needs: "info",
+            category: result.category,
+            questions: result.questions,
+            context: result.context
+          }
+        : {}),
+      error: result.error,
+      ...(result.report === undefined ? {} : { report: result.report }),
+      design: { ...baseDesign, available: true }
+    });
+  }
+  return json(200, {
+    ok: true,
+    mode: apply ? "design-apply" : "design-preview",
+    design: { ...baseDesign, available: true, report: result.report },
+    ...(result.apply === undefined ? {} : { apply: result.apply }),
+    ...(result.needsInfo === undefined ? {} : { needsInfo: result.needsInfo })
+  });
+}
+
+async function executeDesignSource(
+  store: ProjectStore,
+  runtime: Runtime,
+  rootPath: string,
+  excelPath: string,
+  sourceName: string | undefined,
+  columns: ImportColumns | undefined,
+  payload: Record<string, unknown>,
+  designExtract: PanelWebDeps["designExtract"]
+): Promise<PanelWebResponse> {
+  const source =
+    payload.source === "pen" ? "pen" : payload.source === "figma" ? "figma" : null;
+  if (source === null) {
+    return json(400, { error: "source 仅支持 figma / pen" });
+  }
+  let toolName: string;
+  let args: Record<string, unknown>;
+  if (source === "figma") {
+    const url = typeof payload.figmaUrl === "string" ? payload.figmaUrl.trim() : "";
+    if (url === "") return json(400, { error: "请填写 Figma URL" });
+    const nodeId = typeof payload.nodeId === "string" ? payload.nodeId.trim() : "";
+    toolName = "figma_extract_flows";
+    args = { url, ...(nodeId === "" ? {} : { nodeId }), save: true, screens: false };
+  } else {
+    const penAssetId =
+      typeof payload.penAssetId === "string" ? payload.penAssetId.trim() : "";
+    if (penAssetId === "") return json(400, { error: "请选择 .pen 文件" });
+    const assets = await store.listWebAssets(rootPath, "reference").catch(() => []);
+    const asset = assets.find((entry) => entry.id === penAssetId);
+    if (asset === undefined || !asset.filename.toLowerCase().endsWith(".pen")) {
+      return json(404, { error: "未找到 .pen 参考资产" });
+    }
+    toolName = "pen_extract_flows";
+    args = { path: asset.storagePath, save: true, screens: false, vision: false };
+  }
+
+  let result: {
+    content?: Array<{ type: string; text?: string }>;
+    isError?: boolean;
+  };
+  try {
+    if (source === "figma") {
+      const figmaToken =
+        (runtime.project.dotenvValues?.FIGMA_ACCESS_TOKEN ?? "").trim() ||
+        (process.env.FIGMA_ACCESS_TOKEN ?? "").trim() ||
+        null;
+      result = designExtract?.figma
+        ? await designExtract.figma(runtime, args)
+        : await figmaExtractFlows(runtime, args as unknown as ExtractFlowsArgs, {
+            figmaToken
+          });
+    } else {
+      result = designExtract?.pen
+        ? await designExtract.pen(runtime, args)
+        : await penExtractFlows(runtime, args as unknown as PenExtractFlowsArgs);
+    }
+  } catch (error) {
+    return json(400, { ok: false, error: `设计提取失败：${errorMessage(error)}` });
+  }
+  const text = (result.content ?? [])
+    .filter(
+      (entry): entry is { type: "text"; text: string } =>
+        entry.type === "text" && typeof entry.text === "string"
+    )
+    .map((entry) => entry.text)
+    .join("\n");
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    const value = JSON.parse(text) as unknown;
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      parsed = value as Record<string, unknown>;
+    }
+  } catch {
+    /* non-JSON tool output is handled below */
+  }
+  if (result.isError === true || parsed?.ok === false) {
+    return json(400, {
+      ok: false,
+      error:
+        typeof parsed?.error === "string" && parsed.error !== ""
+          ? parsed.error
+          : text || `${toolName} 失败`
+    });
+  }
+  return await runDesignImport(runtime, excelPath, sourceName, columns, false);
+}
+
+type DesignJobStatus = "running" | "completed" | "failed";
+
+interface DesignJob {
+  id: string;
+  rootPath: string;
+  source: "figma" | "pen";
+  status: DesignJobStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  result: Record<string, unknown> | null;
+  error: string | null;
+}
+
+const DESIGN_JOB_TTL_MS = 30 * 60 * 1000;
+const DESIGN_JOB_MAX = 20;
+const designJobs = new Map<string, DesignJob>();
+const designJobByRoot = new Map<string, string>();
+
+function sweepDesignJobs(nowMs = Date.now()): void {
+  for (const [id, job] of designJobs) {
+    if (job.finishedAt === null) continue;
+    if (nowMs - Date.parse(job.finishedAt) > DESIGN_JOB_TTL_MS) {
+      designJobs.delete(id);
+      if (designJobByRoot.get(job.rootPath) === id) designJobByRoot.delete(job.rootPath);
+    }
+  }
+}
+
+function responseJson(response: PanelWebResponse): Record<string, unknown> {
+  const text =
+    typeof response.body === "string" ? response.body : response.body.toString("utf8");
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* non-JSON response is preserved below */
+  }
+  return {
+    ok: response.status >= 200 && response.status < 300,
+    status: response.status,
+    body: text.slice(0, 2000)
+  };
+}
+
+function designJobPayload(job: DesignJob): Record<string, unknown> {
+  return {
+    id: job.id,
+    source: job.source,
+    status: job.status,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    error: job.error,
+    ...(job.result === null ? {} : { result: job.result })
+  };
+}
+
+function runDesignSource(
+  store: ProjectStore,
+  runtime: Runtime,
+  rootPath: string,
+  excelPath: string,
+  sourceName: string | undefined,
+  columns: ImportColumns | undefined,
+  payload: Record<string, unknown>,
+  designExtract: PanelWebDeps["designExtract"]
+): PanelWebResponse {
+  sweepDesignJobs();
+  const existingId = designJobByRoot.get(rootPath);
+  const existing = existingId === undefined ? undefined : designJobs.get(existingId);
+  if (existing?.status === "running") {
+    return json(409, { error: "已有设计提取在进行", jobId: existing.id });
+  }
+  if (designJobs.size >= DESIGN_JOB_MAX) {
+    const stale = [...designJobs.values()]
+      .filter((job) => job.status !== "running")
+      .sort((left, right) => (left.finishedAt ?? "").localeCompare(right.finishedAt ?? ""))[0];
+    if (stale !== undefined) designJobs.delete(stale.id);
+  }
+  const source = payload.source === "pen" ? "pen" : "figma";
+  const job: DesignJob = {
+    id: `design-${Date.now()}-${randomUUID().slice(0, 8)}`,
+    rootPath,
+    source,
+    status: "running",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    result: null,
+    error: null
+  };
+  designJobs.set(job.id, job);
+  designJobByRoot.set(rootPath, job.id);
+  void (async () => {
+    try {
+      const response = await executeDesignSource(
+        store,
+        runtime,
+        rootPath,
+        excelPath,
+        sourceName,
+        columns,
+        payload,
+        designExtract
+      );
+      job.result = responseJson(response);
+      job.status = job.result.ok === false ? "failed" : "completed";
+    } catch (error) {
+      job.status = "failed";
+      job.error = errorMessage(error);
+    } finally {
+      job.finishedAt = new Date().toISOString();
+      if (designJobByRoot.get(rootPath) === job.id) designJobByRoot.delete(rootPath);
+    }
+  })();
+  return json(202, { ok: true, jobId: job.id, status: "running" });
+}
+
+function designJobStatusResponse(jobId: string): PanelWebResponse {
+  const job = designJobs.get(jobId);
+  if (job === undefined) return json(404, { error: "未知设计提取任务" });
+  return json(200, { ok: true, job: designJobPayload(job) });
+}
+
+async function runFigmaList(
+  runtime: Runtime,
+  payload: Record<string, unknown>
+): Promise<PanelWebResponse> {
+  const url = typeof payload.figmaUrl === "string" ? payload.figmaUrl.trim() : "";
+  if (url === "") return json(400, { error: "请填写 Figma URL" });
+  const token =
+    (runtime.project.dotenvValues?.FIGMA_ACCESS_TOKEN ?? "").trim() ||
+    (process.env.FIGMA_ACCESS_TOKEN ?? "").trim() ||
+    null;
+  const inventory = await listFigmaFrames({ url, token });
+  if (!inventory.ok) return json(400, { ok: false, error: inventory.error });
+  return json(200, { ok: true, mode: "design-figma-list", inventory });
+}
+
 async function runImport(
   deps: PanelWebDeps,
   rootPath: string,
@@ -2760,6 +3131,7 @@ async function runImport(
   importInFlight = true;
   let tmpPath: string | null = null;
   let tmpDir: string | null = null;
+  let columns: ImportColumns | undefined;
   try {
     let excelPath: string;
     let sourceName: string | undefined;
@@ -2770,6 +3142,31 @@ async function runImport(
       if (!asset) return json(404, { error: "Excel 资产不存在" });
       excelPath = asset.storagePath;
       sourceName = asset.filename;
+      const mappings = await deps.store
+        .listExcelMappings(rootPath, assetId)
+        .catch(() => []);
+      const latest = [...mappings].sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt)
+      )[0];
+      columns = importColumnsFromMapping(latest?.columnMap);
+      if (columns === undefined) {
+        // 同一模板的新资产：按工作表+表头兼容性复用本项目已保存的映射。
+        const buffer = await readFile(asset.storagePath).catch(() => null);
+        const headerInfo =
+          buffer === null ? null : await readExcelHeaders(buffer).catch(() => null);
+        if (headerInfo !== null) {
+          const normalized = new Set(headerInfo.headers.map(normalizeExcelHeader));
+          const compatible = (await deps.store.listExcelMappings(rootPath).catch(() => []))
+            .filter((mapping) => mapping.sheetName === headerInfo.sheetName)
+            .filter((mapping) =>
+              Object.values(mapping.columnMap).every((header) =>
+                normalized.has(normalizeExcelHeader(header))
+              )
+            )
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+          columns = importColumnsFromMapping(compatible?.columnMap);
+        }
+      }
     } else if (request.rawBody !== undefined) {
       const upload = await parseMultipartUpload(request.rawBody, request.contentType);
       tmpDir = await mkdtemp(path.join(tmpdir(), "aos-import-"));
@@ -2788,16 +3185,58 @@ async function runImport(
         error: "导入需要运行时解析（项目运行时不可用；可改用 CLI：suite task create --excel <file>）"
       });
     }
+    const mode = typeof payload.mode === "string" ? payload.mode.trim() : "plain";
+    if (mode === "design-source-status") {
+      const jobId = typeof payload.jobId === "string" ? payload.jobId.trim() : "";
+      if (jobId === "") return json(400, { error: "缺少 jobId" });
+      return designJobStatusResponse(jobId);
+    }
+    if (mode === "design-figma-list") {
+      if (assetId === "") {
+        return json(400, { error: "设计清单需要先上传 Excel 资产（assetId）" });
+      }
+      return await runFigmaList(runtime, payload);
+    }
+    if (mode === "design-source") {
+      if (assetId === "") {
+        return json(400, { error: "设计提取需要先上传 Excel 资产（assetId）" });
+      }
+      return await runDesignSource(
+        deps.store,
+        runtime,
+        rootPath,
+        excelPath,
+        sourceName,
+        columns,
+        payload,
+        deps.designExtract
+      );
+    }
+    if (mode === "design-preview" || mode === "design-apply") {
+      if (assetId === "") {
+        return json(400, { error: "设计增强导入需要先上传 Excel 资产（assetId）" });
+      }
+      return await runDesignImport(
+        runtime,
+        excelPath,
+        sourceName,
+        columns,
+        mode === "design-apply"
+      );
+    }
     const result = await importTestDocument(runtime, {
       excelPath,
-      ...(sourceName === undefined ? {} : { sourceName })
+      ...(sourceName === undefined ? {} : { sourceName }),
+      ...(columns === undefined ? {} : { columns })
     });
     if (!result.ok) return json(400, { ok: false, error: result.error ?? "导入失败" });
     return json(200, {
       ok: true,
       sourceId: result.sourceId,
       caseCount: result.sets.reduce((sum, set) => sum + set.caseCount, 0),
-      features: result.sets.map((set) => set.feature)
+      features: result.sets.map((set) => set.feature),
+      ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
+      ...(result.design !== undefined ? { design: result.design } : {})
     });
   } catch (error) {
     if (error instanceof UploadError) return json(error.status, { error: error.message });

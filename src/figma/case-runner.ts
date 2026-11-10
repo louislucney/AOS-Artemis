@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import {
   API_ERRORS_ARTIFACT,
@@ -7,17 +8,36 @@ import {
   type ApiErrorObservation,
   type loadApiErrorCatalog
 } from "../artemis/api-errors.js";
-import { classifyFailure, scriptProvenanceSignal } from "../artemis/failure-taxonomy.js";
-import { resultPayload, taskStatusOf, traceIdOf, type TaskStatus } from "../artemis/task-result.js";
+import {
+  classifyFailure,
+  scriptProvenanceSignal,
+  type FailureClassification
+} from "../artemis/failure-taxonomy.js";
+import { computeAndroidScriptAdherence } from "../artemis/android-adherence.js";
+import {
+  resultPayload,
+  taskStatusOf,
+  traceIdOf,
+  type TaskScriptAdherenceSummary,
+  type TaskStatus
+} from "../artemis/task-result.js";
 import { crashesForTrace } from "../crash/query.js";
 import { TERMINAL_TASK_STATUSES } from "../db/types.js";
 import type { IosDevice } from "../device/ios-actions.js";
+import { createAdbAndroidDevice } from "../device/android-actions.js";
+import type { StructuredDevice } from "../structured/device.js";
 import { classifyIosSerial } from "../device/ios.js";
 import type { IosLogWindowRequest } from "../device/ios-log.js";
 import { isIosTraceDir } from "../ios/trace-store.js";
+import {
+  runStructuredCase,
+  type StructuredIosRunResult
+} from "../ios/structured-runner.js";
+import { loadWebSecrets } from "../web/llm/secrets.js";
 import type { LogcatWindowResult } from "../device/logcat.js";
 import type { AppResetOutcome } from "../device/reset.js";
 import type { Runtime } from "../runtime.js";
+import { logWarn } from "../log.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { GeneratedCase } from "./design-store.js";
 import type { SuiteCaseResult, SuiteResetFn } from "./suite-runner.js";
@@ -110,6 +130,8 @@ export interface CaseRunContext {
   apiCatalog: ApiCatalog;
   resetFn: SuiteResetFn;
   iosDeviceWda: IosDevice | null;
+  /** 测试注入：Android 原生结构化 runner 的设备适配器。 */
+  androidDevice?: StructuredDevice | null;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   pollIntervalMs: number;
@@ -141,7 +163,13 @@ function uploadFailureEvidence(
   const upload = context.runtime.store.uploadTaskEvidence;
   if (taskId === null || upload === undefined) return;
   const files: Array<{ name: string; contentBase64: string }> = [];
-  for (const name of ["status.json", "stderr.log", "stdout.log"]) {
+  for (const name of [
+    "status.json",
+    "stderr.log",
+    "stdout.log",
+    "native-ios.json",
+    "native-android.json"
+  ]) {
     try {
       const buffer = fs.readFileSync(path.join(context.runtime.traceDir(traceId), name));
       if (buffer.length <= 256 * 1024) {
@@ -163,6 +191,247 @@ function uploadFailureEvidence(
     .catch(() => undefined);
 }
 
+function nativeFailure(
+  result: StructuredIosRunResult,
+  platform: "ios" | "android"
+): FailureClassification {
+  const label = platform === "ios" ? "iOS" : "Android";
+  const error = result.error ?? `native-${platform}-failed`;
+  if (
+    result.status === "error" &&
+    /(idb|adb|appium|wda|device|timeout|socket|connect|simulator|offline|unauthorized)/i.test(
+      error
+    )
+  ) {
+    return {
+      domain: "environment",
+      confidence: "high",
+      reason: `${label} 原生执行环境失败：${error}`,
+      evidence: [error]
+    };
+  }
+  if (
+    /(target-not-found|target-ambiguous|unsupported-action|unsupported-secret-ref|input-unsupported)/.test(
+      error
+    )
+  ) {
+    return {
+      domain: "case-defect",
+      confidence: "medium",
+      reason: `结构化动作无法执行：${error}`,
+      evidence: [error]
+    };
+  }
+  return {
+    domain: "behavior-or-design",
+    confidence: "high",
+    reason: `原生断言未通过：${error}`,
+    evidence: [error]
+  };
+}
+
+function nativeSubmitError(
+  testCase: GeneratedCase,
+  context: CaseRunContext,
+  message: string,
+  reset: AppResetOutcome | null,
+  engine: "native-ios" | "native-android" = "native-ios"
+): CaseRunOutcome {
+  void context.runtime.recordTaskSubmission({
+    traceId: null,
+    model: context.model,
+    status: "failed",
+    taskDesc: testCase.taskDesc,
+    caseId: testCase.id,
+    lockedAppPackage: context.lockedAppPackage
+  });
+  return {
+    submitted: false,
+    submitError: message,
+    terminal: false,
+    result: {
+      caseId: testCase.id,
+      name: testCase.name,
+      status: "submit-error",
+      ...(context.quarantined ? { quarantined: true } : {}),
+      traceId: null,
+      engine,
+      error: message,
+      testSummary: null,
+      scriptProvenance: testCase.scriptProvenance,
+      failure: classifyFailure({
+        submitError: message,
+        reset,
+        preconditions: testCase.preconditions
+      }),
+      apiErrors: [],
+      apiErrorsDegraded: null,
+      evidence: emptyEvidence(),
+      reset
+    }
+  };
+}
+
+async function executeNativeCase(
+  testCase: GeneratedCase,
+  context: CaseRunContext,
+  reset: AppResetOutcome | null,
+  platform: "ios" | "android"
+): Promise<CaseRunOutcome> {
+  const engine = platform === "ios" ? "native-ios" : "native-android";
+  const serial = context.deviceSerial;
+  if (serial === null) {
+    return nativeSubmitError(testCase, context, `${engine} 缺少 device_serial`, reset, engine);
+  }
+  let device: StructuredDevice | null;
+  if (platform === "ios") {
+    device = context.iosDeviceWda;
+    if (device === null) {
+      try {
+        device = await context.runtime.iosDevice(serial);
+      } catch (error) {
+        return nativeSubmitError(
+          testCase,
+          context,
+          `${engine} 设备解析失败：${errorMessage(error)}`,
+          reset,
+          engine
+        );
+      }
+    }
+  } else {
+    device = context.androidDevice ?? null;
+    if (device === null) {
+      try {
+        device = createAdbAndroidDevice(serial);
+      } catch (error) {
+        return nativeSubmitError(
+          testCase,
+          context,
+          `${engine} 设备解析失败：${errorMessage(error)}`,
+          reset,
+          engine
+        );
+      }
+    }
+  }
+  if (device === null) {
+    return nativeSubmitError(testCase, context, `${engine} 设备不可用：${serial}`, reset, engine);
+  }
+
+  const traceId = randomUUID();
+  const traceDir = context.runtime.traceDir(traceId);
+  fs.mkdirSync(traceDir, { recursive: true });
+  const startedAt = context.now();
+  const secrets = await loadWebSecrets({
+    store: context.runtime.store,
+    rootPath: context.runtime.project.rootDir,
+    env: process.env
+  }).catch(() => []);
+  const resolveSecret = (ref: string): string | null =>
+    secrets.find((entry) => entry.alias.toLowerCase() === ref.toLowerCase())?.value ?? null;
+  let run: StructuredIosRunResult;
+  try {
+    run = await runStructuredCase({
+      device,
+      actions: testCase.actions,
+      resolveSecret,
+      ...(context.pollTimeoutMs > 0 ? { stepTimeoutMs: context.pollTimeoutMs } : {})
+    });
+  } catch (error) {
+    run = { status: "error", steps: [], error: errorMessage(error) };
+  }
+  const finishedAt = context.now();
+  const passed = run.status === "passed";
+  const failedStep = run.steps.find((step) => step.status !== "passed");
+  const statusPayload = {
+    trace_id: traceId,
+    status: passed ? "completed" : "failed",
+    device_serial: serial,
+    error: passed ? null : (run.error ?? `native-${platform}-failed`),
+    message: `engine=${engine}`,
+    test_summary: {
+      task_status: passed ? "completed" : "failed",
+      passed: passed ? run.steps.length : 0,
+      failed: passed ? 0 : Math.max(1, run.steps.filter((step) => step.status !== "passed").length),
+      inconclusive: 0,
+      unchecked: 0,
+      synthesized: false,
+      failed_items:
+        failedStep === undefined
+          ? []
+          : [
+              {
+                item_text: failedStep.error ?? `step ${failedStep.index}`,
+                kind: engine,
+                evidence: failedStep.action
+              }
+            ]
+    },
+    start_time: startedAt / 1000,
+    end_time: finishedAt / 1000
+  };
+  writeFileAtomic(
+    path.join(traceDir, "status.json"),
+    `${JSON.stringify(statusPayload, null, 2)}\n`
+  );
+  writeFileAtomic(
+    path.join(traceDir, `${engine}.json`),
+    `${JSON.stringify({ traceId, caseId: testCase.id, engine, ...run }, null, 2)}\n`
+  );
+  const status = taskStatusOf(statusPayload);
+  await context.runtime.recordTaskSubmission({
+    traceId,
+    model: context.model,
+    status: passed ? "completed" : "failed",
+    taskDesc: testCase.taskDesc,
+    caseId: testCase.id,
+    lockedAppPackage: context.lockedAppPackage
+  });
+  await context.runtime.recordTaskResult({
+    isError: !passed,
+    traceId,
+    model: context.model,
+    taskDesc: testCase.taskDesc,
+    lockedAppPackage: context.lockedAppPackage
+  });
+
+  const result: SuiteCaseResult = {
+    caseId: testCase.id,
+    name: testCase.name,
+    status: passed ? "passed" : "failed",
+    ...(context.quarantined ? { quarantined: true } : {}),
+    traceId,
+    engine,
+    error: passed ? null : (run.error ?? `native-${platform}-failed`),
+    testSummary: status?.testSummary ?? null,
+    scriptProvenance: testCase.scriptProvenance,
+    failure: passed ? null : nativeFailure(run, platform),
+    apiErrors: [],
+    apiErrorsDegraded: null,
+    evidence: emptyEvidence(),
+    reset
+  };
+  if (!passed) uploadFailureEvidence(context, testCase.id, traceId);
+  return { result, submitted: true, submitError: null, terminal: true };
+}
+
+function executeNativeIosCase(
+  testCase: GeneratedCase,
+  context: CaseRunContext,
+  reset: AppResetOutcome | null
+): Promise<CaseRunOutcome> {
+  return executeNativeCase(testCase, context, reset, "ios");
+}
+
+function executeNativeAndroidCase(
+  testCase: GeneratedCase,
+  context: CaseRunContext,
+  reset: AppResetOutcome | null
+): Promise<CaseRunOutcome> {
+  return executeNativeCase(testCase, context, reset, "android");
+}
+
 export async function executeCase(
   testCase: GeneratedCase,
   context: CaseRunContext
@@ -181,6 +450,23 @@ export async function executeCase(
   }
 
   const taskDesc = taskDescForTarget(testCase.taskDesc, context.deviceSerial);
+  const nativeTargetKind =
+    context.deviceSerial === null ? null : classifyIosSerial(context.deviceSerial);
+  const wantsNative =
+    testCase.engine === "native" ||
+    (testCase.engine === "auto" && testCase.actions.length > 0);
+  if (wantsNative) {
+    if (testCase.actions.length === 0) {
+      return nativeSubmitError(testCase, context, "native 用例缺少 actions", reset);
+    }
+    if (context.deviceSerial === null) {
+      return nativeSubmitError(testCase, context, "native 用例缺少 device_serial", reset);
+    }
+    if (nativeTargetKind !== null) {
+      return await executeNativeIosCase(testCase, context, reset);
+    }
+    return await executeNativeAndroidCase(testCase, context, reset);
+  }
   const submitArgs: Record<string, unknown> = { task_desc: taskDesc };
   if (context.model) submitArgs.model = context.model;
   if (context.deviceSerial) submitArgs.device_serial = context.deviceSerial;
@@ -210,6 +496,7 @@ export async function executeCase(
         status: "submit-error",
         ...(context.quarantined ? { quarantined: true } : {}),
         traceId: null,
+        engine: "proxy",
         error: message,
         testSummary: null,
         scriptProvenance: testCase.scriptProvenance,
@@ -251,6 +538,7 @@ export async function executeCase(
         status: "submit-error",
         ...(context.quarantined ? { quarantined: true } : {}),
         traceId: null,
+        engine: "proxy",
         error: message,
         testSummary: null,
         scriptProvenance: testCase.scriptProvenance,
@@ -319,14 +607,21 @@ export async function executeCase(
   await runtime.flushCrashScans();
 
   const terminal = isTerminal(status?.status);
+  if (!terminal && traceId !== null) {
+    await runtime.proxy
+      .callTool("mobile_manage_task", { action: "stop", trace_id: traceId })
+      .catch((error) => {
+        logWarn(`停止超时任务失败：trace=${traceId} · ${errorMessage(error)}`);
+      });
+  }
   const windowStartMs = status?.startTimeMs ?? null;
   const windowEndMs = status?.endTimeMs ?? (terminal ? now() : null);
   const traceSerial = context.deviceSerial ?? status?.deviceSerial ?? null;
+  const serialKind = traceSerial !== null ? classifyIosSerial(traceSerial) : null;
+  const iosTarget = serialKind !== null;
   let apiErrors: ApiErrorObservation[] = [];
   let apiErrorsDegraded: string | null = null;
   if (terminal && context.apiCatalog) {
-    const serialKind = traceSerial !== null ? classifyIosSerial(traceSerial) : null;
-    const iosTarget = serialKind !== null;
     if (context.apiCatalog.rules.size === 0) {
       apiErrorsDegraded = fs.existsSync(context.apiCatalog.file) ? "registry-empty" : "registry-missing";
     } else if (windowStartMs === null) {
@@ -401,6 +696,53 @@ export async function executeCase(
     }
   }
 
+  if (
+    terminal &&
+    traceId !== null &&
+    !iosTarget &&
+    status !== null &&
+    status.testSummary?.adherence == null
+  ) {
+    const adherence = await computeAndroidScriptAdherence({
+      dbPath: path.join(path.dirname(runtime.traceDir(traceId)), "data_engine.db"),
+      traceId,
+      taskDesc: testCase.taskDesc
+    });
+    if (adherence !== null) {
+      const summary: TaskScriptAdherenceSummary = {
+        unresolved: adherence.adherence.unresolved.length,
+        deferredTotal: adherence.adherence.deferred.total,
+        deferredReached: adherence.adherence.deferred.reached,
+        checkable: adherence.adherence.checkable,
+        satisfied: adherence.adherence.satisfied,
+        unchecked: adherence.adherence.unchecked
+      };
+      status = {
+        ...status,
+        testSummary: {
+          ...(status.testSummary ?? {
+            taskStatus: status.status,
+            passed: null,
+            failed: null,
+            inconclusive: null,
+            unchecked: null,
+            synthesized: false,
+            failedItems: []
+          }),
+          adherence: summary
+        }
+      };
+      try {
+        writeFileAtomic(
+          path.join(runtime.traceDir(traceId), "android-adherence.json"),
+          `${JSON.stringify({ traceId, ...adherence }, null, 2)}\n`
+        );
+      } catch {
+        /* best effort: classification still uses the in-memory summary */
+      }
+    }
+  }
+
   const unhandledApiErrors = apiErrors.filter((entry) => entry.handled === false);
   let caseStatus: SuiteCaseResult["status"] = !terminal
     ? "timeout"
@@ -418,6 +760,7 @@ export async function executeCase(
     status: caseStatus,
     ...(context.quarantined ? { quarantined: true } : {}),
     traceId,
+    engine: "proxy",
     error: forcedError ?? status?.error ?? (terminal ? null : "等待任务终态超时"),
     testSummary: status?.testSummary ?? null,
     scriptProvenance: testCase.scriptProvenance,

@@ -2006,6 +2006,48 @@ test("suite run --task: >50 份仍可执行窗口外引用（不误报不可用�
   assert.equal(code, 0, errors.join(" | "));
 });
 
+test("suite run --task: task caseIds only submits the selected case", async () => {
+  const { runtime, store, proxy } = await setupRun({
+    cases: [caseEntry(1), caseEntry(2)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const testsPath = path.join(designDir, "tests.json");
+  const set = await store.recordCaseSet({
+    rootPath: runtime.project.rootDir,
+    source: "test",
+    basename: "two-cases",
+    features: [
+      {
+        key: "f-two",
+        name: "两例",
+        caseCount: 2,
+        screens: [],
+        jsonPath: testsPath,
+        mdPath: "",
+        xlsxPath: ""
+      }
+    ]
+  });
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: set.id, featureKey: "f-two" }],
+    platforms: ["android"],
+    baseline: "none",
+    createdBy: "test",
+    caseIds: ["case-2"]
+  });
+  const { code, errors } = await runCli(runtime, [
+    "run",
+    "--task",
+    task.id,
+    "--device",
+    "emulator-1"
+  ]);
+  assert.equal(code, 0, errors.join(" | "));
+  assert.equal(proxy.submitted, 1);
+});
+
 test("suite run --task: task appPackage passed as locked_app_package", async () => {
   const { runtime, store, proxy } = await setupRun({
     cases: null,

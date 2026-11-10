@@ -43,8 +43,13 @@ test("renderProjectArtemisConfig: merges base config and applies entry LLM", () 
   assert.deepEqual(rendered.default.fallback, { provider: "custom", model: "deepseek-flash" });
   assert.equal(rendered.default.thinking_level, "medium", "non-LLM default fields preserved");
   assert.deepEqual(rendered.nodes.planner, { thinking_level: "high" }, "base nodes preserved");
-  assert.deepEqual(rendered.nodes.object_detector, { provider: "custom", model: "deepseek-flash" });
-  assert.deepEqual(rendered.nodes.hopper, { provider: "custom", model: "deepseek-flash" });
+  assert.deepEqual(rendered.nodes.object_detector, { provider: "custom", model: "deepseek-flash", fallback: { provider: "custom", model: "deepseek-flash" } });
+  assert.deepEqual(rendered.nodes.hopper, { provider: "custom", model: "deepseek-flash", fallback: { provider: "custom", model: "deepseek-flash" } });
+  assert.deepEqual(rendered.nodes.explorer, { provider: "custom", model: "deepseek-flash", fallback: { provider: "custom", model: "deepseek-flash" } });
+  assert.equal(rendered.agent.memory.chunking.model, "deepseek-flash");
+  assert.equal(rendered.agent.memory.chunking.max_steps, 100000);
+  assert.equal(rendered.agent.memory.chunking.target_source_tokens, 100000000);
+  assert.equal(rendered.agent.video_analyzer.enabled, false);
   assert.equal(rendered.agent.flash.max_turns, 7, "non-LLM sections preserved");
   assert.equal(
     rendered.agent.flash.step_summarizer.enabled,
@@ -254,15 +259,46 @@ test("projectTracesDir: defaults into the project; explicit override wins and re
   assert.notEqual(first.fingerprint, second.fingerprint);
 });
 
-test("entry env: center control URL host is added to NO_PROXY", () => {
+test("entry env: runner mode bypasses all proxies", () => {
   const result = buildChildEnvForEntry({
     config,
     rootDir: "/tmp/proj",
     entry: { provider: "custom", model: "m1", baseUrl: "http://center/proxy", apiKey: "k1" },
-    baseEnv: { HTTP_PROXY: "http://zscaler:8080" },
+    baseEnv: { HTTP_PROXY: "http://zscaler:8080", HTTPS_PROXY: "http://zscaler:8080" },
     dotenv: () => ({ MOBILE_TESTING_RUNNER_CONTROL_URL: "http://192.168.3.91:8765" })
   });
-  assert.match(result.env.NO_PROXY, /192\.168\.3\.91/);
-  assert.match(result.env.NO_PROXY, /localhost/);
-  assert.equal(result.env.no_proxy, result.env.NO_PROXY);
+  assert.equal(result.env.NO_PROXY, "*");
+  assert.equal(result.env.no_proxy, "*");
+  assert.equal(result.env.HTTP_PROXY, "");
+  assert.equal(result.env.HTTPS_PROXY, "");
+  assert.equal(result.env.OPENAI_MAX_RETRIES, "0");
+  assert.equal(result.env.OPENAI_LOG, "info");
+  assert.equal(result.env.HTTPX_LOG_LEVEL, "info");
+  assert.equal(result.env.AOS_LLM_REDIRECT_GOOGLE, "1");
+  assert.equal(result.env.AOS_LLM_MODEL, "m1");
+  assert.equal(result.env.GOOGLE_API_KEY, "");
+  assert.equal(result.env.GEMINI_API_KEY, "");
+});
+
+test("entry config: non-Google provider leaves no active Gemini nodes", () => {
+  const rendered = JSON.parse(
+    renderProjectArtemisConfig({
+      baseConfigText: null,
+      entry: { provider: "custom", model: "deepseek-flash", baseUrl: "http://center", apiKey: "k" }
+    })
+  );
+  const active = JSON.stringify({
+    default: rendered.default,
+    nodes: rendered.nodes,
+    utils: rendered.utils ?? null,
+    memory: rendered.agent?.memory ?? null,
+    video: rendered.agent?.video_analyzer ?? null,
+    proVideo: rendered.agent?.pro?.video_analyzer ?? null
+  });
+  assert.equal(active.includes('"provider": "google"'), false, "active config must not contain Google nodes");
+  assert.equal(rendered.nodes.explorer.provider, "custom");
+  assert.equal(rendered.agent.memory.chunking.max_steps, 100000);
+  assert.equal(rendered.agent.memory.chunking.target_source_tokens, 100000000);
+  assert.equal(rendered.agent.video_analyzer.enabled, false);
+  assert.equal(rendered.agent.pro.video_analyzer.enabled, false);
 });

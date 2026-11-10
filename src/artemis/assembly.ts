@@ -204,9 +204,11 @@ export interface EntryLike {
 /** Auto-repoint artemis' Google-pinned nodes to the entry provider (v0.3 H2 evolution). */
 export function autoPinnedNodes(entry: EntryLike): Record<string, unknown> | null {
   if (entry.provider === "google") return null;
+  const pinned = { provider: entry.provider, model: entry.model };
   return {
-    object_detector: { provider: entry.provider, model: entry.model },
-    hopper: { provider: entry.provider, model: entry.model }
+    object_detector: { ...pinned, fallback: pinned },
+    hopper: { ...pinned, fallback: pinned },
+    explorer: { ...pinned, fallback: pinned }
   };
 }
 
@@ -270,6 +272,27 @@ export function renderProjectArtemisConfig(args: {
     stepSummarizer.enabled = false;
     flash.step_summarizer = stepSummarizer;
     agent.flash = flash;
+    const memory = { ...((agent.memory as Record<string, unknown>) ?? {}) };
+    const chunking = { ...((memory.chunking as Record<string, unknown>) ?? {}) };
+    chunking.model = args.entry.model;
+    // Artemis 的 StepCapsuleLens 内部硬编码 get_google_llm；非 Google provider
+    // 下拉高触发阈值，等价于关闭 chunk 压缩，避免 runner 无 Google key 时失败。
+    chunking.max_steps = 100_000;
+    chunking.target_source_tokens = 100_000_000;
+    memory.chunking = chunking;
+    agent.memory = memory;
+    const videoAnalyzer = {
+      ...((agent.video_analyzer as Record<string, unknown>) ?? {}),
+      enabled: false
+    };
+    agent.video_analyzer = videoAnalyzer;
+    const pro = { ...((agent.pro as Record<string, unknown>) ?? {}) };
+    const proVideo = {
+      ...((pro.video_analyzer as Record<string, unknown>) ?? {}),
+      enabled: false
+    };
+    pro.video_analyzer = proVideo;
+    agent.pro = pro;
     output.agent = agent;
   }
 
@@ -315,9 +338,21 @@ export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
   const keyEnvName = entry.provider === "google" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
   if (entry.apiKey) env[keyEnvName] = entry.apiKey;
   if (entry.provider !== "google" && entry.baseUrl) env.OPENAI_BASE_URL = entry.baseUrl;
+  env.AOS_LLM_PROVIDER = entry.provider;
+  env.AOS_LLM_MODEL = entry.model;
+  if (entry.provider !== "google") {
+    // 非 Google provider 时，Artemis 上游仍有少量 get_google_llm/genai 直连路径。
+    // 统一重定向到当前 LLM，并压掉 Google key，避免任何 Google 调用。
+    env.AOS_LLM_REDIRECT_GOOGLE = "1";
+    env.GOOGLE_API_KEY = "";
+    env.GEMINI_API_KEY = "";
+  } else {
+    delete env.AOS_LLM_REDIRECT_GOOGLE;
+  }
 
   // 公司代理（Zscaler 等）会把发往中心 LAN 的 Python 请求也代理掉。
-  // 从 runner 中心控制面 URL 自动补 NO_PROXY，不要求用户手工改 runner.cmd。
+  // runner 只访问中心/本机 adb：强制绕过所有代理，避免后台子进程继承系统代理后
+  // 第二个 LLM 请求被代理吞掉；中心模式仍按 localhost + 中心 host 增量合并。
   const centerUrl =
     args.dotenv?.().MOBILE_TESTING_RUNNER_CONTROL_URL ??
     baseEnv.MOBILE_TESTING_RUNNER_CONTROL_URL ??
@@ -326,13 +361,23 @@ export function buildChildEnvForEntry(args: EntryChildEnvArgs): ChildEnvResult {
     try {
       const centerHost = new URL(centerUrl).hostname;
       if (centerHost !== "") {
-        const existing = (env.NO_PROXY ?? env.no_proxy ?? "")
-          .split(",")
-          .map((value) => value.trim())
-          .filter((value) => value !== "");
-        const merged = [...new Set([...existing, centerHost, "localhost", "127.0.0.1"])];
-        env.NO_PROXY = merged.join(",");
-        env.no_proxy = env.NO_PROXY;
+        env.NO_PROXY = "*";
+        env.no_proxy = "*";
+        for (const name of [
+          "HTTP_PROXY",
+          "HTTPS_PROXY",
+          "ALL_PROXY",
+          "http_proxy",
+          "https_proxy",
+          "all_proxy"
+        ]) {
+          env[name] = "";
+        }
+        // runner 上 LLM 只走中心代理；禁用 SDK 自动重试，避免把真实异常
+        // （401/404/连接错误）吞成重复的 Retrying request 日志。
+        if (!env.OPENAI_MAX_RETRIES) env.OPENAI_MAX_RETRIES = "0";
+        if (!env.OPENAI_LOG) env.OPENAI_LOG = "info";
+        if (!env.HTTPX_LOG_LEVEL) env.HTTPX_LOG_LEVEL = "info";
       }
     } catch {
       /* 非 URL 的中心地址不阻断子进程 */

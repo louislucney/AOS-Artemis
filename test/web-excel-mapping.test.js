@@ -828,6 +828,25 @@ test("面板角色：预览与映射保存均要求 maintainer", () => {
   assert.equal(panelRequiredRoleForPath("/panel/api/projects/excel/mapping"), "maintainer");
 });
 
+test("API：本地注册项目（无 web_projects 行）可保存映射", async (t) => {
+  const workspace = await tempDir(t, "aos-excel-mapping-local-");
+  const rootPath = path.join(workspace, "local-app");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "local-app" });
+  assert.equal(await store.getWebProject(rootPath), null);
+  const asset = await addExcelAsset(store, rootPath, await xlsxBuffer([["用例编号", "步骤"]]));
+  const columnMap = { caseId: "用例编号", steps: "步骤" };
+
+  const saved = await postJson(
+    { store, env: {}, workspaceRoot: workspace },
+    "/panel/api/projects/excel/mapping",
+    { project: rootPath, assetId: asset.id, sheetName: "用例", columnMap }
+  );
+  assert.equal(saved.status, 200, saved.body);
+  assert.equal((await store.listExcelMappings(rootPath, asset.id)).length, 1);
+});
+
 test("API：归档项目拒绝保存映射（409），预览仍只读可用", async (t) => {
   const { workspace, rootPath, store } = await setupProject(t);
   const asset = await addExcelAsset(store, rootPath, await xlsxBuffer([["用例编号", "步骤"]]));

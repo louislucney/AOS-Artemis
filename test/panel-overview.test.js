@@ -183,8 +183,8 @@ test("panel overview: 工作区目录并入项目集合（未注册行）", asyn
   const repo = makeReadyRepo();
   const workspace = makeTempDir("aos-panel-ws-");
   const sub = path.join(workspace, "ws-app");
-  fs.mkdirSync(path.join(sub, ".artemis", "ledger"), { recursive: true });
-  fs.writeFileSync(path.join(sub, ".artemis", "ledger", "state.json"), "{}\n");
+  fs.mkdirSync(sub, { recursive: true });
+  fs.writeFileSync(path.join(sub, "aos.config.jsonc"), "{}\n");
 
   const view = await buildPanelOverview({
     store,
@@ -1339,8 +1339,17 @@ test("panel overview: 工作区默认只发现带项目标记的目录", async (
   const real = path.join(workspace, "real-app");
   const fake = path.join(workspace, "src");
   const dist = path.join(workspace, "dist");
+  const empty = path.join(workspace, "empty-ledger");
   fs.mkdirSync(path.join(real, ".artemis", "ledger"), { recursive: true });
-  fs.writeFileSync(path.join(real, ".artemis", "ledger", "state.json"), "{}\n");
+  fs.writeFileSync(
+    path.join(real, ".artemis", "ledger", "state.json"),
+    JSON.stringify({ state: { projects: [{ rootPath: real }] } })
+  );
+  fs.mkdirSync(path.join(empty, ".artemis", "ledger"), { recursive: true });
+  fs.writeFileSync(
+    path.join(empty, ".artemis", "ledger", "state.json"),
+    JSON.stringify({ state: { projects: [] } })
+  );
   fs.mkdirSync(fake, { recursive: true });
   fs.mkdirSync(dist, { recursive: true });
 
@@ -1354,6 +1363,10 @@ test("panel overview: 工作区默认只发现带项目标记的目录", async (
   assert.ok(view.projects.some((project) => project.rootPath === real));
   assert.ok(!view.projects.some((project) => project.rootPath === fake));
   assert.ok(!view.projects.some((project) => project.rootPath === dist));
+  assert.ok(
+    !view.projects.some((project) => project.rootPath === empty),
+    "空台账（projects: []）不是项目标记"
+  );
 
   const auto = await buildPanelOverview({
     store,
@@ -1381,4 +1394,29 @@ test("panel overview: 工作区默认只发现带项目标记的目录", async (
     workspaceRoot: workspace
   });
   assert.deepEqual(allow.projects.map((project) => project.name), ["src"], "显式白名单可覆盖标记检查");
+});
+
+test("panel overview: 已登记项目不会被工作区空台账同名目录复制", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const workspace = makeTempDir("aos-panel-duplicate-");
+  const registeredRoot = path.join(makeTempDir("aos-panel-registered-"), "ESSO-GU");
+  await store.upsertProject({ rootPath: registeredRoot, name: "ESSO-GU" });
+  const staleRoot = path.join(workspace, "ESSO-GU");
+  fs.mkdirSync(path.join(staleRoot, ".artemis", "ledger"), { recursive: true });
+  fs.writeFileSync(
+    path.join(staleRoot, ".artemis", "ledger", "state.json"),
+    JSON.stringify({ state: { projects: [] } })
+  );
+
+  const view = await buildPanelOverview({
+    store,
+    serviceRepo: repo,
+    buildStale: false,
+    env: {},
+    workspaceRoot: workspace
+  });
+  const matches = view.projects.filter((project) => project.name === "ESSO-GU");
+  assert.equal(matches.length, 1, "同名空台账目录不产生第二条");
+  assert.equal(matches[0].rootPath, registeredRoot, "保留已登记项目的真实 root");
 });

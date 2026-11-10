@@ -93,10 +93,15 @@ export class SuiteStoreClient {
         signal: AbortSignal.timeout(this.timeoutMs)
       });
     } catch (error) {
+      const url = `${this.baseUrl}/panel/api/runners/suite${path}`;
+      const cause =
+        error instanceof Error && error.cause instanceof Error
+          ? `（${error.cause.message}）`
+          : "";
       throw new SuiteStoreHttpError(
         0,
         "network-error",
-        `suite 数据面请求失败：${error instanceof Error ? error.message : String(error)}`
+        `suite 数据面请求失败：${url} — ${error instanceof Error ? error.message : String(error)}${cause}；请确认该地址可从本机访问（GET ${this.baseUrl}/healthz）且 MOBILE_TESTING_RUNNER_CONTROL_URL 正确`
       );
     }
     const text = await response.text();

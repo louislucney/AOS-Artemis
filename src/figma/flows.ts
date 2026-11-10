@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { fetchFile, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
+import { fetchFile, fetchNodes, parseFigmaUrl } from "../vendor/design-context-bridge/figma-rest/client.js";
 import { walk, type FigmaNode } from "../vendor/design-context-bridge/figma-rest/resolve.js";
 import { nodeContentHash } from "./node-hash.js";
 import { errorMessage, escapeHtml, writeFileAtomic } from "../util.js";
@@ -850,16 +850,47 @@ export async function figmaExtractFlows(
   deps: FigmaFlowsDeps = {}
 ): Promise<CallToolResult> {
   try {
-    const { fileKey } = parseFigmaUrl(args.url);
-    const file = (await fetchFile(fileKey, undefined, deps.figmaToken ?? undefined)) as {
-      name?: string;
-      version?: unknown;
-      lastModified?: unknown;
-      document?: FigmaNode;
-    };
-    if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
+    const parsed = parseFigmaUrl(args.url);
+    const fileKey = parsed.fileKey;
+    const explicitNodeId = (args.nodeId ?? "").trim().replace(/-/g, ":");
+    const nodeId = explicitNodeId !== "" ? explicitNodeId : parsed.nodeId ?? "";
+    let fileName: string | null = null;
+    let fileVersion: string | null = null;
+    let lastModified: string | null = null;
+    let root: FigmaNode;
+    if (nodeId !== "") {
+      const response = (await fetchNodes(
+        fileKey,
+        [nodeId],
+        deps.figmaToken ?? undefined
+      )) as {
+        nodes?: Record<string, { document?: FigmaNode } | undefined>;
+      };
+      const scoped = response.nodes?.[nodeId]?.document;
+      if (!scoped) throw new Error(`节点 ${nodeId} 不在文件中`);
+      root = isPageNode(scoped)
+        ? scoped
+        : {
+            id: `__aos_scope__${nodeId}`,
+            name: scoped.name,
+            type: "PAGE",
+            children: [scoped]
+          };
+    } else {
+      const file = (await fetchFile(fileKey, undefined, deps.figmaToken ?? undefined)) as {
+        name?: string;
+        version?: unknown;
+        lastModified?: unknown;
+        document?: FigmaNode;
+      };
+      if (!file.document) throw new Error(`文件 ${fileKey} 没有 document 数据`);
+      root = file.document;
+      fileName = file.name ?? null;
+      fileVersion = typeof file.version === "string" ? file.version : null;
+      lastModified = typeof file.lastModified === "string" ? file.lastModified : null;
+    }
 
-    let graph = buildFlowGraph(file.document, { nodeId: args.nodeId });
+    let graph = buildFlowGraph(root);
     let staticWarnings: FlowWarning[] = [];
     const staticFallback =
       args.staticFallback ?? (process.env.AOS_STATIC_FALLBACK ?? "") !== "0";
@@ -868,10 +899,10 @@ export async function figmaExtractFlows(
       const needsStatic =
         graph.edges.length === 0 || graph.screens.some((screen) => !reachable.has(screen.id));
       if (needsStatic) {
-        const synthesized = await synthesizeStaticFlows(file, {
-          chat: deps.chat ?? undefined,
-          ...(args.nodeId ? { nodeId: args.nodeId } : {})
-        });
+        const synthesized = await synthesizeStaticFlows(
+          { document: root },
+          { chat: deps.chat ?? undefined }
+        );
         if (graph.edges.length === 0) {
           graph = synthesized.graph;
           staticWarnings = synthesized.warnings;
@@ -918,13 +949,12 @@ export async function figmaExtractFlows(
         /* 首次提取或旧文件不可读：不报告增量 */
       }
     }
-    const fileVersion = typeof file.version === "string" ? file.version : null;
-    const lastModified = typeof file.lastModified === "string" ? file.lastModified : null;
     const payload: Record<string, unknown> = {
       ok: true,
       schemaVersion: FLOWS_SCHEMA_VERSION,
       fileKey,
-      fileName: file.name ?? null,
+      fileName,
+      ...(nodeId !== "" ? { nodeId } : {}),
       ...(fileVersion !== null ? { fileVersion } : {}),
       ...(lastModified !== null ? { lastModified } : {}),
       counts: {
@@ -952,7 +982,7 @@ export async function figmaExtractFlows(
         markdownPath,
         renderFigmaFlowMap({
           fileKey,
-          fileName: file.name ?? null,
+          fileName,
           generatedAt: new Date().toISOString(),
           graph,
           warnings,

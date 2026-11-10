@@ -165,6 +165,22 @@ test("run_regression: excelPath 导入并执行（来源/设备/清单路径回�
   assert.equal(calls.execute[0].options.deviceSerial, "dev-1");
 });
 
+test("run_regression: 导入返回 design 摘要 → 响应原样透传", async () => {
+  const design = {
+    available: true,
+    sources: ["flows.json", "ui-contract.json"],
+    excelImages: 1,
+    designRefs: 0,
+    warnings: ["检测到设计基线但 Excel 未提供设计引用"],
+    nextAction: "node dist/cli.js suite run --ui-diff --fail-on-ui"
+  };
+  const { deps } = makeDeps({
+    importDocument: async () => ({ ...importResult(), design })
+  });
+  const result = await runRegression(stubRuntime(), { excelPath: "qa/cases.xlsx" }, deps);
+  assert.deepEqual(payloadOf(result).design, design);
+});
+
 test("run_regression: appPath 透传到 executeBatch options（APK 安装）", async () => {
   const { deps, calls } = makeDeps();
   const result = await runRegression(

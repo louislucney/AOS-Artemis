@@ -283,7 +283,7 @@ test("suite runner: degraded reset does not block and stays visible", async () =
 });
 
 test("suite runner: poll timeout marks the case as timeout", async () => {
-  const { run } = await setup({ cases: [caseEntry(1)], statuses: {} });
+  const { run, proxy } = await setup({ cases: [caseEntry(1)], statuses: {} });
   let clock = 0;
   const report = await run({
     pollTimeoutMs: 100,
@@ -295,6 +295,12 @@ test("suite runner: poll timeout marks the case as timeout", async () => {
   assert.match(report.cases[0].error, /超时/);
   assert.equal(report.cases[0].failure.domain, "case-defect");
   assert.equal(report.cases[0].failure.confidence, "medium");
+  assert.ok(
+    proxy.calls.some(
+      (call) => call.name === "mobile_manage_task" && call.args.action === "stop"
+    ),
+    "超时后应停止 Artemis 子任务，避免孤儿进程占用设备"
+  );
   assert.equal(report.passed, 0);
   assert.equal(report.failed, 1);
   assert.equal(report.ok, true);

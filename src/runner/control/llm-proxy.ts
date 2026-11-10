@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { ProjectStore } from "../../db/types.js";
-import { errorMessage } from "../../util.js";
+import { errorMessage, log, logWarn } from "../../util.js";
 import { authenticateRunner } from "./auth.js";
 import { RunnerControlError } from "./errors.js";
 import { assertLlmProject, resolveCenterLlm } from "./llm-resolver.js";
@@ -40,13 +40,20 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
  * 只支持 OpenAI 兼容 provider；google 直接拒绝（不伪装成功）。 */
 export async function handleLlmProxyRequest(input: LlmProxyInput): Promise<void> {
   const env = input.env ?? process.env;
+  const startedAt = Date.now();
+  const hostHeader = input.req.headers["x-aos-host-id"];
+  log(
+    `中心 LLM 代理请求：${input.req.method} ${input.url.pathname}（host=${typeof hostHeader === "string" ? hostHeader : "-"}）`
+  );
   const auth = authenticateRunner(input.req.headers, env);
   if (!auth.ok) {
+    logWarn(`中心 LLM 代理鉴权失败：HTTP ${auth.status} ${auth.code} · ${auth.error}`);
     json(input.res, auth.status, { ok: false, code: auth.code, error: auth.error });
     return;
   }
   const rest = input.url.pathname.slice(PREFIX.length);
   if (rest === "") {
+    logWarn("中心 LLM 代理缺少中心项目路径");
     json(input.res, 404, { ok: false, code: "not-found", error: "缺少中心项目路径" });
     return;
   }
@@ -61,6 +68,7 @@ export async function handleLlmProxyRequest(input: LlmProxyInput): Promise<void>
     return;
   }
   if (rootPath === "") {
+    logWarn("中心 LLM 代理项目路径为空");
     json(input.res, 400, { ok: false, code: "invalid-path", error: "项目路径为空" });
     return;
   }
@@ -68,6 +76,7 @@ export async function handleLlmProxyRequest(input: LlmProxyInput): Promise<void>
     await assertLlmProject(input.store, env, auth.hostId, rootPath);
   } catch (error) {
     if (error instanceof RunnerControlError) {
+      logWarn(`中心 LLM 代理项目校验失败：HTTP ${error.status} ${error.code} · ${error.message}`);
       json(input.res, error.status, { ok: false, code: error.code, error: error.message });
       return;
     }
@@ -76,6 +85,7 @@ export async function handleLlmProxyRequest(input: LlmProxyInput): Promise<void>
   }
   const active = await resolveCenterLlm(input.store, env, rootPath);
   if (active === null || !active.baseUrl || !active.apiKey) {
+    logWarn(`中心 LLM 代理无可用条目：${rootPath}`);
     json(input.res, 503, {
       ok: false,
       code: "llm-not-configured",
@@ -131,6 +141,9 @@ export async function handleLlmProxyRequest(input: LlmProxyInput): Promise<void>
     });
   } catch (error) {
     const timeout = error instanceof Error && error.name === "TimeoutError";
+    logWarn(
+      `中心 LLM 代理请求失败：${suffix} · ${Date.now() - startedAt}ms（host=${auth.hostId} · ${active.name}/${active.model}）· ${errorMessage(error)}`
+    );
     json(input.res, timeout ? 504 : 502, {
       ok: false,
       code: timeout ? "upstream-timeout" : "upstream-error",
@@ -147,6 +160,18 @@ export async function handleLlmProxyRequest(input: LlmProxyInput): Promise<void>
     const value = upstream.headers.get(name);
     if (value !== null) responseHeaders[name] = value;
   }
+  if (!upstream.ok) {
+    const text = await upstream.text().catch(() => "");
+    logWarn(
+      `中心 LLM 代理上游失败：HTTP ${upstream.status}${suffix} · ${Date.now() - startedAt}ms（host=${auth.hostId} · ${active.name}/${active.model}）${text.trim() === "" ? "" : ` · ${text.slice(0, 500)}`}`
+    );
+    input.res.writeHead(upstream.status, responseHeaders);
+    input.res.end(text);
+    return;
+  }
+  log(
+    `中心 LLM 代理完成：HTTP ${upstream.status}${suffix} · ${Date.now() - startedAt}ms（host=${auth.hostId} · ${active.name}/${active.model}）`
+  );
   input.res.writeHead(upstream.status, responseHeaders);
   if (input.req.method === "HEAD" || upstream.body === null) {
     input.res.end();

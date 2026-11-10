@@ -142,6 +142,12 @@ export interface GeneratedTest {
   humanPrelude?: string[];
   /** Per-step destination expectations, aligned with `steps` (deterministic audit). */
   expectations: StepExpectation[];
+  /** Phase 1 structured actions; only present when generated deterministically. */
+  actions?: StructuredAction[];
+  /** Execution engine hint; `artemis` keeps legacy behavior. */
+  engine?: "native" | "artemis" | "auto";
+  /** Why engine is not native (actions-incomplete / explore-step / prelude-unsupported). */
+  engineReason?: string;
   /** Deterministic start-state check: the executor verifies the journey entry screen. */
   preflight: CasePreflight;
   /** 功能段 key（回归服务 §5.1；生成接线后填充）。 */
@@ -511,6 +517,12 @@ function lookupI18nKey(text: string | undefined, i18nKeys: Map<string, string> |
 
 import { identifierFromLayerName } from "../design/identifiers.js";
 import { scanCodeIdentifierHints } from "./code-identifiers.js";
+import {
+  engineForActions,
+  type StructuredAction,
+  type StructuredTarget,
+  type StructuredTargetKind
+} from "./structured-actions.js";
 
 export { identifierFromLayerName };
 
@@ -532,6 +544,13 @@ export function identifierSuggestionsFromGraph(graph: FlowGraph): Map<string, st
 /** Element-level identifier suggestions (screen-map elements; best-hit first,
  * keyed by normalized text — same text on several screens suggests the same
  * identifier, which is the conventional cross-screen behavior). */
+function identifierTargetKind(runtime: DesignRuntimeLike): StructuredTargetKind {
+  const stack = runtime.project.config?.project?.stack ?? [];
+  if (stack.includes("react-native")) return "view-tag";
+  if (stack.includes("flutter")) return "content-desc";
+  return "resource-id";
+}
+
 function loadIdentifierSuggestions(
   runtime: DesignRuntimeLike,
   graph: FlowGraph
@@ -1047,6 +1066,8 @@ export interface GenerateTestCasesOptions {
   i18nKeys?: Map<string, string>;
   /** Element identifier suggestions keyed by normalized text (screen-map). */
   identifiers?: Map<string, string>;
+  /** Preferred selector kind for identifier-based actions; default resource-id. */
+  targetKind?: StructuredTargetKind;
   /** 人工测试数据（屏幕 → 文本），按用例屏幕顺序收集。 */
   testDataByScreen?: Map<string, string[]>;
   /** 人工待确认项（屏幕 → 文本）。 */
@@ -1054,6 +1075,48 @@ export interface GenerateTestCasesOptions {
   /** 人工 Section 覆盖（入口屏 → Section 名）。 */
   sectionByScreen?: Map<string, string>;
   onStats?: (stats: LinearizeStats) => void;
+}
+
+function buildStructuredActions(input: {
+  flowPath: FlowEdge[];
+  expectations: StepExpectation[];
+  identifiers?: Map<string, string>;
+  targetKind?: StructuredTargetKind;
+}): StructuredAction[] {
+  const actions: StructuredAction[] = [];
+  input.flowPath.forEach((edge, index) => {
+    const expectation = input.expectations[index];
+    if (expectation === undefined || expectation.kind === "explore") return;
+    const expect = {
+      ...(expectation.screen === null ? {} : { screen: expectation.screen }),
+      ...(expectation.hints.length === 0 ? {} : { hints: expectation.hints })
+    };
+    if (Object.keys(expect).length === 0) return;
+    if (edge.back) {
+      actions.push({ stepIndex: index, action: "back", expect });
+      return;
+    }
+    if (edge.trigger === "AFTER_TIMEOUT") {
+      actions.push({ stepIndex: index, action: "wait", expect });
+      return;
+    }
+    if (edge.trigger === "ON_DRAG" || edge.to === null) return;
+    const hint = runtimeHintTexts(edge.textHints)[0];
+    const identifier = hint ? input.identifiers?.get(normalizeElementLabel(hint)) : undefined;
+    if (identifier === undefined) return;
+    const target: StructuredTarget = {
+      kind: input.targetKind ?? "resource-id",
+      value: identifier
+    };
+    actions.push({
+      stepIndex: index,
+      action: "tap",
+      target,
+      ...(hint === undefined ? {} : { fallbackTargets: [{ kind: "text" as const, value: hint }] }),
+      expect
+    });
+  });
+  return actions;
 }
 
 /** Turn flow paths into test cases with artemis-ready task descriptions.
@@ -1088,6 +1151,16 @@ export function generateTestCases(
     const humanizationEdges = [...prefix, ...flowPath].map((edge) => humanStepFor(graph, edge, screenLabels));
     const humanFallbacks = humanizationEdges.filter((entry) => entry.fallback);
     const expectations = flowPath.map((edge) => expectationFor(graph, edge));
+    const actions = buildStructuredActions({
+      flowPath,
+      expectations,
+      ...(options.identifiers === undefined ? {} : { identifiers: options.identifiers }),
+      ...(options.targetKind === undefined ? {} : { targetKind: options.targetKind })
+    });
+    const engineInfo = engineForActions(actions, expectations, {
+      prelude: prefix.length > 0,
+      continuation
+    });
     const exploreCount = [...prefix, ...flowPath].filter((edge) =>
       isUnconfirmedProvenance(resolveProvenance(edge.provenance))
     ).length;
@@ -1186,6 +1259,9 @@ export function generateTestCases(
       prelude,
       humanPrelude,
       expectations,
+      ...(actions.length === 0 ? {} : { actions }),
+      engine: engineInfo.engine,
+      ...(engineInfo.reason === undefined ? {} : { engineReason: engineInfo.reason }),
       preflight,
       checkpoints: {
         visual: [...new Set([...preflight.hints, ...expectations.flatMap((entry) => entry.hints)])].slice(0, 12),
@@ -2406,6 +2482,7 @@ export async function figmaGenerateTests(
       maxDepth: args.maxDepth,
       i18nKeys: loadI18nKeys(runtime),
       identifiers: loadIdentifierSuggestions(runtime, graph),
+      targetKind: identifierTargetKind(runtime),
       testDataByScreen: acceptance.data,
       questionsByScreen: acceptance.questions,
       sectionByScreen: acceptance.section,

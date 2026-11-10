@@ -18,6 +18,9 @@ export interface AndroidTraceStep {
   preLabels: string[];
   /** OCR texts recorded with the step's post-action screen image (when present). */
   postLabels: string[];
+  /** Visible texts from the step's UI tree (fallback when OCR is empty). */
+  preTreeLabels: string[];
+  postTreeLabels: string[];
 }
 
 export interface AndroidTraceObservations {
@@ -100,6 +103,45 @@ function ocrTextsOf(raw: unknown): string[] {
     if (typeof text === "string" && text.trim() !== "") texts.push(text.trim());
   }
   return texts;
+}
+
+const UI_TREE_TEXT_KEYS = [
+  "text",
+  "content-desc",
+  "contentDesc",
+  "accessibilityText",
+  "accessibility_text"
+];
+
+function uiTreeTextsOf(raw: unknown): string[] {
+  let parsed: unknown;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      const texts = new Set<string>();
+      for (const match of raw.matchAll(
+        /(?:text|content-desc|contentDesc|accessibilityText|accessibility_text)="([^"]*)"/g
+      )) {
+        const value = match[1]?.trim() ?? "";
+        if (value !== "") texts.add(value);
+      }
+      return [...texts];
+    }
+  } else {
+    parsed = raw;
+  }
+  if (!Array.isArray(parsed)) return [];
+  const texts = new Set<string>();
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    for (const key of UI_TREE_TEXT_KEYS) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim() !== "") texts.add(value.trim());
+    }
+  }
+  return [...texts];
 }
 
 const TAP_ACTIONS = new Set(["tap", "click", "long_press"]);
@@ -229,10 +271,26 @@ export async function readAndroidTraceObservations(
       .all(traceId) as Array<Record<string, unknown>>;
     if (rows.length === 0) return null;
     const imageStatement = db.prepare("SELECT ocr_result FROM images WHERE image_name = ?");
+    let treeStatement: SqliteStatement | null = null;
+    try {
+      const columns = db
+        .prepare("SELECT name FROM pragma_table_info(?)")
+        .all("images") as Array<{ name?: unknown }>;
+      if (columns.some((row) => row.name === "ui_tree")) {
+        treeStatement = db.prepare("SELECT ui_tree FROM images WHERE image_name = ?");
+      }
+    } catch {
+      treeStatement = null;
+    }
     const labelsOfImage = (name: unknown): string[] => {
       if (typeof name !== "string" || name === "") return [];
       const imageRow = imageStatement.all(name)[0] as Record<string, unknown> | undefined;
       return ocrTextsOf(imageRow?.ocr_result);
+    };
+    const treeLabelsOfImage = (name: unknown): string[] => {
+      if (treeStatement === null || typeof name !== "string" || name === "") return [];
+      const imageRow = treeStatement.all(name)[0] as Record<string, unknown> | undefined;
+      return uiTreeTextsOf(imageRow?.ui_tree);
     };
     const steps: AndroidTraceStep[] = [];
     const labels = new Set<string>();
@@ -242,6 +300,8 @@ export async function readAndroidTraceObservations(
     for (const row of rows) {
       const preLabels = labelsOfImage(row.pre_image_name);
       const postLabels = labelsOfImage(row.post_image_name);
+      const preTreeLabels = treeLabelsOfImage(row.pre_image_name);
+      const postTreeLabels = treeLabelsOfImage(row.post_image_name);
       for (const text of [...preLabels, ...postLabels]) labels.add(text);
       const action = jsonOf(row.action_taken);
       const tap = normalizedTapOf(row.action_taken);
@@ -265,7 +325,9 @@ export async function readAndroidTraceObservations(
             ? ((action as { action: string }).action)
             : null,
         preLabels,
-        postLabels
+        postLabels,
+        preTreeLabels,
+        postTreeLabels
       });
     }
     return { steps, labels: [...labels], taps, transitions };

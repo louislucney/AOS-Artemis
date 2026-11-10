@@ -75,7 +75,8 @@ export interface SuiteCaseResult {
   reset: AppResetOutcome | null;
   /** UI 核验状态；与功能 status 分离。缺省 `unverified`，不得用功能通过冒充 UI 通过。 */
   ui?: UiVerification;
-  /** 在 `.artemis/design/quarantine.json` 中且未过期：如实标注，不计门禁。 */
+  /** 执行引擎：native-ios/native-android 直连 structured runner，proxy 走 mobile_run_task/Artemis。 */
+  engine?: "native-ios" | "native-android" | "proxy";
   quarantined?: boolean;
   /** Present when `--retry` re-ran this non-passed case. Diagnosis only: the
    * first-run status still decides the gate (D3 口径：重跑转绿不计首跑门禁). */
@@ -139,6 +140,8 @@ export interface SuiteRunOptions {
   failOnUi?: boolean;
   /** Opt-in text-weight gate: non-quarantined `ui.textStyles.highConfidenceHeavier > 0` → exit 2. */
   failOnUiWeight?: boolean;
+  /** Opt-in hard gate: non-quarantined cases with unresolved script assertions → exit 2. */
+  failOnUnresolved?: boolean;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
   reset?: SuiteResetFn;

@@ -25,6 +25,12 @@
 .\smoke.cmd 10CF6609P900059 "打开 UAT Mobil Guam，点击 Register now"
 ```
 
+`doctor.cmd` 会探测中心 `GET /healthz`：网络不通时显示「中心不可达」并给出底层原因（runner 模式 exit 2），不会等到领取任务才发现。
+
+面板「设备 → 去下发」若提示「未知项目」，先确认该 runner 在线；跨机 runner 会复用中心项目登记，不需要在 Windows 上重复登记项目。
+
+runner 默认单用例等待 10 分钟（`AOS_SUITE_CASE_TIMEOUT_MS=600000`）；LLM agent 用例仍超时时可提高该值，并在重跑前重启 `runner.cmd` 清掉可能残留的 Artemis 进程。
+
 runner 在 Windows 本机用 USB adb 执行；中心只下发任务并接收结果，不需要中心访问 5037。跨机回归时中心下发 tests.json/flows，runner 自动落本地 `case-sets`，不需要复制项目。iOS 不支持 Windows，iPhone 必须连接 Mac（用 macOS MCP runner）。
 
 ### 首次安装依赖失败（PyPI 超时 / Python 3.12）
@@ -32,7 +38,7 @@ runner 在 Windows 本机用 USB adb 执行；中心只下发任务并接收结�
 启动脚本已固定 `UV_PYTHON=3.12`、`UV_SYSTEM_CERTS=1`。如果 `uv` 仍选 3.13，先 `uv python find 3.12`。如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler）：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.2.4-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.0-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -42,6 +48,51 @@ $env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 ```
 
 也可用阿里云 `https://mirrors.aliyun.com/pypi/simple/` 或公司内部镜像。成功标志是 `artemis\.venv\.aos-deps.json` 存在；`runner.cmd` 用它判断依赖就绪，安装失败不会启动。
+
+### `artemis 模块导入失败（venv 未就绪？）` 但依赖已就绪
+
+`依赖已就绪` 只代表 lock 匹配，不代表 venv 能导入。常见原因是旧 `.venv` 不是 Python 3.12（离线依赖按 3.12 打包）或上次安装半途中断：
+
+```powershell
+cd C:\RUNNER\aos-artemis-runner-0.3.0-win32-x64-offline
+Remove-Item -Recurse -Force .\artemis\.venv
+.\setup-offline.cmd
+```
+
+新包的 `runner.cmd` / `setup-offline.cmd` 会自动检测非 3.12 venv 并重建。
+
+### 任务一直 running / `DeviceBusyError: The Artemis queue reservation was cancelled`
+
+旧 Artemis Python 进程可能仍占用设备锁，后续任务会一直排队直到超时。先列出：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -match 'mcp_server|aos-artemis-runner' } |
+  Select-Object ProcessId, CommandLine
+```
+
+确认是要清理的 runner 子进程后终止，再重启 `runner.cmd`：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -match 'mcp_server|aos-artemis-runner' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+新 runner 超时会主动 `mobile_manage_task stop`，但无法清理旧版本遗留的孤儿进程。
+
+### `suite 数据面请求失败：fetch failed`
+
+runner 连不上中心 HTTP，不是设备/LLM 问题。先检查 `project\.env`：
+
+```powershell
+type .\project\.env
+```
+
+- `MOBILE_TESTING_RUNNER_CONTROL_URL` 不能是 `http://127.0.0.1:8765`（那是 runner 本机）
+- 填中心局域网地址，例如 `http://192.168.1.10:8765`
+- 在 Windows 上验证：`curl.exe http://<中心IP>:8765/healthz`，返回 `{"ok":true,...}` 才算通
+- 不通时检查同一局域网/VPN、中心以 `--host 0.0.0.0` 启动、中心防火墙放行 8765
 
 ### 完全离线（内置依赖包）
 

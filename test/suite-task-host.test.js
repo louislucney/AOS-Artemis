@@ -307,3 +307,56 @@ test("suite task --host 关闭 openStore 打开的存储", async () => {
   assert.equal(closed, true);
 });
 
+
+test("suite task create --host 跨机 runner 复用中心项目，不要求 runner host 重复登记", async () => {
+  const store = await makePgStore();
+  await store.upsertHost({ id: "h-center", hostname: "mac-center", kind: "mac", osPlatform: "darwin", capabilities: ["ios-simulator", "android"] });
+  await store.upsertHost({ id: "h-runner", hostname: "win-runner", kind: "windows", osPlatform: "win32", capabilities: ["android"] });
+  await seedHostProject(store, "h-center", "/w/app", "f-1");
+  await store.upsertRunner({
+    rootPath: "/w/app",
+    name: "win-runner-01",
+    hostname: "win-runner",
+    platforms: ["android"],
+    devices: [
+      {
+        serial: "pixel-1",
+        name: "",
+        model: "Pixel 7",
+        osVersion: "14",
+        platform: "android",
+        kind: "device",
+        state: "device"
+      }
+    ],
+    tools: {
+      adb: true,
+      idb: false,
+      simctl: false,
+      ideviceId: false,
+      appium: false,
+      maestro: false,
+      devicectl: false
+    },
+    hostId: "h-runner",
+    instanceId: "runner-instance-1"
+  });
+
+  const logs = [];
+  const errors = [];
+  const code = await runSuiteCommand(
+    ["task", "create", "--host", "h-runner", "--project", "/w/app", "--ref", "f-1", "--platform", "android"],
+    {
+      buildRuntime: throwBuildRuntime,
+      log: (line) => logs.push(line),
+      errorLog: (line) => errors.push(line),
+      center: { store }
+    }
+  );
+  assert.equal(code, 0, errors.join("\n"));
+  assert.match(logs.join("\n"), /跨机 runner/);
+  const tasks = await store.listRegressionTasks("/w/app");
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].targetHostId, "h-runner");
+  assert.equal(tasks[0].refs[0].featureKey, "f-1");
+});

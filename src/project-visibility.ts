@@ -42,12 +42,13 @@ export function projectDiscoveryMode(raw: string | undefined): ProjectDiscoveryM
   return "marker";
 }
 
-/** 真实项目标记：显式配置、项目台账或设计产物；空 `.artemis/` 不算。 */
+/** 真实项目标记：显式配置、设计产物，或台账中确实登记了该项目根。
+ * 仅存在 `.artemis/ledger/state.json`（甚至 `projects: []`）不算——一次误跑
+ * 产生的空台账目录不应在面板里变成“未归属主机”的重复项目。 */
 export function hasProjectMarker(rootPath: string): boolean {
   const root = path.resolve(rootPath);
   for (const rel of [
     "aos.config.jsonc",
-    ".artemis/ledger/state.json",
     ".artemis/design/tests.json",
     ".artemis/design/flows.json"
   ]) {
@@ -57,7 +58,20 @@ export function hasProjectMarker(rootPath: string): boolean {
       return false;
     }
   }
-  return false;
+  const ledger = path.join(root, ".artemis", "ledger", "state.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ledger, "utf8")) as {
+      state?: { projects?: unknown };
+    };
+    const projects = Array.isArray(parsed.state?.projects) ? parsed.state.projects : [];
+    return projects.some((project) => {
+      if (project === null || typeof project !== "object" || Array.isArray(project)) return false;
+      const recorded = (project as { rootPath?: unknown }).rootPath;
+      return typeof recorded === "string" && recorded !== "" && path.resolve(recorded) === root;
+    });
+  } catch {
+    return false;
+  }
 }
 
 /** 显式项目白名单：逗号分隔的项目名（大小写不敏感）或绝对路径。 */

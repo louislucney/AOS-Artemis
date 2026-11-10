@@ -203,6 +203,30 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
       (project.dotenvValues.AOS_RUNNER_MODE ?? "").trim() === "1";
     const scan = scanProjectEnv(project.resolver);
     const centerEnv = { ...project.dotenvValues, ...process.env };
+    const centerUrlRaw = (centerEnv.MOBILE_TESTING_RUNNER_CONTROL_URL ?? "").trim();
+    if (centerUrlRaw !== "") {
+      const { checkCenterHealth } = await import("./runner/control/health.js");
+      const health = await checkCenterHealth({ baseUrl: centerUrlRaw });
+      if (health.ok) {
+        lines.push({
+          icon: "OK",
+          title: `中心连通（${health.service ?? "center"}${health.version ? ` ${health.version}` : ""}）`,
+          details: [health.url]
+        });
+      } else {
+        if (runnerMode) blocked = true;
+        else degraded = true;
+        lines.push({
+          icon: runnerMode ? "FAIL" : "WARN",
+          title: "中心不可达",
+          details: [
+            health.url,
+            health.error ?? "",
+            "检查 MOBILE_TESTING_RUNNER_CONTROL_URL（不要用 127.0.0.1）、两台机器同网段/VPN、中心以 --host 0.0.0.0 启动并放行端口。"
+          ].filter((line) => line !== "")
+        });
+      }
+    }
     const centerEnabled = (centerEnv.AOS_LLM_FROM_CENTER ?? "").trim() === "1";
     const centerLlm = centerEnabled
       ? await fetchCenterLlm({ env: centerEnv })
@@ -436,26 +460,95 @@ export async function runDoctor(argv: string[] = []): Promise<number> {
       const { python, hint } = resolveArtemisPython(project.config.artemis);
       if (python) {
         lines.push({ icon: "OK", title: `Python 解释器: ${python}` });
-        const probe = spawnSync(python, ["-c", "import artemis, mcp_server; print('ok')"], {
+        const versionProbe = spawnSync(python, ["--version"], {
           cwd: repo,
           encoding: "utf-8",
-          timeout: 60_000
+          timeout: 15_000
         });
-        if (probe.status === 0 && typeof probe.stdout === "string" && probe.stdout.includes("ok")) {
+        const versionText = `${versionProbe.stdout ?? ""}${versionProbe.stderr ?? ""}`.trim();
+        if (versionText !== "") {
+          lines.push({
+            icon: versionText.includes("3.12") ? "OK" : "WARN",
+            title: `Python 版本: ${versionText}`,
+            ...(versionText.includes("3.12")
+              ? {}
+              : { details: ["Artemis 依赖按 Python 3.12 打包；请用 3.12 重建 venv。"] })
+          });
+        }
+        const depsState = depsStatus(repo);
+        const depsSource = resolveDepsSource(project.config);
+        const probeModule = (moduleName: string) =>
+          spawnSync(python, ["-c", `import ${moduleName}; print('ok')`], {
+            cwd: repo,
+            encoding: "utf-8",
+            timeout: 60_000
+          });
+        const artemisProbe = probeModule("artemis");
+        const mcpProbe = probeModule("mcp_server");
+        const probeOk = (probe: ReturnType<typeof probeModule>): boolean =>
+          probe.status === 0 &&
+          typeof probe.stdout === "string" &&
+          probe.stdout.includes("ok");
+        const probeDetail = (label: string, probe: ReturnType<typeof probeModule>): string => {
+          if (probeOk(probe)) return `${label}: ok`;
+          const parts = [`${label}: FAIL`];
+          if (probe.error) parts.push(probe.error.message);
+          if (probe.signal) parts.push(`signal ${probe.signal}`);
+          const stderr = (probe.stderr ?? "").trim().split("\n").slice(-5).join(" | ");
+          if (stderr !== "") parts.push(stderr);
+          const stdout = (probe.stdout ?? "").trim().split("\n").slice(-3).join(" | ");
+          if (stdout !== "") parts.push(`stdout: ${stdout}`);
+          return parts.join(" · ");
+        };
+        if (probeOk(artemisProbe) && probeOk(mcpProbe)) {
           lines.push({ icon: "OK", title: "artemis / mcp_server 模块可导入" });
         } else {
           blocked = true;
-          const tail = (probe.stderr ?? "").trim().split("\n").slice(-3).join("\n");
+          const details = [
+            `Run: cd ${repo} && uv sync`,
+            probeDetail("artemis", artemisProbe),
+            probeDetail("mcp_server", mcpProbe)
+          ];
+          if (depsState.status === "ready") {
+            details.push(
+              `离线包：删除 ${path.join(repo, ".venv")} 后重跑 setup-offline.cmd（或 runner.cmd），不要只跑 doctor。`
+            );
+          }
           lines.push({
             icon: "FAIL",
             title: "artemis 模块导入失败（venv 未就绪？）",
-            details: [`Run: cd ${repo} && uv sync`, tail].filter(Boolean)
+            details
           });
         }
 
-        const depsState = depsStatus(repo);
-        const depsSource = resolveDepsSource(project.config);
         if (depsState.status === "ready") {
+          const lockProbe = spawnSync(
+            python,
+            [
+              "-c",
+              "import json; from artemis.runtime.device_lock import DeviceExecutionLock as L; print(json.dumps({k: v.pid for k, v in L.get_active_owners().items()}))"
+            ],
+            { cwd: repo, encoding: "utf-8", timeout: 15_000 }
+          );
+          if (lockProbe.status === 0) {
+            try {
+              const owners = JSON.parse((lockProbe.stdout ?? "").trim()) as Record<string, unknown>;
+              const active = Object.entries(owners).filter(([, pid]) => typeof pid === "number");
+              if (active.length > 0) {
+                degraded = true;
+                lines.push({
+                  icon: "WARN",
+                  title: `Artemis 设备锁仍被占用：${active.map(([device, pid]) => `${device}=pid ${pid}`).join("、")}`,
+                  details: [
+                    "旧 runner 子进程可能未退出；新任务会排队到超时。确认后终止：",
+                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -match 'mcp_server|aos-artemis-runner' } | Select-Object ProcessId, CommandLine"
+                  ]
+                });
+              }
+            } catch {
+              /* 非 JSON 输出：不阻断 doctor */
+            }
+          }
           lines.push({
             icon: "OK",
             title: `依赖已就绪（lock ${depsState.lockSha256?.slice(0, 8) ?? "?"}）`

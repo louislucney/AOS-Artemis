@@ -139,6 +139,11 @@ test("traceEvidence: aggregates status, crashes, anchor and copies anchored scre
   });
   const { runtime } = await loadTestRuntime(dir, { proxy });
   seedCrash(runtime, crashSummary());
+  fs.mkdirSync(runtime.traceDir("trace-1"), { recursive: true });
+  const adherencePath = path.join(runtime.traceDir("trace-1"), "android-adherence.json");
+  fs.writeFileSync(adherencePath, JSON.stringify({ traceId: "trace-1", degraded: null }));
+  const nativeIosPath = path.join(runtime.traceDir("trace-1"), "native-ios.json");
+  fs.writeFileSync(nativeIosPath, JSON.stringify({ traceId: "trace-1", engine: "native-ios" }));
 
   const bundle = await traceEvidence(runtime, { traceId: "trace-1" });
   assert.equal(bundle.ok, true);
@@ -157,6 +162,16 @@ test("traceEvidence: aggregates status, crashes, anchor and copies anchored scre
   assert.ok(copied.every((artifact) => fs.existsSync(artifact.path)));
 
   const references = bundle.artifacts.filter((artifact) => !artifact.copied);
+  assert.ok(
+    references.some(
+      (artifact) => artifact.kind === "android-adherence" && artifact.path === adherencePath
+    )
+  );
+  assert.ok(
+    references.some(
+      (artifact) => artifact.kind === "native-ios" && artifact.path === nativeIosPath
+    )
+  );
   assert.ok(references.some((artifact) => artifact.path === "/logs/1/err.log"));
   assert.ok(fs.existsSync(path.join(bundle.dir, "manifest.json")));
 });
@@ -251,4 +266,49 @@ test("traceEvidence: fullTrace copies every anchor candidate step", async () => 
   const copied = bundle.artifacts.filter((artifact) => artifact.copied);
   assert.equal(copied.length, 4);
   assert.ok(copied.some((artifact) => artifact.path.endsWith("step-5-post.png")));
+});
+
+test("traceEvidence: runner 上传的 remote-evidence 可作为中心证据来源", async () => {
+  const dir = makeTempProject({ config: baseConfig() });
+  const proxy = new EvidenceProxy({});
+  const { runtime } = await loadTestRuntime(dir, { proxy });
+  const remoteDir = path.join(
+    dir,
+    ".artemis",
+    "remote-evidence",
+    "task-remote",
+    "trace-remote"
+  );
+  fs.mkdirSync(remoteDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(remoteDir, "status.json"),
+    JSON.stringify({
+      trace_id: "trace-remote",
+      status: "failed",
+      error: "runner-timeout",
+      test_summary: {
+        task_status: "failed",
+        failed_items: [{ item_text: "tap CTA", kind: "assert", evidence: "not found" }]
+      }
+    })
+  );
+  fs.writeFileSync(path.join(remoteDir, "stderr.log"), "ERROR: agent stalled");
+  fs.writeFileSync(path.join(remoteDir, "stdout.log"), "Running task on agent...");
+
+  const bundle = await traceEvidence(runtime, { traceId: "trace-remote", save: false });
+  assert.equal(bundle.ok, true);
+  assert.equal(bundle.status, "failed");
+  assert.equal(bundle.error, "runner-timeout");
+  assert.equal(bundle.failedItems.length, 1);
+  assert.ok(
+    bundle.artifacts.some(
+      (artifact) => artifact.kind === "status" && artifact.path === path.join(remoteDir, "status.json")
+    )
+  );
+  assert.ok(
+    bundle.artifacts.some(
+      (artifact) => artifact.kind === "stderr" && artifact.path === path.join(remoteDir, "stderr.log")
+    )
+  );
+  assert.ok(!bundle.degraded.includes("trace-status-missing"));
 });

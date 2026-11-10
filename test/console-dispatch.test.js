@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+
+import JSZip from "jszip";
 
 import {
   computeDispatchPreview,
@@ -464,6 +469,47 @@ test("dispatch preview: 可选安装包并进入表单/签名", async () => {
   assert.match(html, /com\.example\.app/);
   assert.match(dispatchFormSignature(params), new RegExp(pkg.id));
   assert.match(dispatchFormSignature(params), /com\.example\.app/);
+});
+
+test("dispatch preview: 从安装包自动识别包名，不再显示手填输入", async () => {
+  const { store, setA } = await seed();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-apk-"));
+  const apkPath = path.join(dir, "app.apk");
+  const zip = new JSZip();
+  zip.file("AndroidManifest.xml", '<manifest package="com.example.auto" />');
+  fs.writeFileSync(apkPath, await zip.generateAsync({ type: "nodebuffer" }));
+  const pkg = await store.createWebAsset({
+    rootPath: ROOT,
+    kind: "package",
+    filename: "app.apk",
+    sha256: "b".repeat(64),
+    size: fs.statSync(apkPath).size,
+    storagePath: apkPath
+  });
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: setA.id,
+    platforms: "android",
+    appAssetId: pkg.id
+  });
+  try {
+    const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
+    assert.equal(preview.appPackage, "com.example.auto");
+    const html = renderDispatchPage({
+      rootPath: ROOT,
+      rootLabel: "p",
+      preview,
+      previewId: dispatchPreviewId(preview, dispatchFormSignature(params), ROOT),
+      formSignature: dispatchFormSignature(params),
+      query: Object.fromEntries(params)
+    });
+    assert.match(html, /应用包名：<code>com\.example\.auto<\/code>/);
+    assert.match(html, /从安装包自动识别/);
+    assert.doesNotMatch(html, /aria-label="应用包名"/);
+    assert.match(html, /name="appPackage" value="com\.example\.auto"/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("dispatch preview: 未知安装包给警告且不选中", async () => {

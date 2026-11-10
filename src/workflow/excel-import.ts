@@ -11,6 +11,7 @@ import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
 import { storeWebAsset } from "../web/assets.js";
 import { LEGACY_COLUMN_ALIASES } from "../web/excel-columns.js";
+import { detectDesignContext, type DesignContextSummary } from "./design-context.js";
 import { readCaseSheet, type CaseSheet } from "./excel.js";
 
 export interface ImportColumns {
@@ -19,8 +20,11 @@ export interface ImportColumns {
   expected?: string;
   preconditions?: string;
   module?: string;
+  section?: string;
   displayId?: string;
   testData?: string;
+  wireframe?: string;
+  relatedTc?: string;
 }
 
 export interface ImportedSet {
@@ -33,6 +37,28 @@ export interface ImportedSet {
   caseCount: number;
 }
 
+/** Excel 导入时的设计上下文检查结果；用于在导入响应/控制台提示“有设计图但未关联”。 */
+export interface DesignImportContext {
+  available: boolean;
+  sources: string[];
+  excelImages: number;
+  designRefs: number;
+  /** 实际识别/覆盖到的模板列（null = 未映射）。 */
+  columns: {
+    section: string | null;
+    wireframe: string | null;
+    relatedTc: string | null;
+  };
+  warnings: string[];
+  nextAction: string | null;
+}
+
+export interface DesignRowMapping {
+  screens: string[];
+  /** 与 screens 对齐；空字符串表示该屏只做名称映射、没有 node id。 */
+  nodeIds: string[];
+}
+
 export type ImportResult =
   | {
       ok: true;
@@ -41,6 +67,7 @@ export type ImportResult =
       sets: ImportedSet[];
       sourceCopy: string;
       warnings: string[];
+      design?: DesignImportContext;
     }
   | { ok: false; error: string };
 
@@ -52,8 +79,11 @@ const FIELDS: Field[] = [
   "expected",
   "preconditions",
   "module",
+  "section",
   "displayId",
-  "testData"
+  "testData",
+  "wireframe",
+  "relatedTc"
 ];
 
 const COLUMN_ALIASES_BY_FIELD: Record<Field, readonly string[]> = {
@@ -62,8 +92,20 @@ const COLUMN_ALIASES_BY_FIELD: Record<Field, readonly string[]> = {
   expected: LEGACY_COLUMN_ALIASES.expected,
   preconditions: LEGACY_COLUMN_ALIASES.preconditions,
   module: LEGACY_COLUMN_ALIASES.module,
+  section: ["section", "sections", "子功能", "二级模块", "分区"],
   displayId: LEGACY_COLUMN_ALIASES.caseId,
-  testData: LEGACY_COLUMN_ALIASES.testData
+  testData: LEGACY_COLUMN_ALIASES.testData,
+  wireframe: [
+    "wireframe",
+    "wireframes",
+    "designrefs",
+    "designscreens",
+    "设计引用",
+    "设计屏",
+    "线框图",
+    "设计稿"
+  ],
+  relatedTc: ["relatedtc", "related", "relatedcases", "关联用例", "关联"]
 };
 
 interface ImportedCase {
@@ -79,6 +121,10 @@ interface ImportedCase {
   module?: string;
   section?: string;
   testData?: string[];
+  /** Excel 可见 `Wireframe`/设计引用列解析出的设计屏名。 */
+  designRefs?: { screens: string[]; nodeIds?: string[] };
+  /** Excel `Related TC` 列解析出的关联用例编号。 */
+  relatedCases?: string[];
   openQuestions?: string[];
 }
 
@@ -116,6 +162,45 @@ function visibleTaskDesc(taskDesc: string): string {
     .filter((line) => line.trim() !== REAL_DATA_CLAUSE)
     .join("\n")
     .trim();
+}
+
+function looksLikeNonScreenValue(value: string): boolean {
+  return (
+    /^https?:\/\//i.test(value) ||
+    /^[A-Za-z]:\\/.test(value) ||
+    /^(?:\.{0,2}\/|\/)/.test(value) ||
+    /\.(?:png|jpe?g|webp|gif|pen|fig|pdf)$/i.test(value)
+  );
+}
+
+/** Excel `Wireframe` 列：换行分隔的设计屏名；少数单元格有 `)0.` 粘连。
+ * URL/文件路径/图片名不是屏名：显式丢弃并记 warning，不写进 designRefs。 */
+export function parseDesignScreens(value: string, warnings: string[]): string[] {
+  const normalized = value.replace(/\r/g, "").replace(/\)0\./g, ")\n0.");
+  const screens: string[] = [];
+  for (const entry of normalized.split(/\n+/).map((item) => item.trim()).filter(Boolean)) {
+    if (looksLikeNonScreenValue(entry)) {
+      warnings.push(`Wireframe 值看起来是 URL/文件路径而不是设计屏名，已忽略：${entry}`);
+      continue;
+    }
+    if (!screens.includes(entry)) screens.push(entry);
+  }
+  return screens;
+}
+
+function parseRelatedCases(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/[,;\n\s]+/)
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    )
+  ];
+}
+
+function normalizeFeatureName(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function renderImportedMarkdown(cases: ImportedCase[], meta: { source: string; importedAt: string }): string {
@@ -214,12 +299,76 @@ async function existingSets(runtime: Runtime, sourceId: string): Promise<Importe
 }
 
 /** 把 Excel 测试文档导入用例库：按模块拆集、三件套归档、登记；同内容幂等 skip。 */
+function summarizeDesignContext(
+  context: DesignContextSummary,
+  excelImages: number,
+  designRefs: number,
+  columns: DesignImportContext["columns"]
+): DesignImportContext {
+  const sources = context.sources.length > 0 ? context.sources.join("、") : "无";
+  const hasContract =
+    context.flows || context.uiContract || context.penScreens > 0 || context.screenshots > 0;
+  const warnings: string[] = [];
+  if (excelImages > 0) {
+    warnings.push(
+      `Excel 含 ${excelImages} 张图片；导入不会自动把内嵌图片作为设计基线。若这些是设计图，请提供 Figma/.pen 设计源，或把图片放到 .artemis/design/screens/。`
+    );
+  }
+  if (context.referenceAssets > 0) {
+    warnings.push(
+      `检测到 ${context.referenceAssets} 个参考图资产；参考图只是视觉参考，不会自动变成可校验的 UI 契约（需 .pen/Figma flows 生成 ui-contract）。`
+    );
+  }
+  if (hasContract && designRefs === 0) {
+    warnings.push(
+      `检测到设计基线（${sources}），但 Excel 未提供「设计引用」列；导入用例只能按「模块」名与设计屏名做 UI 对比，无法逐行关联设计屏。`
+    );
+  }
+  if (columns.wireframe !== null && designRefs === 0) {
+    warnings.push(
+      "已识别 Wireframe/设计引用列，但没有解析出有效设计屏名；请检查该列内容，或用 columns 显式指定正确表头。"
+    );
+  }
+  if (columns.section !== null && columns.wireframe === null) {
+    warnings.push(
+      "已识别 Section 列但未识别 Wireframe/设计引用列；Section 只用于拆集，不会自动关联设计屏。"
+    );
+  }
+  return {
+    available: context.available,
+    sources: context.sources,
+    excelImages,
+    designRefs,
+    columns,
+    warnings,
+    nextAction: hasContract
+      ? "node dist/cli.js suite run --ui-diff --fail-on-ui"
+      : context.available || excelImages > 0
+        ? "提供 Figma/.pen 设计源后运行 design_to_test 或 suite ui-contract"
+        : null
+  };
+}
+
 export async function importTestDocument(
   runtime: Runtime,
-  args: { excelPath: string; columns?: ImportColumns; sourceName?: string },
+  args: {
+    excelPath: string;
+    columns?: ImportColumns;
+    sourceName?: string;
+    /** 设计辅助 enrich：加入 source id，避免覆盖普通导入集。 */
+    sourceIdSuffix?: string;
+    /** 按 Excel 物理行号注入设计屏/node id（行号从 1 开始，表头为 1）。 */
+    designRefsByRow?: Map<number, DesignRowMapping>;
+  },
   deps: { readSheet?: typeof readCaseSheet } = {}
 ): Promise<ImportResult> {
   const excelPath = path.resolve(runtime.project.rootDir, args.excelPath);
+  const referenceAssets = await runtime.store
+    .listWebAssets(runtime.project.rootDir, "reference")
+    .catch(() => []);
+  const designContext = detectDesignContext(runtime, {
+    referenceAssets: referenceAssets.length
+  });
   let sha8: string;
   try {
     sha8 = createHash("sha256").update(fs.readFileSync(excelPath)).digest("hex").slice(0, 8);
@@ -228,7 +377,7 @@ export async function importTestDocument(
   }
   const baseName = (args.sourceName ?? "").trim() || path.basename(excelPath);
   const documentSlug = slug(path.parse(baseName).name);
-  const sourceId = `imported:${baseName}@${sha8}`;
+  const sourceId = `imported:${baseName}@${sha8}${args.sourceIdSuffix ?? ""}`;
   const dir = caseSetsDir(runtime.configDirAbs);
   const skipped = await existingSets(runtime, sourceId);
   if (skipped) {
@@ -238,7 +387,12 @@ export async function importTestDocument(
       sourceId,
       sets: skipped,
       sourceCopy: findSourceCopy(dir, baseName),
-      warnings: []
+      warnings: [],
+      design: summarizeDesignContext(designContext, 0, 0, {
+        section: null,
+        wireframe: null,
+        relatedTc: null
+      })
     };
   }
 
@@ -262,6 +416,13 @@ export async function importTestDocument(
     };
   }
 
+  const mappedColumn = (field: Field): string | null =>
+    indexes[field] === null ? null : (sheet.headers[indexes[field]!] ?? null);
+  const designColumns = {
+    section: mappedColumn("section"),
+    wireframe: mappedColumn("wireframe"),
+    relatedTc: mappedColumn("relatedTc")
+  };
   const pick = (cells: string[], field: Field): string => {
     const index = indexes[field];
     return index === null ? "" : (cells[index] ?? "").trim();
@@ -273,10 +434,14 @@ export async function importTestDocument(
     expected: string;
     preconditions: string;
     module: string;
+    section: string;
     displayId: string;
     testData: string;
+    designScreens: string[];
+    relatedTc: string;
   }> = [];
   const rowIssues: string[] = [];
+  const wireframeWarnings: string[] = [];
   sheet.rows.forEach((cells, rowIndex) => {
     const rowNumber = rowIndex + 2;
     const name = pick(cells, "name");
@@ -297,8 +462,11 @@ export async function importTestDocument(
       expected: pick(cells, "expected"),
       preconditions: pick(cells, "preconditions"),
       module: pick(cells, "module") || path.parse(baseName).name,
+      section: pick(cells, "section"),
       displayId: pick(cells, "displayId"),
-      testData: pick(cells, "testData")
+      testData: pick(cells, "testData"),
+      designScreens: parseDesignScreens(pick(cells, "wireframe"), wireframeWarnings),
+      relatedTc: pick(cells, "relatedTc")
     });
   });
   if (rowIssues.length > 0) {
@@ -310,20 +478,18 @@ export async function importTestDocument(
 
   const groups = new Map<
     string,
-    Array<{
-      rowNumber: number;
-      name: string;
-      steps: string;
-      expected: string;
-      preconditions: string;
-      displayId: string;
-      testData: string;
-    }>
+    {
+      featureName: string;
+      module: string;
+      rows: Array<(typeof drafts)[number]>;
+    }
   >();
   for (const draft of drafts) {
-    const bucket = groups.get(draft.module) ?? [];
-    bucket.push(draft);
-    groups.set(draft.module, bucket);
+    const featureName = normalizeFeatureName(draft.section || draft.module);
+    const key = `${draft.module}\u0000${featureName}`;
+    const group = groups.get(key) ?? { featureName, module: draft.module, rows: [] };
+    group.rows.push(draft);
+    groups.set(key, group);
   }
 
   const now = new Date();
@@ -343,11 +509,29 @@ export async function importTestDocument(
   const allCases: ImportedCase[] = [];
   const createdFiles: string[] = [];
   const importWarnings: string[] = [];
+  importWarnings.push(...wireframeWarnings);
+  let designRefsCount = 0;
   try {
-    for (const [module, rows] of groups) {
-      const moduleSlug = slug(module);
-      const featureKey = moduleSlug === documentSlug ? `imp-${documentSlug}` : `imp-${documentSlug}-${moduleSlug}`;
+    for (const { featureName, rows } of groups.values()) {
+      const featureSlug = slug(featureName);
+      const featureKey =
+        featureSlug === documentSlug
+          ? `imp-${documentSlug}`
+          : `imp-${documentSlug}-${featureSlug}`;
       const cases: ImportedCase[] = rows.map((row) => {
+        const mapped = args.designRefsByRow?.get(row.rowNumber);
+        const designScreens = mapped?.screens ?? row.designScreens;
+        const designNodeIds = mapped?.nodeIds ?? [];
+        const rawRelatedCases = parseRelatedCases(row.relatedTc);
+        const jiraLikeRelated = rawRelatedCases.filter((entry) =>
+          /^[A-Z][A-Z0-9]+-\d+$/.test(entry)
+        );
+        const relatedCases = rawRelatedCases.filter((entry) => !jiraLikeRelated.includes(entry));
+        if (jiraLikeRelated.length > 0) {
+          importWarnings.push(
+            `第 ${row.rowNumber} 行 Related TC 值像 Jira 单号（${jiraLikeRelated.join("、")}），未写入 relatedCases；请确认该列语义或改用 columns 映射。`
+          );
+        }
         const steps: string[] = [];
         const expectations: Array<Record<string, unknown>> = [];
         if (row.expected !== "") {
@@ -370,6 +554,16 @@ export async function importTestDocument(
           row.displayId === ""
             ? undefined
             : (executor.get(`display:${row.displayId}`) ?? executor.get(`case:${row.displayId}`));
+        const explicitDesignRefs = hidden?.designRefs?.trim() ?? "";
+        const designRefLine =
+          explicitDesignRefs ||
+          designScreens
+            .map((screen, index) => {
+              const nodeId = designNodeIds[index] ?? "";
+              return nodeId === "" ? screen : `${screen}(${nodeId})`;
+            })
+            .join("、");
+        if (designRefLine !== "") designRefsCount += 1;
         const reusable =
           hidden !== undefined &&
           hidden.taskDesc.trim() !== "" &&
@@ -384,7 +578,7 @@ export async function importTestDocument(
               `步骤：${row.steps}`,
               row.expected !== "" ? `预期：${row.expected}` : null,
               ...(testData.length > 0 ? ["【测试数据】", ...testData.map((item) => `- ${item}`)] : []),
-              ...(hidden?.designRefs ? [`设计引用：${hidden.designRefs}`] : [])
+              ...(designRefLine !== "" ? [`设计引用：${designRefLine}`] : [])
             ]
               .filter((line): line is string => line !== null)
               .join("\n");
@@ -397,28 +591,33 @@ export async function importTestDocument(
           name: row.name,
           preconditions,
           taskDesc,
-          screens: [module],
+          screens: designScreens.length > 0 ? designScreens : [featureName],
+          ...(designScreens.length > 0
+            ? { designRefs: { screens: designScreens, nodeIds: designNodeIds } }
+            : {}),
           steps,
           expectations,
           feature: featureKey,
           displayId: row.displayId || caseId,
-          module,
-          section: module,
+          module: row.module,
+          section: featureName,
           testData,
+          ...(relatedCases.length > 0 ? { relatedCases } : {}),
           openQuestions: []
         };
       });
       allCases.push(...cases);
-      const stem = caseSetStem(module, now, taken);
+      const screens = [...new Set(cases.flatMap((entry) => entry.screens))];
+      const stem = caseSetStem(featureName, now, taken);
       taken.add(stem);
       const saved = await saveCaseSetFiles(casesDir, stem, {
         json:
           JSON.stringify(
             {
-              meta: { source: sourceId, importedAt, feature: module, featureKey },
+              meta: { source: sourceId, importedAt, feature: featureName, featureKey },
               source: sourceId,
-              features: [{ key: featureKey, name: module, screens: [module] }],
-              counts: { flows: cases.length, screens: 1, edges: 0 },
+              features: [{ key: featureKey, name: featureName, screens }],
+              counts: { flows: cases.length, screens: screens.length, edges: 0 },
               flows: cases
             },
             null,
@@ -427,12 +626,12 @@ export async function importTestDocument(
         markdown: renderImportedMarkdown(cases, { source: sourceId, importedAt }),
         xlsx: await renderTestsWorkbook(
           cases as unknown as GeneratedTest[],
-          { source: sourceId, generatedAt: importedAt, counts: { cases: cases.length, screens: 1, edges: 0 } }
+          { source: sourceId, generatedAt: importedAt, counts: { cases: cases.length, screens: screens.length, edges: 0 } }
         )
       });
       createdFiles.push(saved.jsonPath, saved.mdPath, saved.xlsxPath);
       sets.push({
-        feature: module,
+        feature: featureName,
         featureKey,
         stem,
         jsonPath: saved.jsonPath,
@@ -537,5 +736,19 @@ export async function importTestDocument(
     return { ok: false, error: `用例集登记失败（已回滚本地归档）：${errorMessage(error)}` };
   }
 
-  return { ok: true, status: "imported", sourceId, sets, sourceCopy, warnings: importWarnings };
+  const design = summarizeDesignContext(
+    designContext,
+    sheet.imageCount ?? 0,
+    designRefsCount,
+    designColumns
+  );
+  return {
+    ok: true,
+    status: "imported",
+    sourceId,
+    sets,
+    sourceCopy,
+    warnings: [...importWarnings, ...design.warnings],
+    design
+  };
 }

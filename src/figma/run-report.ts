@@ -13,7 +13,7 @@ import {
   readApiErrorsArtifact,
   type ApiErrorObservation
 } from "../artemis/api-errors.js";
-import type { TaskFailedItem, TaskStatus } from "../artemis/task-result.js";
+import type { TaskFailedItem, TaskScriptAdherenceSummary, TaskStatus } from "../artemis/task-result.js";
 import type { SuiteRunRecord, TaskStatRecord } from "../db/types.js";
 import type { Runtime } from "../runtime.js";
 import { outcomeOf, type TaskOutcome } from "../tasks/outcome.js";
@@ -52,6 +52,8 @@ export interface RunReportCase {
   failure: FailureClassification | null;
   /** Script provenance summary (assert vs explore steps; null for legacy). */
   scriptProvenance: { asserts: number; explores: number } | null;
+  /** 脚本断言命中情况（iOS 逐步 AX / Android 事后 OCR/UI tree；null = 旧产物无数据）。 */
+  scriptAdherence: (TaskScriptAdherenceSummary & { degraded?: string | null }) | null;
   failedItems: TaskFailedItem[];
   apiErrors: ApiErrorObservation[];
   apiErrorsDegraded: string | null;
@@ -216,6 +218,56 @@ function evidenceText(entry: RunReportCase): string {
   return lines.join("\n");
 }
 
+const ANDROID_ADHERENCE_ARTIFACT = "android-adherence.json";
+
+function readAndroidAdherenceArtifact(
+  traceDir: string
+): (TaskScriptAdherenceSummary & { degraded?: string | null }) | null {
+  if (traceDir === "") return null;
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(traceDir, ANDROID_ADHERENCE_ARTIFACT), "utf8")
+    ) as {
+      adherence?: unknown;
+      degraded?: unknown;
+    };
+    const raw = parsed.adherence;
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const record = raw as Record<string, unknown>;
+    const deferred =
+      record.deferred !== null && typeof record.deferred === "object" && !Array.isArray(record.deferred)
+        ? (record.deferred as Record<string, unknown>)
+        : {};
+    const number = (value: unknown): number =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+    return {
+      unresolved: Array.isArray(record.unresolved) ? record.unresolved.length : number(record.unresolved),
+      deferredTotal: number(deferred.total),
+      deferredReached: number(deferred.reached),
+      checkable: number(record.checkable),
+      satisfied: number(record.satisfied),
+      unchecked: number(record.unchecked),
+      degraded: typeof parsed.degraded === "string" ? parsed.degraded : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+function scriptAdherenceText(entry: RunReportCase): string {
+  const adherence = entry.scriptAdherence;
+  if (adherence === null) return "";
+  const base = `断言 ${adherence.satisfied ?? 0}/${adherence.checkable ?? 0}${
+    adherence.unresolved > 0 ? `（未命中 ${adherence.unresolved}）` : ""
+  }`;
+  const explore =
+    (adherence.deferredTotal ?? 0) > 0
+      ? ` · 探索 ${adherence.deferredReached ?? 0}/${adherence.deferredTotal}`
+      : "";
+  const degraded = adherence.degraded ? ` · 降级(${adherence.degraded})` : "";
+  return `${base}${explore}${degraded}`;
+}
+
 function apiErrorsText(entry: RunReportCase): string {
   if (entry.apiErrors.length === 0) return "";
   return entry.apiErrors
@@ -248,6 +300,7 @@ async function renderWorkbook(report: RunReport): Promise<Buffer> {
     { header: "失败域", key: "domain", width: 18 },
     { header: "置信度", key: "confidence", width: 10 },
     { header: "脚本来源", key: "scriptProvenance", width: 16 },
+    { header: "脚本断言", key: "scriptAdherence", width: 22 },
     { header: "判定依据", key: "reason", width: 50 },
     { header: "证据路径", key: "evidence", width: 50 },
     { header: "API 错误", key: "apiErrors", width: 24 },
@@ -270,6 +323,7 @@ async function renderWorkbook(report: RunReport): Promise<Buffer> {
       scriptProvenance: entry.scriptProvenance
         ? `断言 ${entry.scriptProvenance.asserts} / 探索 ${entry.scriptProvenance.explores}`
         : "",
+      scriptAdherence: scriptAdherenceText(entry),
       reason: entry.failure?.reason ?? "",
       evidence: evidenceText(entry),
       apiErrors: apiErrorsText(entry),
@@ -621,6 +675,26 @@ export async function buildRunReport(
         ? cases.byTaskDesc.get(task.taskDesc) ?? null
         : null;
     const status = task.status === "submitted" ? null : await runtime.traceStatus(task.traceId);
+    const androidAdherence = readAndroidAdherenceArtifact(runtime.traceDir(task.traceId));
+    const scriptAdherence = status?.testSummary?.adherence ?? androidAdherence;
+    const statusWithAdherence =
+      status !== null && scriptAdherence !== null && status.testSummary?.adherence == null
+        ? {
+            ...status,
+            testSummary: {
+              ...(status.testSummary ?? {
+                taskStatus: status.status,
+                passed: null,
+                failed: null,
+                inconclusive: null,
+                unchecked: null,
+                synthesized: false,
+                failedItems: []
+              }),
+              adherence: scriptAdherence
+            }
+          }
+        : status;
     const outcome = outcomeOf(task.status);
     const apiArtifact = readApiErrorsArtifact(runtime.traceDir(task.traceId));
     const apiErrors = apiArtifact?.errors ?? [];
@@ -643,17 +717,18 @@ export async function buildRunReport(
       failure:
         outcome === "failed"
           ? classifyFailure({
-              status,
+              status: statusWithAdherence,
               crashes: crashesForTrace(runtime, task.traceId),
               preconditions: generated?.preconditions,
               apiErrors: apiErrors.map((entry) => ({ code: entry.code, handled: entry.handled })),
               scriptProvenance: scriptProvenanceSignal(
                 generated?.scriptProvenance ?? null,
-                status?.testSummary?.adherence ?? null
+                statusWithAdherence?.testSummary?.adherence ?? null
               )
             })
           : null,
       scriptProvenance: generated?.scriptProvenance ?? null,
+      scriptAdherence,
       failedItems: status?.testSummary?.failedItems ?? [],
       apiErrors,
       apiErrorsDegraded: apiArtifact?.degraded ?? null,
@@ -780,6 +855,9 @@ export async function buildTaskRunReport(
             }
           : null,
         scriptProvenance: null,
+        scriptAdherence: entry.traceId
+          ? readAndroidAdherenceArtifact(runtime.traceDir(entry.traceId))
+          : null,
         failedItems: [],
         apiErrors: [],
         apiErrorsDegraded: null,

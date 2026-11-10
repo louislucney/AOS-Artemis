@@ -25,6 +25,8 @@ export interface CaseSheet {
   rows: string[][];
   /** 隐藏「执行器」sheet（生成工作簿专有）；普通导入工作簿为空。 */
   executor: Map<string, ExecutorRow>;
+  /** 工作簿内嵌图片数量（设计图/截图）；导入不自动提取，用于提醒。 */
+  imageCount?: number;
 }
 
 const MAX_ROWS = 10000;
@@ -84,7 +86,7 @@ async function readCsvCaseSheet(filePath: string): Promise<CaseSheet> {
   while (rows.length > 0 && rows[rows.length - 1]!.every((cell) => cell === "")) {
     rows.pop();
   }
-  return { headers, rows, executor: new Map() };
+  return { headers, rows, executor: new Map(), imageCount: 0 };
 }
 
 /** 读取测试用例表（首个工作表 / CSV）。结构不可靠时显式失败，绝不静默错读。 */
@@ -138,7 +140,9 @@ export async function readCaseSheet(filePath: string): Promise<CaseSheet> {
   while (rows.length > 0 && rows[rows.length - 1]!.every((cell) => cell === "")) {
     rows.pop();
   }
-  return { headers, rows, executor: readExecutor(sheet.workbook) };
+  const media = (workbook as unknown as { media?: unknown[] }).media;
+  const imageCount = Array.isArray(media) ? media.length : 0;
+  return { headers, rows, executor: readExecutor(sheet.workbook), imageCount };
 }
 
 function readExecutor(workbook: ExcelJS.Workbook): Map<string, ExecutorRow> {

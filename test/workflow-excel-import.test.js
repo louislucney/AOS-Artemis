@@ -293,3 +293,217 @@ test("importTestDocument: displayId/testData 旧别名锁定（展示编号/测�
   assert.ok(flow.taskDesc.includes("【测试数据】"), flow.taskDesc);
   assert.ok(flow.taskDesc.includes("账号: demo"), flow.taskDesc);
 });
+
+const TINY_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0ZkAAAAASUVORK5CYII=";
+
+test("importTestDocument: Excel 内嵌图片 → design.excelImages + 显式提醒", async () => {
+  const { dir, runtime } = await project();
+  const file = path.join(dir, "with-image.xlsx");
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Sheet1");
+  sheet.addRow(["用例名", "步骤", "预期"]);
+  sheet.addRow(["登录", "输入账号密码", "进入首页"]);
+  const imageId = workbook.addImage({ base64: TINY_PNG_BASE64, extension: "png" });
+  sheet.addImage(imageId, "F2:G5");
+  await workbook.xlsx.writeFile(file);
+
+  const result = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.ok(result.design, "返回设计上下文摘要");
+  assert.equal(result.design.excelImages, 1);
+  assert.ok(
+    result.design.warnings.some((warning) => warning.includes("内嵌图片")),
+    JSON.stringify(result.design.warnings)
+  );
+  assert.ok(
+    result.warnings.some((warning) => warning.includes("内嵌图片")),
+    JSON.stringify(result.warnings)
+  );
+});
+
+test("importTestDocument: Section 分组 + Wireframe 设计引用 + Related TC（真实模板列）", async () => {
+  const { dir, runtime } = await project();
+  const file = await writeSheet(path.join(dir, "navigation-menu.xlsx"), [
+    [
+      "TC",
+      "Modules",
+      "Section",
+      "Test Case",
+      "Precondition",
+      "Test Data",
+      "Related TC",
+      "Test Step",
+      "Expected Result",
+      "Wireframe"
+    ],
+    [
+      "TC_01",
+      "Login / Register",
+      "Login",
+      "Login success",
+      "",
+      "",
+      "TC_00",
+      "1.Click login",
+      "1.Go to Homepage",
+      "0.1_Login/Register\n1.0_Homepage"
+    ],
+    [
+      "TC_02",
+      "Login / Register",
+      "Register (Smiles card)",
+      "Register with Smiles card",
+      "",
+      "",
+      "TC_01",
+      "1.Open register",
+      "1.See register form",
+      "0.1_Login/Register\n0.3.2_Register_Card Info (Smile Classic)"
+    ],
+    [
+      "TC_03",
+      "Login / Register",
+      "Register (MOGI)",
+      "Register with MOGI",
+      "",
+      "",
+      "",
+      "1.Open register",
+      "1.See MOGI form",
+      "0.0.4_Landing Page\n0.1_Register (Smiles MOGI Virtual Card)"
+    ],
+    [
+      "TC_04",
+      "Login / Register",
+      "Register (Student/Military)",
+      "Student register",
+      "",
+      "",
+      "",
+      "1.Open register",
+      "1.See student form",
+      "0.3.2_Register_Mobile (Student/ Military)0.2.1_OTP - Case 1"
+    ]
+  ]);
+
+  const result = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(
+    result.sets.map((set) => set.feature).sort(),
+    ["Login", "Register (MOGI)", "Register (Smiles card)", "Register (Student/Military)"].sort()
+  );
+
+  const smiles = result.sets.find((set) => set.feature === "Register (Smiles card)");
+  assert.ok(smiles);
+  const document = JSON.parse(fs.readFileSync(smiles.jsonPath, "utf8"));
+  const flow = document.flows[0];
+  assert.equal(flow.module, "Login / Register");
+  assert.equal(flow.section, "Register (Smiles card)");
+  assert.deepEqual(flow.screens, [
+    "0.1_Login/Register",
+    "0.3.2_Register_Card Info (Smile Classic)"
+  ]);
+  assert.deepEqual(flow.designRefs, {
+    screens: ["0.1_Login/Register", "0.3.2_Register_Card Info (Smile Classic)"],
+    nodeIds: []
+  });
+  assert.deepEqual(flow.relatedCases, ["TC_01"]);
+  assert.ok(flow.taskDesc.includes("设计引用：0.1_Login/Register、0.3.2_Register_Card Info (Smile Classic)"));
+  assert.deepEqual(result.design.columns, {
+    section: "Section",
+    wireframe: "Wireframe",
+    relatedTc: "Related TC"
+  });
+
+  const student = result.sets.find((set) => set.feature === "Register (Student/Military)");
+  assert.ok(student);
+  const studentDocument = JSON.parse(fs.readFileSync(student.jsonPath, "utf8"));
+  assert.deepEqual(studentDocument.flows[0].screens, [
+    "0.3.2_Register_Mobile (Student/ Military)",
+    "0.2.1_OTP - Case 1"
+  ]);
+});
+
+test("importTestDocument: Wireframe 是 URL/图片、Related TC 是 Jira 单号 → 不误用并提醒", async () => {
+  const { dir, runtime } = await project();
+  const file = await writeSheet(path.join(dir, "mismatched-template.xlsx"), [
+    ["TC", "Modules", "Section", "Test Case", "Test Step", "Expected Result", "Wireframe", "Related TC"],
+    [
+      "TC_01",
+      "Login",
+      "Login",
+      "Login",
+      "1.Click login",
+      "1.Home",
+      "https://www.figma.com/design/abc",
+      "AOS-123"
+    ],
+    [
+      "TC_02",
+      "Login",
+      "Login",
+      "Login again",
+      "1.Click login",
+      "1.Home",
+      "images/login-screen.png",
+      "TC_01"
+    ]
+  ]);
+
+  const result = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.design.columns, {
+    section: "Section",
+    wireframe: "Wireframe",
+    relatedTc: "Related TC"
+  });
+  assert.equal(result.design.designRefs, 0);
+  assert.ok(
+    result.warnings.some((warning) => warning.includes("URL/文件路径")),
+    JSON.stringify(result.warnings)
+  );
+  assert.ok(
+    result.warnings.some((warning) => warning.includes("Jira 单号")),
+    JSON.stringify(result.warnings)
+  );
+
+  const login = result.sets.find((set) => set.feature === "Login");
+  assert.ok(login);
+  const document = JSON.parse(fs.readFileSync(login.jsonPath, "utf8"));
+  const second = document.flows.find((flow) => flow.displayId === "TC_02");
+  assert.deepEqual(second.relatedCases, ["TC_01"]);
+  assert.equal(second.designRefs, undefined, "URL/图片不得写入 designRefs");
+  const first = document.flows.find((flow) => flow.displayId === "TC_01");
+  assert.equal(first.relatedCases, undefined, "Jira 单号不得写入 relatedCases");
+});
+
+test("importTestDocument: 检测到设计基线但无设计引用 → 提醒并给出 ui-diff 下一步", async () => {
+  const { dir, runtime } = await project();
+  const design = path.join(runtime.configDirAbs, "design");
+  fs.mkdirSync(design, { recursive: true });
+  fs.writeFileSync(
+    path.join(design, "flows.json"),
+    JSON.stringify({ screens: [{ id: "s1", name: "登录" }], edges: [] }, null, 2)
+  );
+  fs.writeFileSync(
+    path.join(design, "ui-contract.json"),
+    JSON.stringify({ screens: [{ id: "s1", name: "登录" }] }, null, 2)
+  );
+  const file = await writeSheet(path.join(dir, "design-context.xlsx"), [
+    ["用例名", "步骤", "预期"],
+    ["登录", "输入账号密码", "进入首页"]
+  ]);
+
+  const result = await importTestDocument(runtime, { excelPath: file });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.ok(result.design, "返回设计上下文摘要");
+  assert.equal(result.design.available, true);
+  assert.ok(result.design.sources.includes("flows.json"));
+  assert.ok(result.design.sources.includes("ui-contract.json"));
+  assert.ok(
+    result.design.warnings.some((warning) => warning.includes("设计引用")),
+    JSON.stringify(result.design.warnings)
+  );
+  assert.match(result.design.nextAction ?? "", /--ui-diff/);
+});

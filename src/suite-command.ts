@@ -303,6 +303,7 @@ function suiteRunOptions(
     uiDiffMax: intOrNull(flags.get("ui-diff-max")) ?? undefined,
     failOnUi: flags.bool("fail-on-ui"),
     failOnUiWeight: flags.bool("fail-on-ui-weight"),
+    failOnUnresolved: flags.bool("fail-on-unresolved"),
     pollTimeoutMs: intOrNull(flags.get("poll-timeout")) ?? undefined,
     apiErrors: !flags.bool("no-api-errors"),
     failOnApiErrors: flags.get("fail-on") === "api-error",
@@ -423,6 +424,7 @@ run:    [--tests <path>] [--case <caseId|semanticId|displayId>]... [--max <n>] [
         [--ui-diff] [--ui-diff-max <n>]（访问屏逐屏设计对比；默认关闭，单例默认最多 10 屏）
         [--fail-on-ui]（窄门禁：非隔离用例 ui.status=failed → exit 2；unverified 不阻断）
         [--fail-on-ui-weight]（窄门禁：非隔离用例高置信字重 heavier → exit 2；默认关闭，待样本校准）
+        [--fail-on-unresolved]（脚本硬断言门禁：非隔离用例存在未命中的 【AOS-EXPECT】断言 → exit 2；iOS/Android OCR 同口径）
         [--allow-pending-api]（API 说明 pending 时仍执行；默认 check/run 阻断）
         [--no-api-errors] [--fail-on api-error] [--fail-on-uncovered] [--retry <n>] [--no-quarantine] [--strict] [--no-save]
         [--task <id>（回归任务：与 --tests 互斥；--device 可重复，按端展开设备运行）]
@@ -430,7 +432,7 @@ check:  [--tests <path>] [--strict] [--allow-pending-api] [--semantics <path>]
         [--fail-on-dynamic] [--dynamic-baseline <json>] [--update-dynamic-baseline]
 calibrate: [--report <json|junit.xml>|--xcresult <bundle>] [--tests <path>] [--limit <n>] [--no-sync] [--no-save] [--out <dir>] [--fail-on-miss]
 loop:   [--tests <path>] [--skip-run] [--calibration <json>] [--retry <n>] [--max <n>]
-        [--device <serial>] [--app <package>] [--app-path <apk|ipa|url>] [--model Flash|Pro] [--ui-diff] [--fail-on-ui] [--fail-on-ui-weight]
+        [--device <serial>] [--app <package>] [--app-path <apk|ipa|url>] [--model Flash|Pro] [--ui-diff] [--fail-on-ui] [--fail-on-ui-weight] [--fail-on-unresolved]
         [--allow-uncovered] [--no-quarantine] [--no-save] [--out <dir>]
 flake:  --cases <caseId|semanticId|displayId,...> [--runs <n>] [--tests <path>] [--device <serial>] [--app <package>]
         [--model Flash|Pro] [--poll-timeout <ms>] [--no-api-errors] [--fail-on-flaky] [--no-save] [--out <dir>]
@@ -939,7 +941,14 @@ async function suiteRunTask(
           anyExecError = true;
           continue;
         }
-        const caseIds = archive.records.map((record) => record.id).filter((id) => !seen.has(id));
+        const requestedCaseIds = baseOptions.caseIds;
+        const caseIds = archive.records
+          .map((record) => record.id)
+          .filter(
+            (id) =>
+              !seen.has(id) &&
+              (requestedCaseIds === undefined || requestedCaseIds.includes(id))
+          );
         const deduped = archive.records.length - caseIds.length;
         if (deduped > 0) {
           say(`[${platform}] ${ref.featureName}: 去重 ${deduped} 例（跨份重复 caseId 只跑一次）`);
@@ -1279,8 +1288,16 @@ async function suiteRun(
           ? ` · UI 未验证${entry.ui.reason ? `(${entry.ui.reason})` : ""}`
           : ` · UI ${entry.ui.status.toUpperCase()}`
         : "";
+      const adherence = entry.testSummary?.adherence;
+      const adherenceNote =
+        adherence && (adherence.checkable ?? 0) > 0
+          ? ` · 脚本断言 ${adherence.satisfied ?? 0}/${adherence.checkable ?? 0}${
+              adherence.unresolved > 0 ? `（未命中 ${adherence.unresolved}）` : ""
+            }`
+          : "";
+      const engineNote = entry.engine ? ` · 引擎 ${entry.engine}` : "";
       io.log(
-        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${scriptNote}${apiNote}${degraded}${quarantineNote}${retryNote}${uiNote}`
+        `[${label}] ${entry.name} (${entry.caseId}) trace=${entry.traceId ?? "-"}${failure}${scriptNote}${adherenceNote}${engineNote}${apiNote}${degraded}${quarantineNote}${retryNote}${uiNote}`
       );
       if (entry.traceId && entry.status !== "passed") {
         io.log(`       证据: node dist/cli.js suite evidence ${entry.traceId}`);
@@ -1336,6 +1353,21 @@ async function suiteRun(
       if (weightFailures > 0) {
         io.errorLog(
           `--fail-on-ui-weight：${weightFailures} 例命中高置信字重 heavier（confidence ≥0.7）。`
+        );
+      }
+    }
+    if (flags.bool("fail-on-unresolved")) {
+      const unresolvedCases = report.cases.filter(
+        (entry) =>
+          entry.quarantined !== true &&
+          (entry.testSummary?.adherence?.unresolved ?? 0) > 0
+      ).length;
+      io.log(
+        `脚本硬断言门禁: ${unresolvedCases > 0 ? "未通过" : "通过"}（未命中断言 ${unresolvedCases} 例；无 adherence 的旧产物不阻断）`
+      );
+      if (unresolvedCases > 0) {
+        io.errorLog(
+          `--fail-on-unresolved：${unresolvedCases} 例存在未命中的脚本断言（【AOS-EXPECT】）。`
         );
       }
     }
@@ -3011,7 +3043,15 @@ async function suiteTaskOnCenterHost(
     const scoped = store.scopeHost(hostId);
     const action = flags.positional[1];
     if (action === "create") {
-      return await suiteTaskCreateOnHost(scoped, lookup.host, store.localHostId ?? null, flags, io, env);
+      return await suiteTaskCreateOnHost(
+        scoped,
+        store,
+        lookup.host,
+        store.localHostId ?? null,
+        flags,
+        io,
+        env
+      );
     }
     if (action === "list") return await suiteTaskListOnHost(store, scoped, hostId, flags, io);
     if (action === "cancel") {
@@ -3035,6 +3075,7 @@ async function suiteTaskOnCenterHost(
 
 async function suiteTaskCreateOnHost(
   scoped: ProjectStore,
+  store: ProjectStore,
   host: HostRecord,
   createdHostId: string | null,
   flags: ParsedFlags,
@@ -3057,15 +3098,27 @@ async function suiteTaskCreateOnHost(
     );
     return 2;
   }
-  const project = await scoped.getProjectByPath(rootPath);
+  let taskStore = scoped;
+  let project = await scoped.getProjectByPath(rootPath);
   if (project === null) {
-    const known = await knownRootPaths(scoped, hostId);
-    io.errorLog(
-      `未知项目：${rootPath}（主机 ${hostId} 已登记：${known.length > 0 ? known.join("、") : "无"}；请先在目标机接入项目）`
-    );
-    return 2;
+    const owner = await store.getProjectByPath(rootPath).catch(() => null);
+    const crossRootRunner =
+      owner !== null &&
+      (await store.listRunners(rootPath).catch(() => [])).some(
+        (runner) => (runner.hostId ?? runner.name) === hostId
+      );
+    if (owner === null || !crossRootRunner) {
+      const known = await knownRootPaths(scoped, hostId);
+      io.errorLog(
+        `未知项目：${rootPath}（主机 ${hostId} 已登记：${known.length > 0 ? known.join("、") : "无"}；请先在目标机接入项目）`
+      );
+      return 2;
+    }
+    io.log(`提示：主机 ${hostId} 使用中心项目目录执行（跨机 runner），不要求该主机重复登记项目`);
+    project = owner;
+    taskStore = store;
   }
-  const resolved = resolveTaskRefsFromSets(await scoped.listCaseSets(rootPath), refs, io);
+  const resolved = resolveTaskRefsFromSets(await taskStore.listCaseSets(rootPath), refs, io);
   if (resolved === null) return 2;
   const targeting = parseTaskTargeting(flags, io);
   if (targeting === null) return 2;
@@ -3073,7 +3126,7 @@ async function suiteTaskCreateOnHost(
   if (priority === null) return 2;
   const appAssetId = (flags.get("app-asset") ?? "").trim() || null;
   if (appAssetId !== null) {
-    const asset = await scoped.getWebAsset(rootPath, appAssetId).catch(() => null);
+    const asset = await taskStore.getWebAsset(rootPath, appAssetId).catch(() => null);
     if (asset === null || asset.kind !== "package") {
       io.errorLog(`未知安装包资产 "${appAssetId}"（需先在目标项目上传 package 资产）`);
       return 2;
@@ -3095,7 +3148,7 @@ async function suiteTaskCreateOnHost(
     return 2;
   }
   for (const reason of precheck.reasons) io.log(`警告：${reason}`);
-  const task = await scoped.createRegressionTask({
+  const task = await taskStore.createRegressionTask({
     rootPath,
     refs: resolved.map((entry) => ({ caseSetId: entry.caseSetId, featureKey: entry.featureKey })),
     platforms: targeting.platforms,

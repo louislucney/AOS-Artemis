@@ -1,701 +1,139 @@
 diff --git a/AOS-PATCHES.md b/AOS-PATCHES.md
-new file mode 100644
-index 0000000..f53e3e0
---- /dev/null
+index f53e3e0..a626b6e 100644
+--- a/AOS-PATCHES.md
 +++ b/AOS-PATCHES.md
-@@ -0,0 +1,25 @@
-+# AOS patches
+@@ -8,6 +8,8 @@ keep the `PATCH (aos-mcp)` markers.
+ 
+ - `artemis/security/redaction.py` — project-scoped secret inventory,
+   text redaction, screenshot masking by UI bounds, placeholder resolution.
++  Missing bounds on any sensitive node invalidates the whole screenshot
++  (drop/blur/none per `AOS_LLM_REDACT_IMAGE_FALLBACK`).
+ - `artemis/security/install.py` — runtime hooks for:
+   - `RobustChatModelWrapper._complete_attempt` (LLM message text redaction)
+   - `get_google_llm` direct-call wrapper
+@@ -21,3 +23,16 @@ keep the `PATCH (aos-mcp)` markers.
+ Activation: `AOS_LLM_HOOKS=1`; secret map via `AOS_LLM_SECRET_FILE` (0600 JSON).
+ When hooks are disabled or cannot load, AOS fails closed for secret-bearing
+ web LLM cases.
 +
-+This file records downstream patches applied to the ARTEMIS submodule by the
-+AOS mobile-testing service. Upstream updates must re-apply these patches and
-+keep the `PATCH (aos-mcp)` markers.
++## 2026-11-10 · non-Google provider hard redirect
 +
-+## 2026-11-04 · web LLM redaction/injection hooks
-+
-+- `artemis/security/redaction.py` — project-scoped secret inventory,
-+  text redaction, screenshot masking by UI bounds, placeholder resolution.
-++  Missing bounds on any sensitive node invalidates the whole screenshot
-++  (drop/blur/none per `AOS_LLM_REDACT_IMAGE_FALLBACK`).
-+- `artemis/security/install.py` — runtime hooks for:
-+  - `RobustChatModelWrapper._complete_attempt` (LLM message text redaction)
-+  - `get_google_llm` direct-call wrapper
-+  - `AndroidAdbDriver` / `CloudDeviceDriver` screen-data masking
-+  - `AndroidAdbDriver` / `AndroidInputIME` / `CloudDeviceDriver` input injection
-+  - `StorageManager` step/image writes
-+  - `trace_store.update_trace_status`
-+- `mcp_server/__main__.py` — calls `install()` before importing the server.
-+- `tests/unit/security/test_redaction.py` — unit tests for text/image redaction.
-+
-+Activation: `AOS_LLM_HOOKS=1`; secret map via `AOS_LLM_SECRET_FILE` (0600 JSON).
-+When hooks are disabled or cannot load, AOS fails closed for secret-bearing
-+web LLM cases.
-diff --git a/artemis/security/__init__.py b/artemis/security/__init__.py
-new file mode 100644
-index 0000000..05f6e9c
---- /dev/null
-+++ b/artemis/security/__init__.py
-@@ -0,0 +1,25 @@
-+# Copyright 2026 Google LLC
-+#
-+# Licensed under the Apache License, Version 2.0 (the "License");
-+# you may not use this file except in compliance with the License.
-+# You may obtain a copy of the License at
-+#
-+#     https://www.apache.org/licenses/LICENSE-2.0
-+#
-+# Unless required by applicable law or agreed to in writing, software
-+# distributed under the License is distributed on an "AS IS" BASIS,
-+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+# See the License for the specific language governing permissions and
-+# limitations under the License.
-+
-+"""PATCH (aos-mcp): AOS web LLM security hooks."""
-+
-+from .redaction import (  # noqa: F401
-+    hooks_enabled,
-+    mask_screenshot,
-+    redact_elements,
-+    redact_screen_data,
-+    redact_structure,
-+    redact_text,
-+    resolve_text,
-+)
++- `artemis/security/install.py` — when `AOS_LLM_REDIRECT_GOOGLE=1`:
++  - `get_google_llm` returns an OpenAI-compatible `ChatOpenAI` pointed at
++    `OPENAI_BASE_URL` / `AOS_LLM_MODEL` (covers memory capsules, summarizer
++    fallbacks and direct-call helpers);
++  - `lightweight_judge_default` returns the active provider/model instead of
++    the upstream Google default (validator pixel safety net / planner
++    validation).
++- AOS sets this only for non-Google entries; Google entries keep upstream
++  behavior. `GOOGLE_API_KEY`/`GEMINI_API_KEY` are cleared in the child env so
++  native `genai` paths cannot silently use Gemini.
 diff --git a/artemis/security/install.py b/artemis/security/install.py
-new file mode 100644
-index 0000000..75ba29d
---- /dev/null
+index 75ba29d..9fa9038 100644
+--- a/artemis/security/install.py
 +++ b/artemis/security/install.py
-@@ -0,0 +1,258 @@
-+# Copyright 2026 Google LLC
-+#
-+# Licensed under the Apache License, Version 2.0 (the "License");
-+# you may not use this file except in compliance with the License.
-+# You may obtain a copy of the License at
-+#
-+#     https://www.apache.org/licenses/LICENSE-2.0
-+#
-+# Unless required by applicable law or agreed to in writing, software
-+# distributed under the License is distributed on an "AS IS" BASIS,
-+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+# See the License for the specific language governing permissions and
-+# limitations under the License.
+@@ -246,11 +246,63 @@ def _patch_trace() -> None:
+     trace_store.update_trace_status = update_trace_status
+ 
+ 
++def _patch_llm_redirect() -> None:
++    """PATCH (aos-mcp): route upstream Google-only helpers to the active LLM.
 +
-+"""PATCH (aos-mcp): install web-LLM redaction/injection hooks into ARTEMIS.
-+
-+Loaded from ``mcp_server/__main__.py`` when ``AOS_LLM_HOOKS=1``. Every hook is
-+best-effort at import time but *fail-closed*: if the hook module cannot load,
-+Python startup raises and the ARTEMIS child fails instead of running without
-+redaction.
-+"""
-+
-+from __future__ import annotations
-+
-+import functools
-+import os
-+from typing import Any
-+
-+from .redaction import (
-+    hooks_enabled,
-+    redact_screen_data,
-+    redact_structure,
-+    redact_text,
-+    resolve_text,
-+)
-+
-+_installed = False
-+AOS_HOOK_API_VERSION = 1
-+
-+
-+def _redact_content(content: Any) -> Any:
-+    if isinstance(content, str):
-+        return redact_text(content)
-+    if isinstance(content, list):
-+        return [_redact_content(item) for item in content]
-+    if isinstance(content, dict):
-+        return {
-+            key: (value if key in ("image_url", "image") else _redact_content(value))
-+            for key, value in content.items()
-+        }
-+    return content
-+
-+
-+def _redact_message(value: Any) -> Any:
-+    content = getattr(value, "content", None)
-+    if content is None:
-+        return redact_structure(value)
-+    redacted = _redact_content(content)
-+    if redacted == content:
-+        return value
-+    if hasattr(value, "model_copy"):
-+        return value.model_copy(update={"content": redacted})
-+    if hasattr(value, "copy"):
-+        return value.copy(update={"content": redacted})
-+    return value
-+
-+
-+def _redact_call_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[tuple[Any, ...], dict[str, Any]]:
-+    return (
-+        tuple(_redact_message(arg) for arg in args),
-+        {key: _redact_message(value) for key, value in kwargs.items()},
-+    )
-+
-+
-+def _redact_arg(value: Any) -> Any:
-+    fields = getattr(value, "model_fields", None)
-+    if isinstance(fields, dict) and hasattr(value, "model_copy"):
-+        updates = {
-+            name: redact_structure(getattr(value, name))
-+            for name in fields
-+            if hasattr(value, name)
-+        }
-+        return value.model_copy(update=updates)
-+    return redact_structure(value)
-+
-+
-+class _RedactingChatModel:
-+    """Duck-typed wrapper for direct `get_google_llm`/ModelFactory paths."""
-+
-+    def __init__(self, inner: Any):
-+        self._inner = inner
-+
-+    def __getattr__(self, name: str) -> Any:
-+        return getattr(self._inner, name)
-+
-+    def _wrap(self, value: Any) -> Any:
-+        return value if value is self._inner else _RedactingChatModel(value)
-+
-+    def bind_tools(self, *args: Any, **kwargs: Any) -> Any:
-+        return self._wrap(self._inner.bind_tools(*args, **kwargs))
-+
-+    def with_config(self, *args: Any, **kwargs: Any) -> Any:
-+        return self._wrap(self._inner.with_config(*args, **kwargs))
-+
-+    def with_structured_output(self, *args: Any, **kwargs: Any) -> Any:
-+        return self._wrap(self._inner.with_structured_output(*args, **kwargs))
-+
-+    def invoke(self, *args: Any, **kwargs: Any) -> Any:
-+        args, kwargs = _redact_call_args(args, kwargs)
-+        return self._inner.invoke(*args, **kwargs)
-+
-+    async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
-+        args, kwargs = _redact_call_args(args, kwargs)
-+        return await self._inner.ainvoke(*args, **kwargs)
-+
-+    async def astream(self, *args: Any, **kwargs: Any) -> Any:
-+        args, kwargs = _redact_call_args(args, kwargs)
-+        async for chunk in self._inner.astream(*args, **kwargs):
-+            yield chunk
-+
-+
-+def _patch_llm() -> None:
++    Artemis still has a few hard-coded ``get_google_llm``/lightweight-judge
++    paths (memory capsules, summarizer fallbacks, validator safety net). On a
++    non-Google provider AOS sets ``AOS_LLM_REDIRECT_GOOGLE=1``; return an
++    OpenAI-compatible client pointed at the center proxy instead of letting
++    those paths call Gemini without a key.
++    """
 +    from artemis.services import llm as llm_module
 +
-+    wrapper = getattr(llm_module, "RobustChatModelWrapper", None)
-+    if wrapper is None or not hasattr(wrapper, "_complete_attempt"):
-+        raise RuntimeError("AOS hook guard: RobustChatModelWrapper._complete_attempt missing")
-+    if not hasattr(llm_module, "get_google_llm"):
-+        raise RuntimeError("AOS hook guard: get_google_llm missing")
-+    if not getattr(wrapper, "_aos_redacted", False):
-+        original = wrapper._complete_attempt
-+
++    original = getattr(llm_module, "get_google_llm", None)
++    if original is not None and not getattr(original, "_aos_redirected", False):
 +        @functools.wraps(original)
-+        async def complete(self: Any, emit_deltas: bool, *args: Any, **kwargs: Any) -> Any:
-+            args, kwargs = _redact_call_args(args, kwargs)
-+            return await original(self, emit_deltas, *args, **kwargs)
-+
-+        wrapper._complete_attempt = complete
-+        wrapper._aos_redacted = True
-+
-+    original_google = getattr(llm_module, "get_google_llm", None)
-+    if original_google is not None and not getattr(original_google, "_aos_redacted", False):
-+        @functools.wraps(original_google)
 +        def get_google_llm(*args: Any, **kwargs: Any) -> Any:
-+            return _RedactingChatModel(original_google(*args, **kwargs))
++            from langchain_openai import ChatOpenAI
 +
-+        get_google_llm._aos_redacted = True  # type: ignore[attr-defined]
++            model = os.environ.get("AOS_LLM_MODEL") or "deepseek-flash"
++            return ChatOpenAI(
++                model=model,
++                base_url=os.environ.get("OPENAI_BASE_URL") or None,
++                api_key=os.environ.get("OPENAI_API_KEY") or "EMPTY",
++                temperature=float(kwargs.get("temperature", 0.0) or 0.0),
++            )
++
++        get_google_llm._aos_redirected = True  # type: ignore[attr-defined]
 +        llm_module.get_google_llm = get_google_llm
 +
++    from artemis.config import llm as config_llm
 +
-+def _patch_screen() -> None:
-+    from artemis.drivers.android.adb_driver import AndroidAdbDriver
-+    from artemis.drivers.cloud.cloud_driver import CloudDeviceDriver
-+
-+    def wrap_screen(original: Any) -> Any:
-+        @functools.wraps(original)
-+        async def get_screen_data(self: Any, *args: Any, **kwargs: Any) -> Any:
-+            data = await original(self, *args, **kwargs)
-+            return redact_screen_data(data)
-+
-+        get_screen_data._aos_masked = True  # type: ignore[attr-defined]
-+        return get_screen_data
-+
-+    for cls in (AndroidAdbDriver, CloudDeviceDriver):
-+        original = getattr(cls, "get_screen_data", None)
-+        if original is None:
-+            raise RuntimeError(f"AOS hook guard: {cls.__name__}.get_screen_data missing")
-+        if getattr(original, "_aos_masked", False):
-+            continue
-+        cls.get_screen_data = wrap_screen(original)
-+
-+
-+def _patch_actions() -> None:
-+    from artemis.drivers.android.adb_driver import AndroidAdbDriver
-+    from artemis.drivers.android.input_ime import AndroidInputIME
-+    from artemis.drivers.cloud.cloud_driver import CloudDeviceDriver
-+
-+    def wrap_input(original: Any) -> Any:
-+        @functools.wraps(original)
-+        async def input_text(self: Any, text: str, *args: Any, **kwargs: Any) -> Any:
-+            return await original(self, resolve_text(text), *args, **kwargs)
-+
-+        input_text._aos_resolved = True  # type: ignore[attr-defined]
-+        return input_text
-+
-+    for cls in (AndroidAdbDriver, AndroidInputIME, CloudDeviceDriver):
-+        names = [name for name in ("input_text", "type_text") if hasattr(cls, name)]
-+        if not names:
-+            raise RuntimeError(f"AOS hook guard: {cls.__name__} has no input_text/type_text")
-+        for name in names:
-+            original = getattr(cls, name)
-+            if getattr(original, "_aos_resolved", False):
-+                continue
-+            setattr(cls, name, wrap_input(original))
-+
-+
-+def _patch_storage() -> None:
-+    from artemis.data_engine.storage import StorageManager
-+
-+    def wrap_storage(original: Any) -> Any:
-+        @functools.wraps(original)
-+        def method(self: Any, *args: Any, **kwargs: Any) -> Any:
-+            redacted_args = tuple(_redact_arg(arg) for arg in args)
-+            redacted_kwargs = {key: _redact_arg(value) for key, value in kwargs.items()}
-+            return original(self, *redacted_args, **redacted_kwargs)
-+
-+        method._aos_redacted = True  # type: ignore[attr-defined]
-+        return method
-+
-+    for name in (
-+        "create_step",
-+        "update_step_action",
-+        "update_step_summary",
-+        "update_step_thinking",
-+        "update_step_native_thinking",
-+        "update_step_execution_result",
-+        "create_image",
-+        "update_image_data",
-+    ):
-+        original = getattr(StorageManager, name, None)
-+        if original is None:
-+            raise RuntimeError(f"AOS hook guard: StorageManager.{name} missing")
-+        if getattr(original, "_aos_redacted", False):
-+            continue
-+        setattr(StorageManager, name, wrap_storage(original))
-+
-+
-+def _patch_trace() -> None:
-+    from artemis.runtime import trace_store
-+
-+    original = getattr(trace_store, "update_trace_status", None)
-+    if original is None:
-+        raise RuntimeError("AOS hook guard: trace_store.update_trace_status missing")
-+    if getattr(original, "_aos_redacted", False):
-+        return
-+
-+    @functools.wraps(original)
-+    def update_trace_status(*args: Any, **kwargs: Any) -> Any:
-+        if "error" in kwargs:
-+            kwargs["error"] = redact_text(kwargs["error"]) if isinstance(kwargs["error"], str) else kwargs["error"]
-+        if "result" in kwargs:
-+            kwargs["result"] = redact_structure(kwargs["result"])
-+        return original(*args, **kwargs)
-+
-+    update_trace_status._aos_redacted = True  # type: ignore[attr-defined]
-+    trace_store.update_trace_status = update_trace_status
-+
-+
-+def install() -> None:
-+    global _installed
-+    if _installed or not hooks_enabled():
-+        return
-+    _installed = True
-+    _patch_llm()
-+    _patch_screen()
-+    _patch_actions()
-+    _patch_storage()
-+    _patch_trace()
-diff --git a/artemis/security/redaction.py b/artemis/security/redaction.py
-new file mode 100644
-index 0000000..2cc7a7e
---- /dev/null
-+++ b/artemis/security/redaction.py
-@@ -0,0 +1,274 @@
-+# Copyright 2026 Google LLC
-+#
-+# Licensed under the Apache License, Version 2.0 (the "License");
-+# you may not use this file except in compliance with the License.
-+# You may obtain a copy of the License at
-+#
-+#     https://www.apache.org/licenses/LICENSE-2.0
-+#
-+# Unless required by applicable law or agreed to in writing, software
-+# distributed under the License is distributed on an "AS IS" BASIS,
-+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+# See the License for the specific language governing permissions and
-+# limitations under the License.
-+
-+"""PATCH (aos-mcp): project-scoped secret redaction/injection for web LLM runs.
-+
-+The hooks are only active when ``AOS_LLM_HOOKS=1``. Secret values live in the
-+0600 JSON file named by ``AOS_LLM_SECRET_FILE``; the file is read lazily and
-+reloaded when its mtime changes so a long-lived ARTEMIS process sees updates.
-+"""
-+
-+from __future__ import annotations
-+
-+import base64
-+import io
-+import json
-+import os
-+import re
-+import threading
-+import time
-+from pathlib import Path
-+from typing import Any
-+
-+from PIL import Image, ImageDraw
-+
-+SECRET_FILE_ENV = "AOS_LLM_SECRET_FILE"
-+STRICT_ENV = "AOS_LLM_HOOKS_STRICT"
-+HOOKS_ENV = "AOS_LLM_HOOKS"
-+
-+_ACCOUNT_PATTERNS = [
-+    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
-+    re.compile(r"\+?\d[\d\s-]{6,}\d"),
-+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
-+]
-+
-+
-+class SecretStore:
-+    def __init__(self) -> None:
-+        self._lock = threading.Lock()
-+        self._path: str | None = None
-+        self._mtime: float | None = None
-+        self._entries: dict[str, str] = {}
-+
-+    def _load(self) -> dict[str, str]:
-+        path = (os.environ.get(SECRET_FILE_ENV) or "").strip()
-+        if path == "":
-+            return {}
-+        try:
-+            mtime = os.path.getmtime(path)
-+        except OSError:
-+            return {}
-+        with self._lock:
-+            if self._path == path and self._mtime == mtime:
-+                return self._entries
-+            try:
-+                raw = Path(path).read_text(encoding="utf-8")
-+                parsed = json.loads(raw)
-+            except (OSError, ValueError):
-+                parsed = {}
-+            entries = {
-+                str(alias): str(value)
-+                for alias, value in (parsed.items() if isinstance(parsed, dict) else [])
-+                if str(alias).strip() != "" and str(value).strip() != ""
-+            }
-+            self._path = path
-+            self._mtime = mtime
-+            self._entries = entries
-+            return entries
-+
-+    def entries(self) -> dict[str, str]:
-+        return self._load()
-+
-+    def values(self) -> list[str]:
-+        return sorted(self._load().values(), key=len, reverse=True)
-+
-+
-+_store = SecretStore()
-+
-+
-+def hooks_enabled() -> bool:
-+    return os.environ.get(HOOKS_ENV) == "1"
-+
-+
-+def strict_mode() -> bool:
-+    return os.environ.get(STRICT_ENV, "1") != "0"
-+
-+
-+def _redact_patterns(text: str) -> str:
-+    result = text
-+    for pattern in _ACCOUNT_PATTERNS:
-+        result = pattern.sub("<redacted>", result)
-+    return result
-+
-+
-+def redact_text(text: str) -> str:
-+    if not hooks_enabled() or not isinstance(text, str) or text == "":
-+        return text
-+    result = text
-+    for value in _store.values():
-+        if len(value) >= 3:
-+            result = result.replace(value, "<redacted>")
-+    return _redact_patterns(result)
-+
-+
-+def resolve_text(text: str) -> str:
-+    if not hooks_enabled() or not isinstance(text, str) or text == "":
-+        return text
-+    result = text
-+    for alias, value in _store.entries().items():
-+        result = result.replace(f"<secret:{alias}>", value)
-+    return result
-+
-+
-+def redact_structure(value: Any) -> Any:
-+    if not hooks_enabled():
-+        return value
-+    if isinstance(value, str):
-+        return redact_text(value)
-+    if isinstance(value, list):
-+        return [redact_structure(item) for item in value]
-+    if isinstance(value, tuple):
-+        return tuple(redact_structure(item) for item in value)
-+    if isinstance(value, dict):
-+        return {key: redact_structure(item) for key, item in value.items()}
-+    return value
-+
-+
-+def _bounds_of(element: dict[str, Any]) -> tuple[int, int, int, int] | None:
-+    bounds = element.get("bounds")
-+    if isinstance(bounds, (list, tuple)) and len(bounds) == 4:
-+        try:
-+            return tuple(int(part) for part in bounds)  # type: ignore[return-value]
-+        except (TypeError, ValueError):
-+            return None
-+    parsed = element.get("parsed_bounds")
-+    if isinstance(parsed, dict):
-+        try:
-+            return (
-+                int(parsed.get("left", 0)),
-+                int(parsed.get("top", 0)),
-+                int(parsed.get("right", 0)),
-+                int(parsed.get("bottom", 0)),
++    judge = getattr(config_llm, "lightweight_judge_default", None)
++    if judge is not None and not getattr(judge, "_aos_redirected", False):
++        @functools.wraps(judge)
++        def lightweight_judge_default() -> Any:
++            provider = os.environ.get("AOS_LLM_PROVIDER") or "custom"
++            model = os.environ.get("AOS_LLM_MODEL") or "deepseek-flash"
++            fallback = config_llm.LLM(provider=provider, model=model, temperature=0.0)
++            return config_llm.LLMWithFallback(
++                provider=provider,
++                model=model,
++                temperature=0.0,
++                fallback=fallback,
 +            )
-+        except (TypeError, ValueError):
-+            return None
-+    return None
++
++        lightweight_judge_default._aos_redirected = True  # type: ignore[attr-defined]
++        config_llm.lightweight_judge_default = lightweight_judge_default
 +
 +
-+def _element_text(element: dict[str, Any]) -> str:
-+    parts: list[str] = []
-+    for key in ("text", "content-desc", "contentDescription", "hint"):
-+        value = element.get(key)
-+        if isinstance(value, str) and value.strip() != "":
-+            parts.append(value)
-+    return " ".join(parts)
-+
-+
-+def _sensitive(text: str) -> bool:
-+    if text.strip() == "":
-+        return False
-+    if redact_text(text) != text:
-+        return True
-+    return any(pattern.search(text) for pattern in _ACCOUNT_PATTERNS)
-+
-+
-+def redact_elements(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
-+    return [redact_structure(element) for element in elements]
-+
-+
-+def _image_fallback() -> str:
-+    raw = (os.environ.get("AOS_LLM_REDACT_IMAGE_FALLBACK") or "drop").strip().lower()
-+    return raw if raw in ("drop", "blur", "none") else "drop"
-+
-+
-+def _black_png() -> bytes:
-+    image = Image.new("RGB", (1, 1), (0, 0, 0))
-+    buffer = io.BytesIO()
-+    image.save(buffer, format="PNG")
-+    return buffer.getvalue()
-+
-+
-+def mask_screenshot(
-+    screenshot_bytes: bytes,
-+    elements: list[dict[str, Any]],
-+) -> bytes:
-+    if not hooks_enabled() or not screenshot_bytes or not elements:
-+        return screenshot_bytes
-+    try:
-+        image = Image.open(io.BytesIO(screenshot_bytes)).convert("RGB")
-+    except Exception:
-+        return screenshot_bytes
-+    draw = ImageDraw.Draw(image)
-+    changed = False
-+    sensitive_seen = False
+ def install() -> None:
+     global _installed
+-    if _installed or not hooks_enabled():
++    if _installed:
+         return
+     _installed = True
++    if os.environ.get("AOS_LLM_REDIRECT_GOOGLE") == "1":
++        _patch_llm_redirect()
++    if not hooks_enabled():
++        return
+     _patch_llm()
+     _patch_screen()
+     _patch_actions()
+diff --git a/artemis/security/redaction.py b/artemis/security/redaction.py
+index 2cc7a7e..1c8f1f3 100644
+--- a/artemis/security/redaction.py
++++ b/artemis/security/redaction.py
+@@ -202,19 +202,22 @@ def mask_screenshot(
+     draw = ImageDraw.Draw(image)
+     changed = False
+     sensitive_seen = False
 +    missing_bounds = False
-+    for element in elements:
-+        if not _sensitive(_element_text(element)):
-+            continue
-+        sensitive_seen = True
-+        bounds = _bounds_of(element)
-+        if bounds is None:
+     for element in elements:
+         if not _sensitive(_element_text(element)):
+             continue
+         sensitive_seen = True
+         bounds = _bounds_of(element)
+         if bounds is None:
 +            missing_bounds = True
-+            continue
-+        left, top, right, bottom = bounds
-+        if right <= left or bottom <= top:
+             continue
+         left, top, right, bottom = bounds
+         if right <= left or bottom <= top:
 +            missing_bounds = True
-+            continue
-+        draw.rectangle([left, top, right, bottom], fill=(0, 0, 0))
-+        changed = True
+             continue
+         draw.rectangle([left, top, right, bottom], fill=(0, 0, 0))
+         changed = True
+-    if not changed:
 +    if missing_bounds or not changed:
-+        if not sensitive_seen:
-+            return screenshot_bytes
-+        fallback = _image_fallback()
-+        if fallback == "none":
-+            return screenshot_bytes
-+        if fallback == "blur":
-+            try:
-+                from PIL import ImageFilter
-+
-+                image = image.filter(ImageFilter.GaussianBlur(radius=12))
-+            except Exception:
-+                return _black_png()
-+        else:
-+            return _black_png()
-+    buffer = io.BytesIO()
-+    image.save(buffer, format="PNG")
-+    return buffer.getvalue()
-+
-+
-+def redact_screen_data(screen_data: Any) -> Any:
-+    if not hooks_enabled() or screen_data is None:
-+        return screen_data
-+    elements = getattr(screen_data, "ui_elements", None)
-+    if not isinstance(elements, list):
-+        elements = []
-+    masked = mask_screenshot(getattr(screen_data, "screenshot_bytes", b"") or b"", elements)
-+    masked64 = (
-+        base64.b64encode(masked).decode("utf-8") if masked else getattr(screen_data, "screenshot_base64", "")
-+    )
-+    xml = redact_text(getattr(screen_data, "ui_hierarchy_xml", "") or "")
-+    update = {
-+        "screenshot_bytes": masked,
-+        "screenshot_base64": masked64,
-+        "ui_hierarchy_xml": xml,
-+        "ui_elements": redact_elements([item for item in elements if isinstance(item, dict)]),
-+    }
-+    if hasattr(screen_data, "model_copy"):
-+        return screen_data.model_copy(update=update)
-+    if hasattr(screen_data, "copy"):
-+        return screen_data.copy(update=update)
-+    return screen_data
-+
-+
-+def redact_trace_result(value: Any) -> Any:
-+    return redact_structure(value)
-+
-+
-+def redact_file_in_place(path: str) -> None:
-+    if not hooks_enabled() or not path or not os.path.exists(path):
-+        return
-+    try:
-+        raw = Path(path).read_text(encoding="utf-8")
-+        redacted = redact_text(raw)
-+        if redacted != raw:
-+            Path(path).write_text(redacted, encoding="utf-8")
-+    except OSError:
-+        return
-diff --git a/mcp_server/__main__.py b/mcp_server/__main__.py
-index e21ee80..a12059b 100644
---- a/mcp_server/__main__.py
-+++ b/mcp_server/__main__.py
-@@ -14,6 +14,11 @@
- 
- """Direct execution entrypoint for mcp_server."""
- 
-+# PATCH (aos-mcp): web LLM secret hooks (AOS_LLM_HOOKS=1); no-op otherwise.
-+from artemis.security.install import install as _aos_install_security_hooks
-+
-+_aos_install_security_hooks()
-+
- from mcp_server.server import main
- 
- if __name__ == "__main__":
+         if not sensitive_seen:
+             return screenshot_bytes
+         fallback = _image_fallback()
 diff --git a/tests/unit/security/test_redaction.py b/tests/unit/security/test_redaction.py
-new file mode 100644
-index 0000000..12003b3
---- /dev/null
+index 12003b3..3a1e36f 100644
+--- a/tests/unit/security/test_redaction.py
 +++ b/tests/unit/security/test_redaction.py
-@@ -0,0 +1,79 @@
-+# Copyright 2026 Google LLC
-+#
-+# Licensed under the Apache License, Version 2.0 (the "License");
-+# you may not use this file except in compliance with the License.
-+# You may obtain a copy of the License at
-+#
-+#     https://www.apache.org/licenses/LICENSE-2.0
-+#
-+# Unless required by applicable law or agreed to in writing, software
-+# distributed under the License is distributed on an "AS IS" BASIS,
-+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+# See the License for the specific language governing permissions and
-+# limitations under the License.
-+
-+"""PATCH (aos-mcp): tests for web LLM redaction hooks."""
-+
-+from __future__ import annotations
-+
-+import base64
-+import io
-+import json
-+from pathlib import Path
-+
-+from PIL import Image
-+
-+from artemis.security.redaction import (
-+    mask_screenshot,
-+    redact_text,
-+    resolve_text,
-+)
-+
-+
-+def _secret_file(tmp_path: Path) -> Path:
-+    path = tmp_path / "secrets.json"
-+    path.write_text(
-+        json.dumps({"account": "user@example.com", "password": "p@ssw0rd"}),
-+        encoding="utf-8",
-+    )
-+    return path
-+
-+
-+def test_redact_and_resolve(monkeypatch, tmp_path):
-+    monkeypatch.setenv("AOS_LLM_HOOKS", "1")
-+    monkeypatch.setenv("AOS_LLM_SECRET_FILE", str(_secret_file(tmp_path)))
-+    text = "账号 user@example.com 密码 p@ssw0rd"
-+    assert "user@example.com" not in redact_text(text)
-+    assert "p@ssw0rd" not in redact_text(text)
-+    assert resolve_text("<secret:account>") == "user@example.com"
-+
-+
-+def test_mask_screenshot_without_bounds_fails_closed(monkeypatch, tmp_path):
-+    monkeypatch.setenv("AOS_LLM_HOOKS", "1")
-+    monkeypatch.setenv("AOS_LLM_SECRET_FILE", str(_secret_file(tmp_path)))
-+    image = Image.new("RGB", (100, 100), "white")
-+    buffer = io.BytesIO()
-+    image.save(buffer, format="PNG")
-+    original = buffer.getvalue()
-+    masked = mask_screenshot(original, [{"text": "user@example.com"}])
-+    result = Image.open(io.BytesIO(masked)).convert("RGB")
-+    assert result.size == (1, 1)
-+    assert result.getpixel((0, 0)) == (0, 0, 0)
-+
-+    monkeypatch.setenv("AOS_LLM_REDACT_IMAGE_FALLBACK", "none")
-+    assert mask_screenshot(original, [{"text": "user@example.com"}]) == original
-+
-+
-+def test_mask_screenshot_by_bounds(monkeypatch, tmp_path):
+@@ -64,6 +64,24 @@ def test_mask_screenshot_without_bounds_fails_closed(monkeypatch, tmp_path):
+     assert mask_screenshot(original, [{"text": "user@example.com"}]) == original
+ 
+ 
++def test_mask_screenshot_mixed_missing_bounds_fails_closed(monkeypatch, tmp_path):
 +    monkeypatch.setenv("AOS_LLM_HOOKS", "1")
 +    monkeypatch.setenv("AOS_LLM_SECRET_FILE", str(_secret_file(tmp_path)))
 +    image = Image.new("RGB", (100, 100), "white")
@@ -703,8 +141,16 @@ index 0000000..12003b3
 +    image.save(buffer, format="PNG")
 +    masked = mask_screenshot(
 +        buffer.getvalue(),
-+        [{"text": "user@example.com", "bounds": [10, 10, 80, 40]}],
++        [
++            {"text": "user@example.com", "bounds": [10, 10, 80, 40]},
++            {"text": "p@ssw0rd"},
++        ],
 +    )
 +    result = Image.open(io.BytesIO(masked)).convert("RGB")
-+    assert result.getpixel((20, 20)) == (0, 0, 0)
-+    assert result.getpixel((90, 90)) == (255, 255, 255)
++    assert result.size == (1, 1)
++    assert result.getpixel((0, 0)) == (0, 0, 0)
++
++
+ def test_mask_screenshot_by_bounds(monkeypatch, tmp_path):
+     monkeypatch.setenv("AOS_LLM_HOOKS", "1")
+     monkeypatch.setenv("AOS_LLM_SECRET_FILE", str(_secret_file(tmp_path)))

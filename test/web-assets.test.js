@@ -567,6 +567,32 @@ test("storeWebAsset: projectId 从 upsertProject 解析（web.projectId 也已�
   assert.equal(asset.projectId, project.id);
 });
 
+test("API /panel/api/projects/assets: 本地注册项目（无 web_projects 行）允许上传", async (t) => {
+  const workspace = await tempDir(t, "aos-assets-local-");
+  const rootPath = path.join(workspace, "local-app");
+  await mkdir(rootPath, { recursive: true });
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "local-app" });
+  assert.equal(await store.getWebProject(rootPath), null);
+  const deps = { store, env: {}, workspaceRoot: workspace };
+
+  const res = await handlePanelActionRequest(
+    uploadRequest(
+      multipartBody("----aosAssets", {
+        fields: { project: rootPath, kind: "excel" },
+        filename: "cases.xlsx"
+      })
+    ),
+    deps
+  );
+  assert.equal(res.status, 200, res.body);
+  const payload = JSON.parse(res.body);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.asset.filename, "cases.xlsx");
+  assert.equal((await store.listWebAssets(rootPath)).length, 1);
+  assert.equal(await store.getWebProject(rootPath), null);
+});
+
 test("API /panel/api/projects/assets: 归档项目拒绝上传（409）", async (t) => {
   const workspace = await tempDir(t, "aos-assets-api-");
   const rootPath = path.join(workspace, "acme");

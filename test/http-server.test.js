@@ -1031,9 +1031,9 @@ test("http server: Maestro runner bundle 已移除（410）", async () => {
 test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => {
   const workspace = makeTempDir("aos-http-mcp-runner-ws-");
   const bundleDir = makeTempDir("aos-http-mcp-runner-");
-  const winFile = "aos-artemis-runner-0.2.4-win32-x64.zip";
-  const macFile = "aos-artemis-runner-0.2.4-darwin-arm64.tar.gz";
-  const offlineFile = "aos-artemis-runner-0.2.4-win32-x64-offline.zip";
+  const winFile = "aos-artemis-runner-0.3.0-win32-x64.zip";
+  const macFile = "aos-artemis-runner-0.3.0-darwin-arm64.tar.gz";
+  const offlineFile = "aos-artemis-runner-0.3.0-win32-x64-offline.zip";
   fs.writeFileSync(path.join(bundleDir, winFile), "fake-mcp-runner-win");
   fs.writeFileSync(path.join(bundleDir, macFile), "fake-mcp-runner-mac");
   fs.writeFileSync(path.join(bundleDir, offlineFile), "fake-mcp-runner-offline");
@@ -1076,7 +1076,7 @@ test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => 
       assert.equal(win.headers.get("content-type"), "application/zip");
       assert.match(
         win.headers.get("content-disposition") ?? "",
-        /aos-artemis-runner-0\.2\.4-win32-x64\.zip/
+        /aos-artemis-runner-0\.3\.0-win32-x64\.zip/
       );
       assert.equal(Buffer.from(await win.arrayBuffer()).toString("utf8"), "fake-mcp-runner-win");
 
@@ -1087,7 +1087,7 @@ test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => 
       assert.equal(mac.headers.get("content-type"), "application/gzip");
       assert.match(
         mac.headers.get("content-disposition") ?? "",
-        /aos-artemis-runner-0\.2\.4-darwin-arm64\.tar\.gz/
+        /aos-artemis-runner-0\.3\.0-darwin-arm64\.tar\.gz/
       );
       assert.equal(Buffer.from(await mac.arrayBuffer()).toString("utf8"), "fake-mcp-runner-mac");
 
@@ -1098,7 +1098,7 @@ test("http server: role=mcp-runner 提供 MCP runner 执行机包", async () => 
       assert.equal(offline.headers.get("content-type"), "application/zip");
       assert.match(
         offline.headers.get("content-disposition") ?? "",
-        /aos-artemis-runner-0\.2\.4-win32-x64-offline\.zip/
+        /aos-artemis-runner-0\.3\.0-win32-x64-offline\.zip/
       );
       assert.equal(
         Buffer.from(await offline.arrayBuffer()).toString("utf8"),

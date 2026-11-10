@@ -11,7 +11,9 @@ node scripts/apply-artemis-patches.mjs
 
 - `0001-aos-web-llm-hooks.patch` — PATCH (aos-mcp) security hooks for web LLM:
   text/screenshot redaction, action placeholder injection, storage/trace
-  redaction, and LLM boundary text redaction.
+  redaction, and LLM boundary text redaction; plus non-Google provider redirect
+  (`AOS_LLM_REDIRECT_GOOGLE=1`) that maps residual `get_google_llm` /
+  lightweight-judge paths to the selected OpenAI-compatible LLM.
 - Requires `AOS_LLM_HOOKS=1` and `AOS_LLM_SECRET_FILE` (the center worker writes
   the project-scoped 0600 JSON file).
 - Hook API version: `AOS_HOOK_API_VERSION = 1`; `npm run artemis:patch` rejects a

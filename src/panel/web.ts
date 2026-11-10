@@ -117,6 +117,17 @@ export interface PanelWebDeps {
   deep?: PanelDeepProbe | null;
   /** 面板建单动作的运行时解析（HTTP 模式注入 deepRuntimeFor）。 */
   runtimeFor?: (rootPath: string) => Promise<Runtime | null>;
+  /** 测试注入：设计来源提取（Figma/pen）；缺省走真实实现。 */
+  designExtract?: {
+    figma?: (
+      runtime: Runtime,
+      args: Record<string, unknown>
+    ) => Promise<{ content?: Array<{ type: string; text?: string }>; isError?: boolean }>;
+    pen?: (
+      runtime: Runtime,
+      args: Record<string, unknown>
+    ) => Promise<{ content?: Array<{ type: string; text?: string }>; isError?: boolean }>;
+  };
   /** 面板进程本机主机身份（用于拒绝跨主机项目导入；缺省不校验）。 */
   localHostId?: string | null;
   /** 存储回退说明（装配期 reason；运维页展示）。 */
@@ -472,6 +483,17 @@ export async function resolveProjectKey(
     );
     if (byName) return { rootPath: byName.rootPath, name: byName.name, hostId: byName.hostId };
     if (explicitHost !== null) {
+      const owners = projects.filter((project) => project.rootPath === key);
+      if (owners.length === 1) {
+        const runners = await deps.store.listRunners(key).catch(() => []);
+        const crossRootRunner = runners.some(
+          (runner) => (runner.hostId ?? runner.name) === explicitHost
+        );
+        if (crossRootRunner) {
+          const owner = owners[0]!;
+          return { rootPath: owner.rootPath, name: owner.name, hostId: owner.hostId };
+        }
+      }
       const workspace = resolveWorkspaceKey(deps, key);
       if (!workspace) return null;
       // 不要把“执行机 host”误当成项目 host；工作区目录若已注册，沿用登记 host。

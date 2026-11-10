@@ -286,3 +286,52 @@ test("工作区项目未登记到显式执行机 host 时，不伪造 host", asy
   assert.equal(resolved.rootPath, rootPath);
   assert.equal(resolved.hostId, null, "本地项目不应被套上执行机 host");
 });
+
+test("跨机 runner：中心项目未在 runner host 登记时，面板仍可按 runner host 打开并下发", async () => {
+  const { store, deps } = makeDeps();
+  await store.upsertProject({ rootPath: ROOT_PATH, name: "app", hostId: "h-center" });
+  await store.upsertHost({ id: "h-center", hostname: "Mac-Center" });
+  await store.upsertHost({ id: "h-runner", hostname: "WIN-Runner" });
+  await store.upsertRunner({
+    rootPath: ROOT_PATH,
+    name: "win-runner-01",
+    hostname: "WIN-Runner",
+    platforms: ["android"],
+    devices: [
+      {
+        serial: "pixel-1",
+        name: "",
+        model: "Pixel 7",
+        osVersion: "14",
+        platform: "android",
+        kind: "device",
+        state: "device"
+      }
+    ],
+    tools: {
+      adb: true,
+      idb: false,
+      simctl: false,
+      ideviceId: false,
+      appium: false,
+      maestro: false,
+      devicectl: false
+    },
+    hostId: "h-runner"
+  });
+
+  const resolved = await resolveProjectKey(deps, ROOT_PATH, "h-runner");
+  assert.equal(resolved.rootPath, ROOT_PATH);
+  assert.equal(resolved.hostId, "h-center", "数据仍按中心项目读取，不伪造 runner host 项目行");
+
+  const url = new URL(
+    `http://x/panel?project=${encodeURIComponent(
+      ROOT_PATH
+    )}&section=create&type=suite&host=h-runner&platforms=android`
+  );
+  const response = await handlePanelRequest(url, deps);
+  assert.equal(response.status, 200);
+  const html = String(response.body);
+  assert.match(html, /跨机 runner/);
+  assert.match(html, /value="h-runner" selected/);
+});

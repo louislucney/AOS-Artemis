@@ -1,5 +1,13 @@
 import type { NativeToolDefinition } from "./types.js";
 import { z } from "zod";
+import {
+  designAssistedImport,
+  type DesignAssistedImportArgs
+} from "../../workflow/design-enrich.js";
+import {
+  auditDesignIndex,
+  type DesignIndexAuditArgs
+} from "../../workflow/design-index-audit.js";
 import { designToTest, type DesignToTestArgs } from "../../workflow/design-to-test.js";
 import { projectArchive } from "../../workflow/project-archive.js";
 import { runRegression, type RunRegressionArgs } from "../../workflow/run-regression.js";
@@ -115,7 +123,7 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
   {
     name: "run_regression",
     description:
-      "回归一条龙：用户要做回归/重跑验证时优先用它——有 Excel 测试文档（excelPath，.xlsx）时导入用例库（按模块拆集、同内容幂等复用）并执行；没有文档时按 scope 关键词（功能/模块/用例名）在用例库里选最新用例集，或 all/缺省跑库内每个功能的最新一份全量。执行前回显回归目标（功能×条数＋来源：导入自 x / 生成自 y）并写服务日志；逐集执行后聚合报告（run manifest 路径、通过/失败计数与 gate：用例失败但已执行仍 ok:true）。前置自检：LLM 连通性与在线设备先于导入/选择——无设备→needs-setup、多台未指定→needs-info，needs-setup/needs-info 均为非 isError 的结构化指引（先问不猜、补全后重跑）；单步失败返回 failedStep/detail/suggestions。Excel 导入要求首行表头（用例名、步骤；可选：预期、前置、模块），列名可用 columns 覆盖，合并单元格会显式报错。",
+      "回归一条龙：用户要做回归/重跑验证时优先用它——有 Excel 测试文档（excelPath，.xlsx）时导入用例库（优先按 Section 拆集，无 Section 回退模块；同内容幂等复用）并执行；没有文档时按 scope 关键词（功能/模块/用例名）在用例库里选最新用例集，或 all/缺省跑库内每个功能的最新一份全量。执行前回显回归目标（功能×条数＋来源：导入自 x / 生成自 y）并写服务日志；逐集执行后聚合报告（run manifest 路径、通过/失败计数与 gate：用例失败但已执行仍 ok:true）。前置自检：LLM 连通性与在线设备先于导入/选择——无设备→needs-setup、多台未指定→needs-info，needs-setup/needs-info 均为非 isError 的结构化指引（先问不猜、补全后重跑）；单步失败返回 failedStep/detail/suggestions。Excel 导入要求首行表头（用例名、步骤；可选：预期、前置、模块、Section、Wireframe/设计引用、Related TC），列名可用 columns 覆盖，合并单元格会显式报错；Wireframe 换行分隔的设计屏名会写入 screens/designRefs 与 taskDesc「设计引用」。导入时只读检测项目已有 Figma/.pen/flows/ui-contract/参考图，响应 design 摘要；Excel 含内嵌图片、仅有参考图、或有设计基线但缺「设计引用」时会显式提醒（不自动把图片/参考图当契约）。",
     schema: z.object({
       excelPath: z
         .string()
@@ -145,16 +153,136 @@ export const WORKFLOW_NATIVE_TOOLS: NativeToolDefinition[] = [
           steps: z.string().optional(),
           expected: z.string().optional(),
           preconditions: z.string().optional(),
-          module: z.string().optional()
+          module: z.string().optional(),
+          section: z.string().optional(),
+          wireframe: z.string().optional(),
+          relatedTc: z.string().optional()
         })
         .optional()
-        .describe("Excel 列名覆盖（默认自动识别；按字段给出实际表头文本）"),
+        .describe("Excel 列名覆盖（默认自动识别；按字段给出实际表头文本；模板不标准时显式指定 Section/Wireframe/Related TC）"),
       async: z
         .boolean()
         .optional()
         .describe("后台执行并立即返回 jobId（配 aos_job_status 轮询），默认 false")
     }),
     handler: (runtime, args) => runRegression(runtime, args as unknown as RunRegressionArgs)
+  },
+  {
+    name: "design_assisted_import",
+    description:
+      "设计辅助 Excel 映射（P0/P1）：读取 Excel（Section/Wireframe/Related TC 等列）与设计屏索引（flows.json 或 screenIndexPath），逐行输出 matched/review/unmapped/no-wireframe + 候选屏/id/score；无 Wireframe 的行用步骤/预期文本做结构候选并标 review（不自动接受）。同名多 id 或近分差 <0.1 记 ambiguous（不静默取第一个）。默认只读预览；apply:true 时生成新的 enriched 用例集（新 source id，不覆盖普通导入/原 Excel；exact 自动写 nodeId，near 需 allowNear，ambiguous 需 overrides）。overrides 可人工确认 screen→screenId（省略 rowNumber＝屏级映射）或 row+screen→screenId（行级优先），saveOverrides 持久化到 enrich-overrides.json，后续自动复用。可疑模板/全 near-unmapped/requireAllMapped 命中时返回结构化 needs-info（不直接执行）；delta 默认开启，按设计屏指纹复用未变屏的旧映射；llmMapping:\"auto\" 可选，只对 unmapped/ambiguous 有候选的行做封闭候选批量映射（默认 off）。",
+    schema: z.object({
+      excelPath: z.string().describe("Excel 测试文档路径（.xlsx/.csv，相对项目根或绝对）"),
+      screenIndexPath: z
+        .string()
+        .optional()
+        .describe("设计屏索引 JSON（{screens|nodes:[...]}，相对项目根或绝对）；不传则用 flowsPath/默认 .artemis/design/flows.json"),
+      flowsPath: z.string().optional().describe("flows.json 路径（相对项目根或绝对）"),
+      columns: z
+        .object({
+          caseId: z.string().optional(),
+          name: z.string().optional(),
+          steps: z.string().optional(),
+          module: z.string().optional(),
+          section: z.string().optional(),
+          wireframe: z.string().optional()
+        })
+        .optional()
+        .describe("显式列名覆盖（键为规范字段，值为实际表头）"),
+      threshold: z.number().min(0).max(1).optional().describe("near 接受阈值，默认 0.7"),
+      maxCandidates: z.number().int().min(1).max(10).optional().describe("每屏候选数，默认 3"),
+      save: z.boolean().optional().describe("保存 mapping.json/md 到 .artemis/design/enrich/，默认 true"),
+      apply: z
+        .boolean()
+        .optional()
+        .describe("true 时生成新的 enriched 用例集（新 source id，不覆盖普通导入/原 Excel）；默认 false"),
+      allowNear: z
+        .boolean()
+        .optional()
+        .describe("apply 时是否把 near 映射的 screen id 也写入；默认只写 exact"),
+      requireAllMapped: z
+        .boolean()
+        .optional()
+        .describe("apply 时存在 unmapped 行则拒绝；未开启 allowNear 时 review 行也拒绝，默认 false"),
+      overridesPath: z
+        .string()
+        .optional()
+        .describe("人工确认映射文件，默认 .artemis/design/enrich/enrich-overrides.json"),
+      overrides: z
+        .array(
+          z.object({
+            rowNumber: z.number().int().min(2).optional(),
+            screen: z.string().min(1),
+            screenId: z.string().min(1),
+            screenName: z.string().optional(),
+            confirmedBy: z.string().optional()
+          })
+        )
+        .optional()
+        .describe(
+          "人工确认（screen+screenId；省略 rowNumber＝屏级映射，应用到所有引用该屏的行；带 rowNumber 时行级优先）"
+        ),
+      saveOverrides: z
+        .boolean()
+        .optional()
+        .describe("把 overrides 合并写回 overridesPath，默认 false"),
+      delta: z
+        .boolean()
+        .optional()
+        .describe("逐屏增量复用未变设计屏的旧映射，默认 true"),
+      cachePath: z
+        .string()
+        .optional()
+        .describe("映射缓存路径，默认 .artemis/design/enrich/mapping-cache.json"),
+      llmMapping: z
+        .enum(["off", "auto"])
+        .optional()
+        .describe("可选 LLM 歧义映射：只处理 unmapped/ambiguous 且有候选的行，默认 off"),
+      maxLlmCalls: z
+        .number()
+        .int()
+        .min(0)
+        .max(100)
+        .optional()
+        .describe("LLM 调用上限（按行），默认 20")
+    }),
+    handler: async (runtime, args) => {
+      const result = await designAssistedImport(runtime, args as unknown as DesignAssistedImportArgs);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        ...(result.ok || result.needs === "info" ? {} : { isError: true })
+      };
+    }
+  },
+  {
+    name: "design_index_audit",
+    description:
+      "设计索引独立审计（只读）：校验 flows.json/screenIndexPath/ui-contract 的屏索引完整性（条目数、重复 id/重名屏、空 id/短名、nodes 类型过滤、textHints/elements 覆盖），可选与另一个设计源交叉比对（id/名称重叠、只在索引/只在参考源），可选带 Excel 审计 Wireframe 覆盖率（exact/near/ambiguous/unmapped、未被引用的索引屏）。默认落盘 .artemis/design/enrich/index-audit.json，save:false 只返回报告；不改 Excel、不写用例集、不调用 LLM。",
+    schema: z.object({
+      screenIndexPath: z
+        .string()
+        .optional()
+        .describe("显式设计索引 JSON（{screens|nodes:[...]}）；不传则用 flowsPath/默认 flows.json，再回退 ui-contract.json"),
+      flowsPath: z.string().optional().describe("flows.json 路径（相对项目根或绝对）"),
+      excelPath: z.string().optional().describe("可选 Excel：审计 Wireframe 名称覆盖率"),
+      columns: z
+        .object({
+          wireframe: z.string().optional()
+        })
+        .optional()
+        .describe("显式列名覆盖（当前只用于 wireframe）"),
+      threshold: z.number().min(0).max(1).optional().describe("near 判定阈值，默认 0.7"),
+      maxCandidates: z.number().int().min(1).max(10).optional().describe("未映射屏候选数，默认 3"),
+      save: z.boolean().optional().describe("落盘 index-audit.json，默认 true"),
+      outPath: z.string().optional().describe("报告路径，默认 .artemis/design/enrich/index-audit.json")
+    }),
+    handler: async (runtime, args) => {
+      const result = await auditDesignIndex(runtime, args as unknown as DesignIndexAuditArgs);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        ...(result.ok ? {} : { isError: true })
+      };
+    }
   },
   {
     name: "verify_jira_issue",

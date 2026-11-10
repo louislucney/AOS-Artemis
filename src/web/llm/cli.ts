@@ -1,11 +1,10 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
-
 import { createProjectStore } from "../../db/index.js";
 import type { WebAssetRecord } from "../../db/types.js";
 import { defaultBuildRuntime, type CliRuntimeBundle } from "../../cli-runtime.js";
 import { resolveHostIdentity } from "../../host/identity.js";
-import { errorMessage } from "../../util.js";
+import { errorMessage, writeFileAtomic } from "../../util.js";
 import { recordLlmWorkerHeartbeat } from "./heartbeat.js";
 import { executeAndroidLlmCase } from "./artemis-case.js";
 import { executeIosLlmCase, iosAppUrl } from "./ios-case.js";
@@ -16,8 +15,38 @@ import { loadWebSecrets, writeWebSecretFile } from "./secrets.js";
 import {
   runLlmWorkerLoop,
   runLlmWorkerOnce,
+  type LlmWorkerCase,
+  type LlmWorkerJob,
   type RunLlmWorkerOnceInput
 } from "./worker.js";
+
+export const LLM_CASE_PLAN_FILE = "case-plan.json";
+
+/** 执行前把 Excel 生成的 taskDesc 落盘，便于排查“脚本是什么/依据什么”。 */
+export function persistLlmCasePlan(job: LlmWorkerJob, cases: LlmWorkerCase[]): string {
+  const file = path.join(job.rootPath, ".artemis", "web", "jobs", job.task.id, LLM_CASE_PLAN_FILE);
+  writeFileAtomic(
+    file,
+    `${JSON.stringify(
+      {
+        taskId: job.task.id,
+        excelAssetId: job.spec.excelAssetId,
+        generatedAt: new Date().toISOString(),
+        cases: cases.map((entry) => ({
+          caseId: entry.caseId,
+          ...(entry.name === undefined ? {} : { name: entry.name }),
+          ...(entry.module === undefined ? {} : { module: entry.module }),
+          taskDesc: entry.taskDesc,
+          ...(entry.expected === undefined ? {} : { expected: entry.expected }),
+          ...(entry.reference === undefined ? {} : { reference: entry.reference })
+        }))
+      },
+      null,
+      2
+    )}\n`
+  );
+  return file;
+}
 
 export interface LlmWorkerCliOptions {
   once?: boolean;
@@ -158,8 +187,16 @@ export async function runLlmWorkerCli(
         references
       };
     },
-    loadCases: async (job) =>
-      loadLlmCases({ store, rootPath: job.rootPath, job }),
+    loadCases: async (job) => {
+      const cases = await loadLlmCases({ store, rootPath: job.rootPath, job });
+      try {
+        const file = persistLlmCasePlan(job, cases);
+        log(`case plan: ${file}`);
+      } catch (error) {
+        errorLog(`case plan 落盘失败：${errorMessage(error)}`);
+      }
+      return cases;
+    },
     executeCase: async ({ job, testCase, prepared, signal }) => {
       const context = prepared as PreparedLlmJob;
       const reference = resolveCaseReference({

@@ -7,7 +7,8 @@ import {
   loadDesignFlowGraph,
   loadGeneratedCases,
   resolveCaseSelector,
-  readTestsDocument
+  readTestsDocument,
+  toGeneratedCase
 } from "../dist/figma/design-store.js";
 import { baseConfig, makeTempProject } from "./helpers.js";
 
@@ -55,6 +56,43 @@ test("readTestsDocument：缺失/坏 JSON → null；记录投影与 generation 
 
   fs.writeFileSync(path.join(design, "tests.json"), "{not json");
   assert.equal(readTestsDocument(configDirAbs), null);
+});
+
+test("readTestsDocument/toGeneratedCase: actions/engine 投影", () => {
+  const { design } = makeDesignDir();
+  fs.writeFileSync(
+    path.join(design, "tests.json"),
+    JSON.stringify({
+      flows: [
+        {
+          id: "case-actions",
+          name: "结构化动作",
+          steps: ["点击登录"],
+          taskDesc: "任务",
+          expectations: [{ kind: "assert", screen: "首页", hints: ["首页"] }],
+          engine: "native",
+          actions: [
+            {
+              stepIndex: 0,
+              action: "tap",
+              target: { kind: "resource-id", value: "login_button" },
+              expect: { screen: "首页", hints: ["首页"] }
+            }
+          ]
+        }
+      ]
+    })
+  );
+  const configDirAbs = path.join(design, "..");
+  const document = readTestsDocument(configDirAbs);
+  assert.ok(document);
+  const record = document.records[0];
+  assert.equal(record.engine, "native");
+  assert.equal(record.actions.length, 1);
+  const generated = toGeneratedCase(record);
+  assert.equal(generated.engine, "native");
+  assert.equal(generated.actions[0].target.value, "login_button");
+  assert.equal(generated.actions[0].expect.screen, "首页");
 });
 
 test("loadDesignFlowGraph：缺失 → null；读取必归一（legacy 补默认证据字段）", async () => {

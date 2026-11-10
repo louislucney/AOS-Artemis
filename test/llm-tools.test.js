@@ -132,8 +132,8 @@ test("llm_switch: auto-pins non-Google nodes, imports to store, restarts on env 
   const override = readOverride(dir);
   assert.equal(override.default.provider, "custom");
   assert.deepEqual(override.default.fallback, { provider: "custom", model: "deepseek-chat" });
-  assert.deepEqual(override.nodes.object_detector, { provider: "custom", model: "deepseek-chat" });
-  assert.deepEqual(override.nodes.hopper, { provider: "custom", model: "deepseek-chat" });
+  assert.deepEqual(override.nodes.object_detector, { provider: "custom", model: "deepseek-chat", fallback: { provider: "custom", model: "deepseek-chat" } });
+  assert.deepEqual(override.nodes.hopper, { provider: "custom", model: "deepseek-chat", fallback: { provider: "custom", model: "deepseek-chat" } });
 
   // The config-sourced entry was imported into the store and marked active.
   const entries = await runtime.entries();

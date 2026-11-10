@@ -8,6 +8,7 @@ import {
   type CoverageEdge
 } from "./coverage.js";
 import { loadDesignFlowGraph, readTestsDocument } from "./design-store.js";
+import { hasCompleteActions, validateStructuredActions } from "./structured-actions.js";
 import { hasRealDataPolicy } from "./data-policy.js";
 import { isExploreKind, isHardCoverageValue } from "../provenance.js";
 import {
@@ -91,6 +92,12 @@ export interface PreflightReport {
   artifacts: PreflightArtifacts;
   dataPolicy: PreflightDataPolicy;
   dynamicContent: PreflightDynamicContent;
+  /** Phase 1 structured actions summary; native cases must be complete. */
+  structuredActions: {
+    native: number;
+    artemis: number;
+    errors: Array<{ caseId: string; message: string }>;
+  };
   designWarnings: DesignWarning[];
   designWarningSummary: WarningSummary;
   designWarningsSource: DesignWarningsSource;
@@ -256,6 +263,48 @@ export function preflightGeneratedTests(
     }
   }
 
+  const structuredActionErrors: Array<{ caseId: string; message: string }> = [];
+  let nativeActions = 0;
+  let artemisActions = 0;
+  for (const record of cases) {
+    const engine = record.engine ?? (record.actions.length > 0 ? "native" : "artemis");
+    const native = engine === "native" || engine === "auto";
+    if (native) nativeActions += 1;
+    else artemisActions += 1;
+    if (!native && record.actions.length === 0) continue;
+    const validation = validateStructuredActions(record.actions, record.steps.length);
+    for (const message of validation.errors) {
+      structuredActionErrors.push({ caseId: record.id, message });
+    }
+    if (!native) continue;
+    if (record.actions.length === 0) {
+      structuredActionErrors.push({
+        caseId: record.id,
+        message: "engine=native 但 actions 为空"
+      });
+      continue;
+    }
+    const expectations = record.expectations.map((entry) => ({
+      kind: isExploreKind(
+        entry && typeof entry === "object" ? (entry as { kind?: unknown }).kind : undefined
+      )
+        ? ("explore" as const)
+        : ("assert" as const)
+    }));
+    if (expectations.some((entry) => entry.kind === "explore")) {
+      structuredActionErrors.push({
+        caseId: record.id,
+        message: "含探索步骤的用例不能 engine=native"
+      });
+    }
+    if (!hasCompleteActions(validation.actions, expectations)) {
+      structuredActionErrors.push({
+        caseId: record.id,
+        message: "actions 未覆盖所有断言步骤"
+      });
+    }
+  }
+
   const graph = loadDesignFlowGraph(
     configDirAbs,
     options.flowsPath ? { flowsPath: options.flowsPath } : {}
@@ -306,6 +355,11 @@ export function preflightGeneratedTests(
     artifacts,
     dataPolicy,
     dynamicContent: collectDynamicContent(configDirAbs, cases, options),
+    structuredActions: {
+      native: nativeActions,
+      artemis: artemisActions,
+      errors: structuredActionErrors
+    },
     designWarnings: designWarnings.warnings,
     designWarningSummary: designWarnings.summary,
     designWarningsSource: designWarnings.source,

@@ -483,9 +483,7 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_lookup_idx
      ON excel_writeback_journal(root_path, asset_id, cell_ref, written_at)`,
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_cell_key_idx
-     ON excel_writeback_journal(root_path, asset_id, sheet_name, case_id, column_key, written_at)`,
-  `CREATE INDEX IF NOT EXISTS excel_writeback_journal_pending_idx
-     ON excel_writeback_journal(root_path, asset_id, status, written_at)`
+     ON excel_writeback_journal(root_path, asset_id, sheet_name, case_id, column_key, written_at)`
 ];
 
 const MIGRATIONS = [
@@ -515,9 +513,9 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS cancel_requested_at TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS job_spec TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'maestro'`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_serial TEXT`,
   `CREATE INDEX IF NOT EXISTS regression_tasks_execution_mode_idx
      ON regression_tasks(status, execution_mode, target_host_id, device_serial)`,
-  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_serial TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_lease_id TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_asset_id TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_package TEXT`,

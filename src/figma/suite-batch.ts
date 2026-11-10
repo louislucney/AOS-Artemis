@@ -293,9 +293,15 @@ export async function executeSuiteBatch(
       entry.quarantined !== true &&
       (entry.ui?.textStyles?.highConfidenceHeavier ?? 0) > 0
   ).length;
+  const unresolvedFailures = report.cases.filter(
+    (entry) =>
+      entry.quarantined !== true &&
+      (entry.testSummary?.adherence?.unresolved ?? 0) > 0
+  ).length;
   const uiGateFailed =
     (options.failOnUi === true && uiFailures > 0) ||
-    (options.failOnUiWeight === true && uiWeightFailures > 0);
+    (options.failOnUiWeight === true && uiWeightFailures > 0) ||
+    (options.failOnUnresolved === true && unresolvedFailures > 0);
   const exitCode =
     !report.ok
       ? 2

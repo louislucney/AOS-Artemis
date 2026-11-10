@@ -95,6 +95,22 @@ async function setup() {
       end_time: 2003
     })
   );
+  fs.writeFileSync(
+    path.join(failedDir, "android-adherence.json"),
+    JSON.stringify({
+      traceId: "trace-2",
+      adherence: {
+        checkable: 2,
+        satisfied: 1,
+        unchecked: 0,
+        unresolved: [{ index: 2, screen: "Missing", hints: ["不存在"] }],
+        deferred: { total: 1, reached: 0 }
+      },
+      start: { screen: "首页", hints: ["首页"], status: "matched" },
+      steps: 3,
+      degraded: null
+    })
+  );
 
   await store.recordTask({
     rootPath: dir,
@@ -193,6 +209,11 @@ test("run report: ledger rows get outcome, duration, evidence and failure domain
   assert.equal(failed.failure.domain, "data-environment");
   assert.equal(failed.failure.confidence, "high");
   assert.ok(failed.failure.evidence.some((entry) => entry.startsWith("precondition:")));
+  assert.equal(failed.scriptAdherence.checkable, 2);
+  assert.equal(failed.scriptAdherence.satisfied, 1);
+  assert.equal(failed.scriptAdherence.unresolved, 1);
+  assert.equal(failed.scriptAdherence.deferredTotal, 1);
+  assert.equal(failed.scriptAdherence.degraded, null);
 
   const pending = report.cases[2];
   assert.equal(pending.outcome, "pending");
@@ -221,6 +242,7 @@ test("run report: writes xlsx result sheet and JUnit XML without touching tests.
   assert.equal(sheet.getRow(1).getCell(5).value, "端");
   assert.equal(sheet.getRow(1).getCell(6).value, "结果");
   assert.equal(sheet.getRow(1).getCell(12).value, "脚本来源");
+  assert.equal(sheet.getRow(1).getCell(13).value, "脚本断言");
   assert.equal(sheet.getRow(2).getCell(2).value, "Home → Checkout");
   assert.equal(sheet.getRow(2).getCell(4).value, "登录流程");
   assert.equal(sheet.getRow(2).getCell(5).value, "—");
@@ -228,7 +250,8 @@ test("run report: writes xlsx result sheet and JUnit XML without touching tests.
   assert.equal(sheet.getRow(2).getCell(8).value, 2.5);
   assert.equal(sheet.getRow(3).getCell(10).value, "data-environment");
   assert.equal(sheet.getRow(3).getCell(12).value, "断言 1 / 探索 2");
-  assert.match(sheet.getRow(3).getCell(14).value, /trace: .*trace-2/);
+  assert.equal(sheet.getRow(3).getCell(13).value, "断言 1/2（未命中 1） · 探索 0/1");
+  assert.match(sheet.getRow(3).getCell(15).value, /trace: .*trace-2/);
 
   const junit = fs.readFileSync(report.saved.junit, "utf-8");
   assert.match(junit, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
@@ -310,8 +333,8 @@ test("run report: API error artifact feeds xlsx columns and JUnit failure conten
   await workbook.xlsx.load(fs.readFileSync(report.saved.xlsx));
   const sheet = workbook.getWorksheet("运行报告");
   const rowIndex = report.cases.findIndex((entry) => entry.traceId === "trace-2") + 2;
-  assert.match(sheet.getRow(rowIndex).getCell(15).value, /AUTH_401\(unhandled ×2\)/);
-  assert.match(sheet.getRow(rowIndex).getCell(16).value, /AUTH_401=relogin/);
+  assert.match(sheet.getRow(rowIndex).getCell(16).value, /AUTH_401\(unhandled ×2\)/);
+  assert.match(sheet.getRow(rowIndex).getCell(17).value, /AUTH_401=relogin/);
 
   assert.match(
     fs.readFileSync(report.saved.junit, "utf-8"),

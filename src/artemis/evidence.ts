@@ -12,7 +12,7 @@ import {
 import { designDeviceDiff, type DesignDeviceDiffArgs } from "../diff/tool.js";
 import type { Runtime } from "../runtime.js";
 import { errorMessage } from "../util.js";
-import { resultPayload } from "./task-result.js";
+import { resultPayload, taskStatusFromFile } from "./task-result.js";
 
 export interface EvidenceFailedItem {
   itemText: string | null;
@@ -29,7 +29,17 @@ export interface EvidenceCrashRef {
 }
 
 export interface EvidenceArtifact {
-  kind: "screenshot" | "status" | "stderr" | "stdout" | "notes" | "crash-record" | "design-diff";
+  kind:
+    | "screenshot"
+    | "status"
+    | "stderr"
+    | "stdout"
+    | "notes"
+    | "crash-record"
+    | "design-diff"
+    | "android-adherence"
+    | "native-ios"
+    | "native-android";
   path: string;
   copied: boolean;
 }
@@ -75,6 +85,23 @@ function crashRef(record: CrashSummary): EvidenceCrashRef {
   };
 }
 
+/** Runner 失败证据上传到 `.artemis/remote-evidence/<taskId>/<traceId>/`；
+ * 中心本地没有 traces 目录时回退读取它，避免 `suite evidence` 误报 trace 缺失。 */
+function findRemoteEvidenceDir(runtime: Runtime, traceId: string): string | null {
+  const base = path.join(runtime.project.rootDir, ".artemis", "remote-evidence");
+  let taskDirs: string[];
+  try {
+    taskDirs = fs.readdirSync(base);
+  } catch {
+    return null;
+  }
+  for (const taskDir of taskDirs) {
+    const candidate = path.join(base, taskDir, traceId);
+    if (fs.existsSync(path.join(candidate, "status.json"))) return candidate;
+  }
+  return null;
+}
+
 export async function traceEvidence(
   runtime: Runtime,
   options: EvidenceOptions
@@ -83,7 +110,15 @@ export async function traceEvidence(
   const degraded: string[] = [];
   const artifacts: EvidenceArtifact[] = [];
 
-  const status = await runtime.traceStatus(traceId);
+  let status = await runtime.traceStatus(traceId);
+  let traceDir = runtime.traceDir(traceId);
+  if (status === null || status.status === null || status.status === "") {
+    const remoteDir = findRemoteEvidenceDir(runtime, traceId);
+    if (remoteDir !== null) {
+      status = taskStatusFromFile(path.join(remoteDir, "status.json")) ?? status;
+      traceDir = remoteDir;
+    }
+  }
   if (!status) degraded.push("trace-status-missing");
   if (status && !status.testSummary) degraded.push("no-run-outcome");
   const failedItems: EvidenceFailedItem[] = (status?.testSummary?.failedItems ?? []).map((item) => ({
@@ -143,15 +178,28 @@ export async function traceEvidence(
     }
   }
 
-  const traceDir = runtime.traceDir(traceId);
   const reference = (kind: EvidenceArtifact["kind"], candidate: string | null | undefined): void => {
     if (!candidate) return;
     artifacts.push({ kind, path: candidate, copied: false });
   };
-  reference("status", path.join(traceDir, "status.json"));
-  reference("stderr", status?.stderrLog ?? path.join(traceDir, "stderr.log"));
-  reference("stdout", status?.stdoutLog ?? path.join(traceDir, "stdout.log"));
+  const firstExisting = (candidates: Array<string | null | undefined>): string | null =>
+    candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate !== "" && fs.existsSync(candidate)) ?? null;
+  reference("status", firstExisting([path.join(traceDir, "status.json")]) ?? path.join(traceDir, "status.json"));
+  reference(
+    "stderr",
+    firstExisting([path.join(traceDir, "stderr.log"), status?.stderrLog]) ?? status?.stderrLog ?? path.join(traceDir, "stderr.log")
+  );
+  reference(
+    "stdout",
+    firstExisting([path.join(traceDir, "stdout.log"), status?.stdoutLog]) ?? status?.stdoutLog ?? path.join(traceDir, "stdout.log")
+  );
   reference("notes", status?.notesDir);
+  const adherencePath = path.join(traceDir, "android-adherence.json");
+  if (fs.existsSync(adherencePath)) reference("android-adherence", adherencePath);
+  const nativeIosPath = path.join(traceDir, "native-ios.json");
+  if (fs.existsSync(nativeIosPath)) reference("native-ios", nativeIosPath);
+  const nativeAndroidPath = path.join(traceDir, "native-android.json");
+  if (fs.existsSync(nativeAndroidPath)) reference("native-android", nativeAndroidPath);
   for (const crash of crashes) {
     reference("crash-record", path.join(runtime.crashStore.dirPath, `${crash.id}.json`));
   }

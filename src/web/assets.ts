@@ -5,6 +5,7 @@ import path from "node:path";
 import type { ProjectStore, WebAssetKind, WebAssetRecord } from "../db/types.js";
 import { writeFileAtomic } from "../util.js";
 import { CsvError, decodeCsv } from "./csv.js";
+import { inferAppIdFromPackage } from "./package-inspect.js";
 
 export type { WebAssetKind };
 
@@ -133,6 +134,10 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
 
   const sha256 = createHash("sha256").update(input.buffer).digest("hex");
   const metadata: Record<string, unknown> = { ...(input.metadata ?? {}) };
+  if (input.kind === "package") {
+    const appId = await inferAppIdFromPackage(input.buffer, filename).catch(() => null);
+    if (appId !== null) metadata.appId = appId;
+  }
   if (input.kind === "excel" && extension === ".csv") {
     // CSV 原件保持原字节只读；编码检测结论写进元数据，后续生成工作副本时可直接复用。
     metadata.format = "csv";
