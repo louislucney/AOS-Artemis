@@ -2,6 +2,9 @@ import type { LlmPoolMode, ProjectStore } from "../../db/types.js";
 import { resolveCenterLlmCandidates } from "../../llm/pool/resolve.js";
 import { RunnerControlError } from "./errors.js";
 
+export { resolveCenterLlmCandidates } from "../../llm/pool/resolve.js";
+export type { CenterLlmResolution, PoolCandidate } from "../../llm/pool/resolve.js";
+
 export interface ResolvedCenterLlm {
   name: string;
   provider: string;
