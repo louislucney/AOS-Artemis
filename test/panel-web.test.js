@@ -1443,7 +1443,31 @@ test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标�
     clean.deps
   );
   assert.match(cleanHtml.body, /暂无执行机心跳/);
+  assert.match(cleanHtml.body, /section=devices#runner-download/, "无 runner 时给接入入口");
   assert.doesNotMatch(cleanHtml.body, /http-equiv="refresh"/, "无 runner 不挂刷新");
+});
+
+test("panel web: runner 未广播产物基址 → 通用示例与配置入口（不写死 IP）", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  await store.upsertRunner({
+    rootPath: projectDir,
+    name: "r-1",
+    hostname: "mac-1",
+    hostId: "h-1",
+    platforms: ["android"],
+    devices: [],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false },
+    artifactBaseUrl: null
+  });
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}`),
+    deps
+  );
+  assert.match(html.body, /未广播产物基址/);
+  assert.match(html.body, /AOS_RUNNER_ADVERTISE_URL/);
+  assert.match(html.body, /&lt;执行机IP&gt;/, "示例用占位符");
+  assert.match(html.body, /section=devices#runner-guide/, "给配置说明入口");
+  assert.doesNotMatch(html.body, /192\.168\.3\.21/, "不写死具体 IP");
 });
 
 test("panel web: 任务页 已领取/在线标记/刷新/无端覆盖提示", async () => {
@@ -2074,6 +2098,8 @@ test("panel web: Jira 未配置前置拦截（不渲染预览/建单，给配置
   assert.doesNotMatch(gated.body, /id="issues-preview"/, "不渲染预览（前置拦截）");
   assert.doesNotMatch(gated.body, /id="issues-create"/, "不渲染建单");
   assert.match(gated.body, /JIRA_BASE_URL/, "指引含配置项");
+  assert.match(gated.body, /section=ops/, "指引给配置入口");
+  assert.match(gated.body, /去运维页配置/, "配置入口文案");
 
   const ready = await handlePanelRequest(url, {
     ...deps,

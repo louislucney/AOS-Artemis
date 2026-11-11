@@ -522,4 +522,31 @@ test("dispatch preview: 未知安装包给警告且不选中", async () => {
   const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
   assert.equal(preview.appAssetId, null);
   assert.match(preview.warnings.join(" "), /安装包不存在|安装包.*已删除/);
+  const html = renderDispatchPage({ rootPath: ROOT, rootLabel: "p", preview, query: {} });
+  assert.match(html, /重新上传安装包/, "未知安装包警告给重传入口");
+  assert.match(html, /section=assets&amp;tab=packages&amp;kind=package/);
+});
+
+test("renderDispatchPage: 缺安装包/缺用例集/无执行机都保留可操作入口", async () => {
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath: ROOT, name: "p" });
+  const params = new URLSearchParams({ source: "case-set", ref: "missing" });
+  const preview = await computeDispatchPreview({ store, env: {}, now: () => NOW }, ROOT, params);
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId: dispatchPreviewId(preview, dispatchFormSignature(params), ROOT),
+    formSignature: dispatchFormSignature(params),
+    query: Object.fromEntries(params)
+  });
+
+  assert.match(html, /aria-label="安装包" disabled/, "无安装包时仍显示安装包控件");
+  assert.match(html, /上传 APK\/IPA/, "无安装包时给上传按钮");
+  assert.match(html, /section=assets&amp;tab=packages&amp;kind=package/, "上传按钮带类型预选");
+  assert.match(html, /去用例库导入 Excel/, "缺用例集警告给导入入口");
+  assert.match(html, /id="dispatch-empty"[\s\S]{0,300}library-import/, "空预览横幅给导入入口");
+  assert.match(html, /runner-download/, "无执行机时给接入入口");
+  assert.match(html, /暂无注册执行机/, "无执行机候选显式说明");
+  assert.match(html, /去用例库/, "引用明细空态给用例库入口");
 });

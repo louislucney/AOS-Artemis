@@ -1981,6 +1981,7 @@ function renderIntegration(detail: PanelProjectDetail): string {
       ? ""
       : `<p class="note">缺项：${escapeHtml(integration.llm.missing.slice(0, 5).join("；"))}</p>`,
     renderTable(["凭证", "状态", "备注"], renderCredentialRows(detail), "—", "接入凭证"),
+    `<p class="muted">配置入口：<a href="${escapeHtml(`${projectHref(detail.project.rootPath, detail.project.hostId)}&section=ops`)}">运维 → LLM / Figma / Jira</a></p>`,
     validation,
     `<h3>设备宿主</h3><p>${deviceHosts}</p>`,
     `<h3>宿主</h3><p class="muted">deps：${escapeHtml(integration.host.deps)} · 构建：${
@@ -2397,7 +2398,7 @@ function renderRunners(detail: PanelProjectDetail, rootPath: string, hostId: str
       '<section id="runners">',
       "<h2>执行机</h2>",
       fleetStats,
-      '<p class="empty">暂无执行机心跳（在项目机运行 <code>node dist/cli.js suite runner</code>）</p>',
+      '<p class="empty">暂无执行机心跳（在项目机运行 <code>node dist/cli.js suite runner</code>；<a href="/panel?section=devices#runner-download">下载/接入执行机 →</a>）</p>',
       leases,
       "</section>"
     ].join("\n");
@@ -2406,7 +2407,7 @@ function renderRunners(detail: PanelProjectDetail, rootPath: string, hostId: str
   const artifactNote =
     missingArtifact === 0
       ? ""
-      : `<p class="note">${missingArtifact} 台执行机未广播产物基址：远端任务的批次/trace 无法在中心打开。若 runner 已是 0.2.0+：检查本机 8770 是否被占用、<code>AOS_RUNNER_ARTIFACT_PORT</code> 是否被设为 0，并设置 <code>AOS_RUNNER_ADVERTISE_URL</code>（如 <code>http://192.168.3.21:8770</code>）后重启；中心需能访问该地址。</p>`;
+      : `<p class="note">${missingArtifact} 台执行机未广播产物基址：远端任务的批次/trace 无法在中心打开。若 runner 已是 0.2.0+：检查本机 8770 是否被占用、<code>AOS_RUNNER_ARTIFACT_PORT</code> 是否被设为 0，并设置 <code>AOS_RUNNER_ADVERTISE_URL</code>（如 <code>http://&lt;执行机IP&gt;:8770</code>）后重启；中心需能访问该地址。 <a href="/panel?section=devices#runner-guide">配置说明</a></p>`;
   const rows = detail.runners.map((runner) => [
     `${cBadge({ label: runner.online ? "在线" : "失联", tone: runner.online ? "success" : "warning" })} <code>${escapeHtml(runner.name)}</code>`,
     escapeHtml(runner.hostname),
@@ -2515,7 +2516,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: s
   const featureField =
     featureBoxes.length > 0
       ? `<fieldset class="c-fieldset"><legend>功能（可多选）</legend><div class="c-check-grid">${featureBoxes.join("")}</div></fieldset>`
-      : `<label class="c-form-field">功能 key <input type="text" name="featureKeys" aria-label="功能 key（暂无可引用用例集，可手输）" size="28" placeholder="login,pay"></label> <span class="muted">暂无可引用用例集；多个用英文逗号分隔</span>`;
+      : `<label class="c-form-field">功能 key <input type="text" name="featureKeys" aria-label="功能 key（暂无可引用用例集，可手输）" size="28" placeholder="login,pay"></label> <span class="muted">暂无可引用用例集；<a href="${escapeHtml(`${projectHref(detail.project.rootPath, detail.project.hostId)}&section=assets&tab=case-sets`)}#library-import">去用例库导入</a>；多个用英文逗号分隔</span>`;
   const platforms = schedulePlatforms(detail.project.stackIds);
   const platformField =
     platforms.length > 0
@@ -2525,7 +2526,7 @@ function renderSchedules(rootPath: string, detail: PanelProjectDetail, hostId: s
               `<label><input type="checkbox" name="platform" value="${platform}" checked> ${platform}</label>`
           )
           .join("")}</div></fieldset>`
-      : `<p class="note">当前项目未检测到 Android/iOS 栈，无法创建移动端定时计划。</p>`;
+      : `<p class="note">当前项目未检测到 Android/iOS 栈，无法创建移动端定时计划。请在 <code>aos.config.jsonc</code> 设置 <code>project.stack</code>（如 <code>["android-native"]</code>）后重启会话。</p>`;
   const form = actionsOff
     ? ""
     : platforms.length === 0
@@ -2727,7 +2728,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
   );
   const coverageHint =
     task.status === "pending" && !covered
-      ? '<p class="note">当前无在线执行机完整覆盖任务目标端（双端任务需单机双端执行机）；可手动执行或等待执行机上线。</p>'
+      ? '<p class="note">当前无在线执行机完整覆盖任务目标端（双端任务需单机双端执行机）；可手动执行或等待执行机上线。 <a href="/panel?section=devices#runner-download">下载/接入执行机 →</a></p>'
       : "";
   return page(
     `任务 · ${task.id}`,
@@ -2856,7 +2857,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
           run.manifestPath !== null &&
           (/^[A-Za-z]:[\\/]/.test(run.manifestPath) || run.manifestPath.startsWith("\\\\"))
       )
-        ? '<p class="note">本次产物在远端 runner 本地，中心无法打开本地清单/trace。配置 runner 的 <code>AOS_RUNNER_ADVERTISE_URL</code>（如 <code>http://192.168.3.21:8770</code>）并重启后，批次与证据链接才可用。</p>'
+        ? '<p class="note">本次产物在远端 runner 本地，中心无法打开本地清单/trace。配置 runner 的 <code>AOS_RUNNER_ADVERTISE_URL</code>（如 <code>http://&lt;执行机IP&gt;:8770</code>）并重启后，批次与证据链接才可用。 <a href="/panel?section=devices#runner-guide">配置说明</a></p>'
         : "",
       `<script>(function(){document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-copy]'):null;if(!b)return;var text=b.getAttribute('data-copy')||'';var done=function(){b.textContent='已复制';setTimeout(function(){b.textContent='复制命令';},1500);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(function(){b.textContent='复制失败';});}else{b.textContent='复制失败';}});})();</script>`,
       "</section>",
@@ -3123,10 +3124,11 @@ function appDefectBlock(
     return [title, table, '<p class="note">当前角色无建单权限（需要 admin）。</p>'].join("\n");
   }
   if (currentShell.jiraReady === false) {
+    const opsHref = `${projectHref(rootPath, hostId)}&section=ops`;
     return [
       title,
       table,
-      '<div class="c-banner c-banner-warn" role="status"><strong>未检测到 Jira 凭据：预览与建单不可用。</strong><p>在项目 .env 配置 <code>JIRA_BASE_URL</code> / <code>JIRA_EMAIL</code> / <code>JIRA_API_TOKEN</code> 后重启会话；建单为外部副作用，未配置时被前置拦截。</p></div>'
+      `<div class="c-banner c-banner-warn" role="status"><strong>未检测到 Jira 凭据：预览与建单不可用。</strong><p>在项目 .env 配置 <code>JIRA_BASE_URL</code> / <code>JIRA_EMAIL</code> / <code>JIRA_API_TOKEN</code> 后重启会话；建单为外部副作用，未配置时被前置拦截。 <a href="${escapeHtml(opsHref)}">去运维页配置 →</a></p></div>`
     ].join("\n");
   }
   const projectDefault = escapeHtml(currentShell.jiraDefaults?.projectKey ?? "");

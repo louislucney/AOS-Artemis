@@ -483,6 +483,8 @@ test("web assets page: archived project shows status and disables writes", async
   });
   assert.equal(response.status, 200);
   assert.match(response.body, /已归档/);
+  assert.match(response.body, /panel\?new=1#new-project/, "归档页给新建项目入口");
+  assert.doesNotMatch(response.body, /恢复项目状态/, "不承诺不存在的恢复动作");
   assert.match(response.body, /id="asset-upload-submit"[^>]* disabled/);
   assert.match(response.body, /id="mapping-save"[^>]* disabled/);
   assert.ok(

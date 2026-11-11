@@ -676,8 +676,31 @@ export function renderDispatchPage(view: DispatchView): string {
         )}</code>`
     )
     .join(" · ");
+  const libraryHref = `/panel?project=${encodeURIComponent(view.rootPath)}&section=assets&tab=case-sets${dispatchHostQuery}#library-import`;
+  const packageHref = `/panel?project=${encodeURIComponent(view.rootPath)}&section=assets&tab=packages&kind=package${dispatchHostQuery}#asset-upload`;
+  const devicesHref = "/panel?section=devices";
+  const runnerHref = "/panel?section=devices#runner-download";
+  const warningAction = (warning: string): string => {
+    if (warning.includes("还没有用例集")) {
+      return `<a class="c-button" href="${escapeHtml(libraryHref)}">去用例库导入 Excel</a>`;
+    }
+    if (warning.includes("未匹配到任何用例集")) {
+      return `<a class="c-button" href="${escapeHtml(libraryHref)}">查看用例库</a>`;
+    }
+    if (warning.includes("安装包不存在") || (warning.includes("安装包") && warning.includes("已删除"))) {
+      return `<a class="c-button" href="${escapeHtml(packageHref)}">重新上传安装包</a>`;
+    }
+    return "";
+  };
   const warnings = preview.warnings
-    .map((warning) => cBanner({ tone: "warn", title: warning }))
+    .map((warning) => {
+      const actions = warningAction(warning);
+      return cBanner({
+        tone: "warn",
+        title: warning,
+        ...(actions === "" ? {} : { actions })
+      });
+    })
     .join("");
   const hostOptions = preview.hosts
     .map((host) => {
@@ -784,7 +807,7 @@ export function renderDispatchPage(view: DispatchView): string {
     .join("");
   const appAssetField =
     preview.appPackages.length === 0
-      ? `<p class="muted">安装包：项目还没有上传 APK/IPA。可在 <a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=assets&amp;tab=packages#asset-upload">测试资产 → 安装包</a> 上传；也可以先手动装到设备上。</p>`
+      ? `<p><label>安装包（可选） <select name="appAssetId" aria-label="安装包" disabled><option>暂无安装包</option></select></label> <a class="c-button" href="${escapeHtml(packageHref)}" target="_blank" rel="noopener">上传 APK/IPA</a> <span class="muted">上传后回到本页点「刷新预览」；设备已安装可跳过。</span></p>`
       : `<p><label>安装包（可选） <select name="appAssetId" aria-label="安装包"><option value="">不安装（设备需已安装）</option>${appPackageOptions}</select></label> <span class="muted">选择后执行机在跑用例前安装；不选则要求设备已安装。</span></p>`;
   const appPackageField =
     preview.appPackage === ""
@@ -839,7 +862,7 @@ export function renderDispatchPage(view: DispatchView): string {
           });
   const previewBody = [
     `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
-    `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：尚未引用任何用例集。请选择用例集或输入关键词后点「刷新预览」。</p>`,
+    `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：尚未引用任何用例集。请选择用例集或输入关键词后点「刷新预览」；还没有用例集可 <a href="${escapeHtml(libraryHref)}">先去用例库导入 Excel</a>。</p>`,
     `<div class="c-stats-row">`,
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
@@ -863,15 +886,18 @@ export function renderDispatchPage(view: DispatchView): string {
       columns: ["用例集", "用例集 ID", "用例数"],
       rows: refRows,
       caption: "引用用例集明细",
-      empty: "无引用（待选择来源）"
+      emptyHtml: `无引用（待选择来源）· <a href="${escapeHtml(libraryHref)}">去用例库</a>`
     }),
-    `<p>执行机候选：${runnerBadges || '<span class="muted">暂无注册执行机</span>'}</p>`,
+    `<p>执行机候选：${
+      runnerBadges ||
+      `<span class="muted">暂无注册执行机 · <a href="${runnerHref}">下载/接入执行机 →</a></span>`
+    }</p>`,
     runnerOnline
       ? ""
-      : `<p class="muted">执行机：无在线（派发后任务将排队，等待执行机上线后领取；可手动执行）。</p>`,
+      : `<p class="muted">执行机：无在线（派发后任务将排队，等待执行机上线后领取；可手动执行）。<a href="${runnerHref}">下载/接入执行机 →</a></p>`,
     `<p class="muted">设备：${
       eligibleDevices.length === 0
-        ? "执行机未上报匹配设备；领取时将自动选择，最终设备见任务页。"
+        ? `执行机未上报匹配设备；领取时将自动选择，最终设备见任务页。 <a href="${devicesHref}">查看设备</a>`
         : `执行机当前可用 ${eligibleDevices
             .map((device) => `<code>${escapeHtml(device.serial)}</code>`)
             .join("、")}；任务按端自动选择。`

@@ -261,7 +261,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   const actionsOff = archived || data.capabilities?.actions === false || !roleAllowed;
   const disabledAttr = actionsOff ? " disabled" : "";
   const actionsReason = archived
-    ? `<p class="muted">项目已归档（archived）：禁止上传/保存映射；可继续只读查看资产与映射。需要修改请先新建项目或恢复项目状态。</p>`
+    ? `<p class="muted">项目已归档（archived）：禁止上传/保存映射；可继续只读查看资产与映射。需要修改请 <a href="/panel?new=1#new-project">新建项目</a>。</p>`
     : actionsOff
       ? `<p class="muted">${
           roleAllowed
