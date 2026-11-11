@@ -668,6 +668,7 @@ export interface RequestEstimate {
   totalTokens: number;
 }
 export function estimateTextTokens(text: string): number;
+export function estimateMessagesTokens(messages: unknown, env?: NodeJS.ProcessEnv): number;
 export function estimateRequest(body: unknown, env?: NodeJS.ProcessEnv): RequestEstimate;
 
 export interface StreamTap {
@@ -713,9 +714,10 @@ test("CJK text is not underestimated", () => {
 - [ ] **Step 3: Implement the estimator**
 
 - Lazy `js-tiktoken` encoder: `getEncoding("cl100k_base")`.
-- Count text parts; for each text, `Math.max(encoded.length, cjkCharCount)` then `Math.ceil(x * 1.15)`.
+- `estimateMessagesTokens(messages, env)` counts text parts; for each text, `Math.max(encoded.length, cjkCharCount)` then `Math.ceil(x * 1.15)`.
 - Image parts add `AOS_LLM_IMAGE_TOKEN_ESTIMATE` (default 1600).
 - Each message adds 4; the request adds 2.
+- `estimateRequest` delegates to `estimateMessagesTokens` for `body.messages`.
 - Completion: `max_tokens`/`max_completion_tokens` when positive; else `AOS_LLM_DEFAULT_MAX_OUTPUT_TOKENS` (default 4096).
 - Invalid/missing body returns `{ promptTokens: 0, completionTokens: default, totalTokens: default }`.
 
@@ -1221,9 +1223,10 @@ budget?: ChatBudget;
 
 - [ ] **Step 3: Implement `createChatBudget`**
 
-- `reserve`: `estimateMessagesTokens(messages)` + `maxOutputTokens ?? AOS_LLM_DEFAULT_MAX_OUTPUT_TOKENS`; `reserveForRequest`-like direct store call (avoid importing the proxy service to prevent a cycle; use `estimateCostMicros` + `findPrice`/`penaltyRate`).
-- `settle`: use `computeCost`, `store.settleLlmReservation`; if `usage === null`, use `estimatedUsage`.
+- `reserve`: call `reserveForRequest` from `src/llm/pool/budget-service.ts` with `requestBody: { messages, max_tokens: maxOutputTokens ?? AOS_LLM_DEFAULT_MAX_OUTPUT_TOKENS }`; on `ok:false`, throw `LlmBudgetError` (402 for budget/concurrency, 503 for token-not-found/inactive).
+- `settle`: call `settleReservation` with the reservation/price; if `usage === null`, pass `null` so it uses the estimate.
 - `release`: `store.releaseLlmReservation`.
+- `budget-service.ts` does not import the proxy, so this is acyclic.
 
 - [ ] **Step 4: Add the chat factory and runtime helpers**
 
