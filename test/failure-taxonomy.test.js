@@ -61,6 +61,14 @@ test("failure taxonomy: reset and submit errors classify as environment", () => 
   const submit = classifyFailure({ submitError: "device not found: no devices connected" });
   assert.equal(submit.domain, "environment");
   assert.equal(submit.confidence, "high");
+
+  const install = classifyFailure({
+    submitError:
+      "adbutils.errors.AdbInstallError: Failure [INSTALL_FAILED_ABORTED: User rejected permissions]"
+  });
+  assert.equal(install.domain, "environment");
+  assert.equal(install.confidence, "high");
+  assert.match(install.reason, /安装/);
 });
 
 test("failure taxonomy: precondition match raises data-environment confidence", () => {

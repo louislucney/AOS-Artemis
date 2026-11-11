@@ -573,6 +573,33 @@ export async function androidInstalledApkMatches(
   return false;
 }
 
+/** 用 streamed `adb install -r -t` 安装任务 APK（runner 侧一次安装，避免 Artemis 的
+ * push + pm install 路径在部分设备上触发“已安装/重新打开”而中止）。 */
+export async function adbInstallAndroidApk(
+  env: NodeJS.ProcessEnv,
+  serial: string,
+  apkPath: string,
+  exec: typeof defaultExec = defaultExec
+): Promise<{ ok: true; output: string } | { ok: false; error: string }> {
+  const adb = resolveAdbPath(env, process.platform);
+  if (adb.path === null) return { ok: false, error: "adb-not-found" };
+  await exec(adb.path, ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"], {
+    timeoutMs: 5_000,
+    env
+  }).catch(() => undefined);
+  await exec(adb.path, ["-s", serial, "shell", "wm", "dismiss-keyguard"], {
+    timeoutMs: 5_000,
+    env
+  }).catch(() => undefined);
+  const result = await exec(adb.path, ["-s", serial, "install", "-r", "-t", apkPath], {
+    timeoutMs: 600_000,
+    env
+  });
+  const output = `${result.stdout}\n${result.stderr}`.trim();
+  if (result.code === 0 && /Success/i.test(result.stdout)) return { ok: true, output };
+  return { ok: false, error: output === "" ? "adb install 失败（无输出）" : output };
+}
+
 export async function materializeTaskApp(
   runtime: Runtime,
   task: { id: string; appAssetId: string | null },
@@ -827,32 +854,64 @@ async function suiteRunTask(
     runnerEnv.AOS_APP_INSTALL_POLICY ?? "skip-if-present"
   ).trim();
   let skipTaskAppInstall = false;
+  let installedByRunner = false;
   const expectedAppSha = (taskApp.sha256 ?? "").trim();
-  if (
-    taskApp.path !== null &&
-    taskAppPackage !== "" &&
-    expectedAppSha !== "" &&
-    appInstallPolicy !== "always" &&
-    devices.length > 0 &&
-    devices.every((serial) => classifyIosSerial(serial) === null)
-  ) {
-    const installed = await Promise.all(
+  const androidOnly =
+    devices.length > 0 && devices.every((serial) => classifyIosSerial(serial) === null);
+  const androidInstallMode = (runnerEnv.AOS_ANDROID_INSTALL_MODE ?? "adb").trim();
+  const installedShaMatches = async (): Promise<boolean[]> =>
+    await Promise.all(
       devices.map((serial) =>
         androidInstalledApkMatches(runnerEnv, serial, taskAppPackage, expectedAppSha)
       )
     );
-    if (installed.every(Boolean)) {
+  const failAppInstall = async (message: string): Promise<number> => {
+    io.errorLog(message);
+    await progress
+      .report("failed", 10, { message, errorCode: "app-install-failed" })
+      .catch(() => undefined);
+    await runtime.store
+      .updateRegressionTask(runtime.project.rootDir, task.id, {
+        status: "failed",
+        expectStatuses: ["pending", "claimed", "running"]
+      })
+      .catch(() => false);
+    return 2;
+  };
+  if (
+    taskApp.path !== null &&
+    taskAppPackage !== "" &&
+    expectedAppSha !== "" &&
+    androidOnly &&
+    androidInstallMode !== "artemis"
+  ) {
+    const matched = await installedShaMatches();
+    if (matched.every(Boolean) && appInstallPolicy !== "always") {
       skipTaskAppInstall = true;
       say(
         `应用 ${taskAppPackage} 已安装且 APK SHA 一致（${expectedAppSha.slice(0, 12)}）：跳过重复安装（AOS_APP_INSTALL_POLICY=always 可强制）`
       );
     } else {
-      say(`应用 ${taskAppPackage} 已安装但 APK SHA 不一致或未安装：执行前安装`);
+      for (const serial of devices) {
+        const installed = await adbInstallAndroidApk(runnerEnv, serial, taskApp.path);
+        if (!installed.ok) {
+          return await failAppInstall(`安装包安装失败（${serial}）：${installed.error}`);
+        }
+      }
+      if (!(await installedShaMatches()).every(Boolean)) {
+        return await failAppInstall(
+          `安装后 APK SHA 校验失败：期望 ${expectedAppSha.slice(0, 12)}，设备上的安装包与下发包不一致`
+        );
+      }
+      installedByRunner = true;
+      say(`任务安装包：${path.basename(taskApp.path)}（adb install 成功，APK SHA 校验通过）`);
     }
   }
   if (taskApp.path !== null) {
     if (skipTaskAppInstall) {
       say(`任务安装包：${path.basename(taskApp.path)}（SHA 一致，跳过本次安装）`);
+    } else if (installedByRunner) {
+      say(`任务安装包：${path.basename(taskApp.path)}（已由 runner 安装，跳过 Artemis 安装）`);
     } else {
       baseOptions.appPath = taskApp.path;
       say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);

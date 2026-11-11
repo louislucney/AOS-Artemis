@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import {
+  adbInstallAndroidApk,
   androidInstalledApkMatches,
   materializeTaskApp,
   runSuiteCommand
@@ -926,6 +927,41 @@ test("suite runner: control URL from project .env is used (bundle scenario)", as
       }
     })
   );
+});
+
+test("adbInstallAndroidApk: wakes, uses streamed install, reports failure", async () => {
+  const calls = [];
+  let mode = "ok";
+  const exec = async (command, args) => {
+    calls.push(args);
+    if (args.includes("install")) {
+      return mode === "ok"
+        ? { code: 0, stdout: "Performing Streamed Install\nSuccess\n", stderr: "" }
+        : { code: 1, stdout: "", stderr: "Failure [INSTALL_FAILED_ABORTED]" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const ok = await adbInstallAndroidApk(
+    { AOS_ADB_PATH: "/fake/adb" },
+    "serial-1",
+    "C:/app.apk",
+    exec
+  );
+  assert.equal(ok.ok, true);
+  assert.ok(calls.some((args) => args.includes("KEYCODE_WAKEUP")), "先唤醒设备");
+  assert.ok(
+    calls.some((args) => args.includes("install") && args.includes("-r") && args.includes("-t")),
+    "streamed adb install -r -t"
+  );
+  mode = "fail";
+  const bad = await adbInstallAndroidApk(
+    { AOS_ADB_PATH: "/fake/adb" },
+    "serial-1",
+    "C:/app.apk",
+    exec
+  );
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /INSTALL_FAILED_ABORTED/);
 });
 
 test("androidInstalledApkMatches: compares installed APK sha256", async () => {

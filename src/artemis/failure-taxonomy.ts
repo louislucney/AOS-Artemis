@@ -83,6 +83,8 @@ const ENVIRONMENT_RESET_REASONS = new Set([
 ]);
 const ENVIRONMENT_PATTERN =
   /(adb|device\s+(offline|unauthorized|not\s+found)|no\s+devices?|emulator|设备(离线|未授权|未连接|不可用|不存在)|无可用设备|没有可用设备|找不到设备)/i;
+const INSTALL_PATTERN =
+  /(AdbInstallError|INSTALL_FAILED_[A-Z_]+|INSTALL_PARSE_FAILED_[A-Z_]+|installation\s+(?:aborted|failed)|User rejected permissions|安装包安装失败|安装被(?:拒|中止))/i;
 const LOGIN_PATTERN = /(登录|登陆|log\s?in|sign\s?in|账号|account|credentials?)/i;
 const DATA_PATTERN =
   /(数据|列表|list|feed|为空|空列表|无数据|没有数据|no\s+data|empty|网络|network|连接(失败|超时)|connection|加载失败|load(ing)?\s+failed)/i;
@@ -140,6 +142,16 @@ export function classifyFailure(input: FailureInput): FailureClassification {
         evidence: [`reset:${input.reset.reason}`]
       };
     }
+  }
+
+  const installText = texts.find((text) => INSTALL_PATTERN.test(text));
+  if (installText) {
+    return {
+      domain: "environment",
+      confidence: "high",
+      reason: `设备安装/权限失败（非应用缺陷）：${installText}`,
+      evidence: [installText]
+    };
   }
 
   const environmentText = texts.find((text) => ENVIRONMENT_PATTERN.test(text));
