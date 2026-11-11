@@ -262,6 +262,14 @@ test("devices page: duplicate serial prefers the newer online suite runner", asy
   assert.match(html, /emulator-5556/);
 });
 
+test("devices page: global view asks to pick a project and switcher keeps devices section", async (t) => {
+  const { store, workspace } = await setup(t);
+  const html = await page(store, workspace);
+  assert.match(html, /当前为全局设备视图/, "全局视图显式说明");
+  assert.match(html, /选择项目/, "操作列不再只剩破折号");
+  assert.match(html, /project=[^"&]+&amp;section=devices/, "切换项目后留在设备页");
+});
+
 test("devices page: preserves project context and offers dispatch action", async (t) => {
   const { store, rootPath, workspace } = await setup(t);
   const query = `&project=${encodeURIComponent(rootPath)}`;

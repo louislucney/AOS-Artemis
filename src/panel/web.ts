@@ -4108,6 +4108,7 @@ async function loadProjectSwitcher(
   const hosts = await deps.store.listHosts().catch(() => []);
   const hostById = new Map(hosts.map((host) => [host.id, host]));
   const visible = projects.slice(0, 20);
+  const sectionSuffix = view.kind === "devices" ? "&section=devices" : "";
   const options: Array<{ label: string; href: string; current?: boolean }> = visible.map((project) => {
     const host = project.hostId === null ? null : (hostById.get(project.hostId) ?? null);
     const hostLabel =
@@ -4120,7 +4121,7 @@ async function loadProjectSwitcher(
             : project.hostId.slice(0, 8);
     return {
       label: hostLabel === "" ? project.name : `${project.name} · ${hostLabel}`,
-      href: projectHref(project.rootPath, project.hostId)
+      href: `${projectHref(project.rootPath, project.hostId)}${sectionSuffix}`
     };
   });
   // 文件台账 listProjects 行恒为 NULL host；当前页解析出的 hostId 可能来自本机作用域视图。

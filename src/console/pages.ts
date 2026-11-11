@@ -885,7 +885,7 @@ export function renderDevicesPage(data: DevicesPageData): string {
           )}&platforms=${encodeURIComponent(device.platform)}`;
     const action =
       dispatchHref === null
-        ? '<span class="muted">—</span>'
+        ? '<a class="c-button" href="/panel" title="先在顶部切换到项目，再回到本页下发">选择项目</a>'
         : `<a class="c-button" href="${escapeHtml(
             dispatchHref
           )}" title="进入套件回归；设备由执行机自动选择">去下发</a>`;
@@ -1008,7 +1008,7 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
               )}">${escapeHtml(data.rootLabel ?? data.rootPath)}</a> · <a href="/panel?project=${encodeURIComponent(
                 data.rootPath
               )}&amp;section=create&amp;type=suite">新建测试</a></p>`
-            : ""
+            : `<p class="muted">当前为全局设备视图：先在顶部切换到项目，再在本页直接「去下发」。</p>`
         }
       </div>
       <div class="c-page-actions">
