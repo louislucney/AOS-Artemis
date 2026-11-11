@@ -2326,7 +2326,7 @@ export class MemoryStore implements ProjectStore {
         modelAllowlist: [...(input.modelAllowlist ?? [])],
         status: input.status ?? "active",
         priority: input.priority ?? 0,
-        budgetPeriod: input.budgetPeriod ?? "total",
+        budgetPeriod: input.budgetPeriod ?? "monthly",
         budgetLimitMicros: input.budgetLimitMicros ?? null,
         budgetLimitTokens: input.budgetLimitTokens ?? null,
         currency: input.currency ?? "CNY",

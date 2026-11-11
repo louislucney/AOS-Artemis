@@ -4549,7 +4549,7 @@ function mapLlmPoolToken(row: Record<string, unknown>): LlmPoolTokenRecord {
     modelAllowlist: parseStringArray(row.model_allowlist),
     status: (row.status as LlmPoolStatus) ?? "active",
     priority: Number(row.priority),
-    budgetPeriod: (row.budget_period as LlmBudgetPeriod) ?? "total",
+    budgetPeriod: (row.budget_period as LlmBudgetPeriod) ?? "monthly",
     budgetLimitMicros: nullableNumber(row.budget_limit_micros),
     budgetLimitTokens: nullableNumber(row.budget_limit_tokens),
     currency: String(row.currency),
