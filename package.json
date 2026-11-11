@@ -1,6 +1,6 @@
 {
   "name": "mobile-testing-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Unified MCP service for mobile testing: Figma design context + ARTEMIS Android and iOS device automation with project-scoped LLM profiles and switching.",
   "type": "module",
   "license": "MIT",
@@ -27,6 +27,7 @@
     "test:coverage": "npm run build && node --test --experimental-test-coverage test/*.test.js",
     "bundle:adb-host": "node scripts/build-adb-host-bundle.mjs",
     "bundle:mcp-runner": "node scripts/build-mcp-runner-bundle.mjs",
+    "release:runner": "node scripts/release-mcp-runner.mjs",
     "check:runner-bundle": "node scripts/check-runner-bundle.mjs",
     "test:types": "tsc -p tsconfig.type-tests.json",
     "verify": "npm test && npm run lint && npm run test:types && npm run bundle:mcp-runner && npm run check:runner-bundle",
