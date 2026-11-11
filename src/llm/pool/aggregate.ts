@@ -22,6 +22,8 @@ export interface LlmUsageReport {
   groupBy: "project" | "model" | "token" | "none";
   totals: LlmUsageBucket;
   rows: LlmUsageBucket[];
+  /** True when the store returned exactly the query limit (totals may be understated). */
+  truncated?: boolean;
 }
 
 function emptyBucket(key: string, bucket: string | null): LlmUsageBucket {

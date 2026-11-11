@@ -389,3 +389,129 @@ test("pool token upsert preserves key when apiKey omitted", async () => {
     assert.deepEqual(cleared.modelAllowlist, ["a", "b"]);
   });
 });
+
+test("missing FX settles at the base-currency reservation estimate", async () => {
+  await runAgainstEachStore(async (store) => {
+    const token = await store.upsertLlmPoolToken(
+      tokenInput({ name: "t-fx", budgetLimitMicros: 1000, maxConcurrency: 10 })
+    );
+    const res = await store.reserveLlmBudget(
+      reserveInput({ poolTokenId: token.id, estimatedMicros: 50 })
+    );
+    assert.equal(res.ok, true);
+    const usage = await store.settleLlmReservation({
+      reservationId: res.reservation.id,
+      usage: { baseInputTokens: 10, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 5, totalTokens: 15 },
+      usageSource: "provider",
+      costMicros: 500,
+      currency: "USD",
+      costMicrosBase: null,
+      baseCurrency: "CNY",
+      fxRateToBase: null,
+      priceBookId: "p",
+      priceVersion: 1,
+      status: "ok"
+    });
+    assert.ok(usage);
+    assert.equal(usage.costMicrosBase, null);
+    const snapshot = await store.getLlmBudgetSnapshot(token.id);
+    assert.equal(snapshot.usedMicros, 50);
+    assert.equal(snapshot.reservedMicros, 0);
+  });
+});
+
+test("price update by id does not overlap itself", async () => {
+  await runAgainstEachStore(async (store) => {
+    const first = await store.upsertLlmPrice({
+      provider: "custom",
+      model: "m",
+      currency: "CNY",
+      fxRateToBase: 1,
+      inputMicrosPerMtok: 1000,
+      outputMicrosPerMtok: 2000,
+      effectiveFrom: "2026-01-01T00:00:00.000Z"
+    });
+    const updated = await store.upsertLlmPrice({
+      id: first.id,
+      provider: "custom",
+      model: "m",
+      currency: "CNY",
+      fxRateToBase: 1,
+      inputMicrosPerMtok: 3000,
+      outputMicrosPerMtok: 4000,
+      effectiveFrom: "2026-01-01T00:00:00.000Z"
+    });
+    assert.equal(updated.id, first.id);
+    assert.equal(updated.inputMicrosPerMtok, 3000);
+  });
+});
+
+test("overlapping prices in different currencies are rejected", async () => {
+  await runAgainstEachStore(async (store) => {
+    await store.upsertLlmPrice({
+      provider: "custom",
+      model: "m",
+      currency: "CNY",
+      fxRateToBase: 1,
+      inputMicrosPerMtok: 1000,
+      outputMicrosPerMtok: 2000,
+      effectiveFrom: "2026-01-01T00:00:00.000Z"
+    });
+    await assert.rejects(
+      () =>
+        store.upsertLlmPrice({
+          provider: "custom",
+          model: "m",
+          currency: "USD",
+          fxRateToBase: 7.2,
+          inputMicrosPerMtok: 200,
+          outputMicrosPerMtok: 400,
+          effectiveFrom: "2026-01-01T00:00:00.000Z"
+        }),
+      /llm-price-overlap/
+    );
+  });
+});
+
+test("pooled settlement applies usage retention", async () => {
+  await runAgainstEachStore(
+    async (store) => {
+      const token = await store.upsertLlmPoolToken(tokenInput({ name: "t-ret" }));
+      const res = await store.reserveLlmBudget(
+        reserveInput({ poolTokenId: token.id, at: "2020-01-01T00:00:00.000Z" })
+      );
+      assert.equal(res.ok, true);
+      await store.settleLlmReservation({
+        reservationId: res.reservation.id,
+        usage: { baseInputTokens: 1, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 1, totalTokens: 2 },
+        usageSource: "provider",
+        costMicros: 1,
+        currency: "CNY",
+        costMicrosBase: 1,
+        baseCurrency: "CNY",
+        fxRateToBase: 1,
+        priceBookId: null,
+        priceVersion: null,
+        status: "ok",
+        at: "2020-01-01T00:00:00.000Z"
+      });
+      assert.equal((await store.listLlmUsageEvents({})).length, 0);
+    },
+    { AOS_LLM_USAGE_RETENTION_DAYS: "1" }
+  );
+});
+
+test("FileStore attributes usage to the project id", async () => {
+  const home = await tempHome();
+  try {
+    const store = await FileStore.create({ homeDir: home });
+    await store.upsertProject({ rootPath: "/w/p", name: "p", hostId: null });
+    const input = usageInput({ projectRoot: "/w/p" });
+    delete input.projectId;
+    const usage = await store.recordLlmUsage(input);
+    assert.ok(usage.projectId);
+    assert.equal(usage.projectId, (await store.getProjectByPath("/w/p")).id);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

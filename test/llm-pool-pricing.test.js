@@ -75,7 +75,7 @@ test("Anthropic input_tokens excludes cache", () => {
   });
 });
 
-test("generic prompt shape subtracts cache fields", () => {
+test("generic prompt shape does not subtract cache without an explicit adapter", () => {
   const u = normalizeUsage({
     prompt_tokens: 1000,
     completion_tokens: 10,
@@ -83,11 +83,11 @@ test("generic prompt shape subtracts cache fields", () => {
     cache_creation_input_tokens: 100
   });
   assert.deepEqual(u, {
-    baseInputTokens: 600,
+    baseInputTokens: 1000,
     cacheCreationTokens: 100,
     cacheReadTokens: 300,
     outputTokens: 10,
-    totalTokens: 1010
+    totalTokens: 1410
   });
 });
 
@@ -274,4 +274,21 @@ test("unpriced model with only a money budget is blocked", async () => {
   });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "budget-exhausted");
+});
+
+test("cache rates fall back to the input rate when unset", () => {
+  const usage = {
+    baseInputTokens: 0,
+    cacheCreationTokens: 1_000,
+    cacheReadTokens: 1_000,
+    outputTokens: 0,
+    totalTokens: 2_000
+  };
+  const cost = computeCost(
+    usage,
+    priceRecord({ currency: "CNY", fxRateToBase: 1, cacheReadMicrosPerMtok: null, cacheWriteMicrosPerMtok: null }),
+    "CNY"
+  );
+  // 2000 tokens * 3 CNY/Mtok = 6000 micros
+  assert.equal(cost.costMicros, 6_000);
 });

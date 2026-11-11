@@ -73,8 +73,8 @@ mobile-testing-mcp（Node ≥20）
 - **流式**：只有 pool token 的 `supports_stream_usage=true` 才注入 `stream_options.include_usage`；`false`/unknown 正常转发，用量按预扣+估算/部分结算；客户端中途断开按 partial 或预扣结算，绝不悬挂 reserved。
 - **预算**：默认周期 `monthly`，本位币 `CNY`（`AOS_LLM_COST_CURRENCY` 覆盖）；token 级 `max_concurrency` 默认 10；未定价模型按惩罚价 `AOS_LLM_UNPRICED_MICROS_PER_MTOK`（默认 20,000,000）预留，金额统计只用 `cost_micros_base`，缺 FX 单独计数、不混加。`pinned` 固定 token，`auto` 同模型按优先级/健康度换 token，不静默降级模型。
 - **环境变量**：`AOS_LLM_COST_CURRENCY`、`AOS_LLM_UNPRICED_MICROS_PER_MTOK`、`AOS_LLM_RESERVATION_TTL_MS`、`AOS_LLM_DEFAULT_MAX_OUTPUT_TOKENS`、`AOS_LLM_IMAGE_TOKEN_ESTIMATE`、`AOS_LLM_POOL_FILE`、`AOS_LLM_USAGE_FILE`、`AOS_LLM_USAGE_RETENTION_DAYS`（默认 365，0 关闭）。
-- **入口**：CLI `llm pool list|add|update|disable|bind`、`llm price list|set`、`llm usage`；只读工具 `llm_pool_list`/`llm_usage`（限当前项目）；面板运维页「LLM 资源池与用量」卡片与 `GET /panel/api/llm/pool|usage`（只读）。所有响应只回 masked key。
-- **v1 缺口（明确未实现）**：token 行记录 `createdBy`/`updatedAt`，但服务级审计历史 `llm.pool.create/update/disable` 尚未落审计表；不要把它当成已实现。
+- **入口**：CLI `llm pool list|add|update|disable|bind|unbind`、`llm price list|set`、`llm usage`；只读工具 `llm_pool_list`/`llm_usage`（限当前项目）；面板运维页「LLM 资源池与用量」卡片与 `GET /panel/api/llm/pool|usage`（只读）。所有响应只回 masked key。
+- **v1 缺口（明确未实现）**：token 行记录 `createdBy`/`updatedAt`，但服务级审计历史 `llm.pool.create/update/disable` 尚未落审计表；不要把它当成已实现。预留释放/TTL 回收也没有独立审计事件。`supports_stream_usage=unknown` 在 v1 按 false 处理（可用 `llm pool add --probe-stream` 写入 true），不做自动探测。项目绑定池 token 只覆盖中心代理与 Node `chat.ts`；Android Artemis 直连厂商仍需项目自有 key，缺失时会显式失败。
 
 ### 2.3 Figma / pen
 

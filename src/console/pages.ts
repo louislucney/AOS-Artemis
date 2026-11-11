@@ -1783,8 +1783,8 @@ export function renderOpsPage(data: OpsPageData): string {
                 columns: ["名称", "provider", "模型", "状态", "预算", "key"],
                 rows: tokens.map((token) => {
                   const budget = token.snapshot
-                    ? `${token.budget.period} · 已用 ${token.snapshot.usedMicros}µ / ${token.budget.limitMicros ?? "∞"}µ · 预留 ${token.snapshot.activeReservations}`
-                    : `${token.budget.period} · 限额 ${token.budget.limitMicros ?? "∞"}µ`;
+                    ? `${token.budget.period} · 金额 ${token.snapshot.usedMicros}/${token.budget.limitMicros ?? "∞"}µ · token ${token.snapshot.usedTokens}/${token.budget.limitTokens ?? "∞"} · 预留 ${token.snapshot.activeReservations}`
+                    : `${token.budget.period} · 金额 ${token.budget.limitMicros ?? "∞"}µ · token ${token.budget.limitTokens ?? "∞"}`;
                   return [
                     escapeHtml(token.name),
                     escapeHtml(token.provider),

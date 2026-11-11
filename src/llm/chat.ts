@@ -164,6 +164,7 @@ export function makeChatFn(target: ChatTarget, options: ChatOptions = {}): ChatF
     const onAbort = (): void => controller.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     let response: Response;
+    let text: string;
     try {
       response = await fetchFn(`${base}/chat/completions`, {
         method: "POST",
@@ -181,6 +182,7 @@ export function makeChatFn(target: ChatTarget, options: ChatOptions = {}): ChatF
         }),
         signal: controller.signal
       });
+      text = await response.text();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (reservation !== null) {
@@ -192,7 +194,6 @@ export function makeChatFn(target: ChatTarget, options: ChatOptions = {}): ChatF
       signal?.removeEventListener("abort", onAbort);
     }
 
-    const text = await response.text();
     if (!response.ok) {
       if (reservation !== null) await reservation.release();
       throw new ChatError(`LLM 响应 HTTP ${response.status}`, {

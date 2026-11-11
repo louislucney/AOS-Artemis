@@ -863,6 +863,9 @@ node dist/cli.js llm price set --provider custom --model deepseek-chat \
 node dist/cli.js llm pool bind --project /path/to/project --entry deepseek \
   --token deepseek-main --model deepseek-chat --mode pinned
 
+# 解绑后回退项目自有 key
+node dist/cli.js llm pool unbind --project /path/to/project --entry deepseek
+
 # 用量报表（默认当前目录；--all 汇总全部已登记项目）
 node dist/cli.js llm usage --project /path/to/project --days 7 --bucket day \
   --group-by model --json
@@ -872,7 +875,7 @@ node dist/cli.js llm usage --project /path/to/project --days 7 --bucket day \
 - **严格额度只在 PG**：`MOBILE_TESTING_DATABASE_URL` 下跨进程硬额度；FileStore/MemoryStore 的 token 级预算是单进程 best-effort（`aos_status.store.kind` 可确认）。
 - **密钥**：池 key 只存 PG/服务端文件（`~/.aos/ledger/llm-pool.json`，0600）；CLI、工具、面板、日志只出现 masked 预览，不返回原文。
 - **面板**：运维页「LLM 资源池与用量」只读展示绑定 token、预算和近 7 天用量；管理动作仍用 CLI（`llm pool ...`/`llm price ...`）。对应只读接口 `GET /panel/api/llm/pool|usage`。
-- **v1 缺口**：token 行记录 `createdBy`/`updatedAt`，但服务级 `llm.pool.*` 审计历史尚未落表，见 DESIGN §2.2.1。
+- **v1 缺口**：token 行记录 `createdBy`/`updatedAt`，但服务级 `llm.pool.*` 审计历史尚未落表；预留释放也没有独立审计。`supports_stream_usage=unknown` 按 false 处理（`--probe-stream` 可写入 true）。Android Artemis 直连仍用项目自有 key，不纳入池预算。见 DESIGN §2.2.1。
 
 公司网络需代理出网时：Node 侧请求（模型目录刷新、Figma REST）需 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（Node ≥ 24；Node 的 fetch 默认不读代理变量）。`mobile-testing-mcp install` 会把当前 shell 的代理变量带入客户端配置。
 

@@ -57,12 +57,13 @@ Usage:
   mobile-testing-mcp llm pool disable --id <id>
   mobile-testing-mcp llm pool bind --project <dir> --entry <name> --token <id|name>
       --model <model> [--mode pinned|auto] [--json]
+  mobile-testing-mcp llm pool unbind --project <dir> --entry <name> [--json]
   mobile-testing-mcp llm price list [--json]
   mobile-testing-mcp llm price set --provider <p> --model <m> --currency <c>
       --input-mtok <n> --output-mtok <n> [--cache-read-mtok <n>] [--cache-write-mtok <n>]
-      [--fx <n>] [--effective-from <iso>] [--note <text>] [--json]
+      [--fx <n>] [--effective-from <iso>] [--effective-to <iso>] [--id <priceId>] [--note <text>] [--json]
   mobile-testing-mcp llm usage [--project <dir>|--all] [--model <m>] [--token <id>]
-      [--since <iso>] [--until <iso>] [--bucket hour|day|month]
+      [--since <iso>] [--until <iso>] [--days <n>] [--bucket hour|day|month]
       [--group-by project|model|token|none] [--json]
 
 key 只显示 masked 预览；价格 *-mtok 为每百万 token 的货币单位。
@@ -335,6 +336,10 @@ async function addPoolToken(flags: ParsedFlags, ctx: CommandContext): Promise<nu
   const keyEnv = flags.get("key-env");
   const hasKey = (apiKey ?? "").trim() !== "" || (keyEnv ?? "").trim() !== "";
   const baseCurrency = baseCurrencyFrom(ctx.env);
+  const requestedCurrency = flags.get("currency")?.trim().toUpperCase();
+  if (requestedCurrency !== undefined && requestedCurrency !== baseCurrency) {
+    throw new UsageError(`池预算只支持本位币 ${baseCurrency}（当前 --currency=${requestedCurrency}）`);
+  }
   const input: UpsertLlmPoolTokenInput = {
     name,
     provider,
@@ -347,7 +352,7 @@ async function addPoolToken(flags: ParsedFlags, ctx: CommandContext): Promise<nu
     budgetPeriod: budgetPeriod(flags, "monthly"),
     budgetLimitMicros: optionalInteger(flags, "budget-micros") ?? null,
     budgetLimitTokens: optionalInteger(flags, "budget-tokens") ?? null,
-    currency: (flags.get("currency") ?? baseCurrency).toUpperCase(),
+    currency: baseCurrency,
     maxConcurrency: optionalInteger(flags, "max-concurrency") ?? 10,
     supportsStreamUsage: flags.bool("supports-stream-usage")
   };
@@ -442,6 +447,7 @@ async function addPoolToken(flags: ParsedFlags, ctx: CommandContext): Promise<nu
 async function updatePoolToken(flags: ParsedFlags, ctx: CommandContext): Promise<number> {
   const id = required(flags, "id");
   const store = await resolveStore(ctx);
+  const baseCurrency = baseCurrencyFrom(ctx.env);
   const existing = await store.getLlmPoolToken(id);
   if (existing === null) {
     ctx.errorLog(`未知 token：${id}`);
@@ -472,7 +478,7 @@ async function updatePoolToken(flags: ParsedFlags, ctx: CommandContext): Promise
     budgetPeriod: budgetPeriod(flags),
     budgetLimitMicros: optionalInteger(flags, "budget-micros"),
     budgetLimitTokens: optionalInteger(flags, "budget-tokens"),
-    currency: flags.get("currency")?.toUpperCase(),
+    currency: baseCurrency,
     maxConcurrency: optionalInteger(flags, "max-concurrency"),
     supportsStreamUsage: flags.has("supports-stream-usage")
       ? flags.bool("supports-stream-usage")
@@ -525,6 +531,14 @@ async function bindPoolToken(flags: ParsedFlags, ctx: CommandContext): Promise<n
     ctx.errorLog(`未知 token："${tokenRef}"`);
     return 1;
   }
+  if (token.status !== "active") {
+    ctx.errorLog(`token "${token.name}" 状态为 ${token.status}，不能绑定`);
+    return 1;
+  }
+  if (token.modelAllowlist.length > 0 && !token.modelAllowlist.includes(model)) {
+    ctx.errorLog(`模型 "${model}" 不在 token "${token.name}" 的 allowlist`);
+    return 1;
+  }
   const ok = await store.setLlmPoolBinding({
     rootPath: root,
     name: entryName,
@@ -560,6 +574,29 @@ async function bindPoolToken(flags: ParsedFlags, ctx: CommandContext): Promise<n
   return 0;
 }
 
+async function unbindPoolToken(flags: ParsedFlags, ctx: CommandContext): Promise<number> {
+  const root = flags.get("project")
+    ? path.resolve(ctx.cwd, flags.get("project")!)
+    : resolveProject({ env: ctx.env, cwd: ctx.cwd }).rootDir;
+  const entryName = required(flags, "entry");
+  const store = await resolveStore(ctx);
+  const ok = await store.setLlmPoolBinding({
+    rootPath: root,
+    name: entryName,
+    poolTokenId: null
+  });
+  if (!ok) {
+    ctx.errorLog(`解绑失败：条目 "${entryName}" 未写入`);
+    return 1;
+  }
+  if (flags.bool("json")) {
+    ctx.log(JSON.stringify({ ok: true, binding: { project: root, entry: entryName, tokenId: null } }, null, 2));
+  } else {
+    ctx.log(`已解绑 ${entryName}（回退项目自有 key）`);
+  }
+  return 0;
+}
+
 async function poolCommand(
   action: string | undefined,
   flags: ParsedFlags,
@@ -579,6 +616,8 @@ async function poolCommand(
       return disablePoolToken(flags, ctx);
     case "bind":
       return bindPoolToken(flags, ctx);
+    case "unbind":
+      return unbindPoolToken(flags, ctx);
     default:
       throw new UsageError(`未知 pool 子命令 "${action ?? ""}"`);
   }
@@ -616,7 +655,12 @@ async function priceCommand(
   if (Number.isNaN(Date.parse(effectiveFrom))) {
     throw new UsageError("--effective-from 需要 ISO 时间");
   }
+  const effectiveTo = flags.get("effective-to");
+  if (effectiveTo !== null && Number.isNaN(Date.parse(effectiveTo))) {
+    throw new UsageError("--effective-to 需要 ISO 时间");
+  }
   const input: UpsertLlmPriceInput = {
+    ...(flags.get("id") === null ? {} : { id: flags.get("id")! }),
     provider,
     model,
     currency,
@@ -632,7 +676,7 @@ async function priceCommand(
         ? null
         : Math.round(optionalNumber(flags, "cache-write-mtok")! * 1_000_000),
     effectiveFrom,
-    effectiveTo: null,
+    effectiveTo: effectiveTo ?? null,
     note: flags.get("note")
   };
   try {
@@ -679,6 +723,7 @@ async function usageCommand(flags: ParsedFlags, ctx: CommandContext): Promise<nu
   }
   const since = flags.get("since");
   const until = flags.get("until");
+  const days = optionalNumber(flags, "days");
   for (const [name, value] of [
     ["since", since],
     ["until", until]
@@ -692,12 +737,15 @@ async function usageCommand(flags: ParsedFlags, ctx: CommandContext): Promise<nu
     : projectFlag !== null
       ? path.resolve(ctx.cwd, projectFlag)
       : resolveProject({ env: ctx.env, cwd: ctx.cwd }).rootDir;
+  const effectiveSince =
+    since ??
+    (days === undefined ? null : new Date(Date.now() - days * 86_400_000).toISOString());
   const store = await resolveStore(ctx);
   const query = {
     ...(projectRoot === undefined ? {} : { projectRoot }),
     ...(flags.get("model") === null ? {} : { model: flags.get("model")! }),
     ...(flags.get("token") === null ? {} : { poolTokenId: flags.get("token")! }),
-    ...(since === null ? {} : { since }),
+    ...(effectiveSince === null ? {} : { since: effectiveSince }),
     ...(until === null ? {} : { until }),
     ...(bucket === null ? {} : { bucket: bucket as "hour" | "day" | "month" }),
     groupBy: groupBy as "project" | "model" | "token" | "none",
@@ -705,6 +753,7 @@ async function usageCommand(flags: ParsedFlags, ctx: CommandContext): Promise<nu
   };
   const events = await store.listLlmUsageEvents(query);
   const report = aggregateLlmUsage(events, query);
+  if (events.length >= (query.limit ?? 5000)) report.truncated = true;
   if (flags.bool("json")) {
     ctx.log(JSON.stringify({ ok: true, report }, null, 2));
     return 0;
@@ -712,6 +761,9 @@ async function usageCommand(flags: ParsedFlags, ctx: CommandContext): Promise<nu
   if (report.rows.length === 0) ctx.log("（无用量数据）");
   for (const row of report.rows) ctx.log(usageLine(row));
   ctx.log(usageLine({ ...report.totals, key: "合计" }));
+  if (report.truncated === true) {
+    ctx.log("警告：事件数达到查询上限，合计可能被低估；请缩小时间范围或使用 --group-by 分桶。");
+  }
   return 0;
 }
 

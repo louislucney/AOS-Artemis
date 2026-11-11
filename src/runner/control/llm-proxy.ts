@@ -74,7 +74,9 @@ function isBillableRequest(body: Record<string, unknown> | null): boolean {
     body !== null &&
     (Array.isArray(body.messages) ||
       typeof body.prompt === "string" ||
-      Array.isArray(body.prompt))
+      Array.isArray(body.prompt) ||
+      typeof body.input === "string" ||
+      Array.isArray(body.input))
   );
 }
 
@@ -239,12 +241,25 @@ export async function handleLlmProxyRequest(input: LlmProxyInput): Promise<void>
   const requestContentType = input.req.headers["content-type"];
   const contentType =
     typeof requestContentType === "string" ? requestContentType.toLowerCase() : "";
+  const billablePath = suffix === "/chat/completions" || suffix === "/responses";
   let parsedBody: Record<string, unknown> | null = null;
-  if (body !== undefined && body.length > 0 && contentType.includes("application/json")) {
+  if (body !== undefined && body.length > 0) {
     try {
       parsedBody = asRecord(JSON.parse(body.toString("utf8")) as unknown);
     } catch {
       parsedBody = null;
+    }
+    if (billablePath && parsedBody === null) {
+      json(input.res, 400, {
+        ok: false,
+        code: "invalid-body",
+        error: "计费路径需要合法 JSON 请求体"
+      });
+      return;
+    }
+    if (contentType.includes("application/json") && parsedBody === null) {
+      json(input.res, 400, { ok: false, code: "invalid-body", error: "请求体不是合法 JSON" });
+      return;
     }
   }
   if (

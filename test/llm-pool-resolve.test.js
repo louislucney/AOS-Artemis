@@ -223,3 +223,24 @@ test("resolvePoolTokenKey prefers the stored key over env", () => {
   assert.equal(resolvePoolTokenKey({ apiKey: null, keyEnv: "K" }, {}), null);
   assert.equal(resolvePoolTokenKey({ apiKey: "", keyEnv: null }, {}), null);
 });
+
+test("auto binding keeps resolving when the bound token is disabled", async () => {
+  const store = await setup();
+  const bound = await store.upsertLlmPoolToken(
+    tokenInput({ name: "bound", status: "disabled", priority: 1 })
+  );
+  const healthy = await store.upsertLlmPoolToken(
+    tokenInput({ name: "healthy", status: "active", priority: 2 })
+  );
+  await store.setLlmPoolBinding({
+    rootPath: ROOT,
+    name: "entry",
+    poolTokenId: bound.id,
+    poolMode: "auto",
+    poolModel: "m"
+  });
+  const resolution = await resolveCenterLlmCandidates(store, {}, ROOT);
+  assert.equal(resolution.error, null);
+  assert.equal(resolution.candidates.length, 1);
+  assert.equal(resolution.candidates[0].poolTokenId, healthy.id);
+});

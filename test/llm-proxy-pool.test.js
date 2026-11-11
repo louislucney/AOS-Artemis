@@ -477,3 +477,43 @@ test("auto mode falls back to the next token before forwarding", async () => {
     await fs.promises.rm(workspace, { recursive: true, force: true });
   }
 });
+
+test("valid JSON with a non-JSON content type is still metered", async () => {
+  await withProxy({}, async ({ store, proxyUrl }) => {
+    const response = await fetch(proxyUrl, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "x-aos-host-id": HOST,
+        "content-type": "text/plain"
+      },
+      body: JSON.stringify({
+        model: "m",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100
+      })
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+    const events = await store.listLlmUsageEvents({});
+    assert.equal(events.length, 1);
+    assert.equal(events[0].totalTokens, 1100);
+  });
+});
+
+test("invalid JSON on the chat path is rejected instead of bypassing the budget", async () => {
+  await withProxy({}, async ({ store, proxyUrl }) => {
+    const response = await fetch(proxyUrl, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "x-aos-host-id": HOST,
+        "content-type": "text/plain"
+      },
+      body: "{not-json"
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, "invalid-body");
+    assert.equal((await store.listLlmUsageEvents({})).length, 0);
+  });
+});

@@ -313,6 +313,7 @@ export interface UpsertLlmPriceInput {
 export interface ReserveLlmBudgetInput {
   poolTokenId: string;
   projectRoot: string;
+  projectId?: string | null;
   provider: string;
   model: string;
   source: LlmUsageOrigin;

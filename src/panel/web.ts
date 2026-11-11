@@ -1452,7 +1452,9 @@ async function buildLlmUsageReport(
     limit: 50000
   };
   const events = await store.listLlmUsageEvents(query).catch(() => []);
-  return aggregateLlmUsage(events, query);
+  const report = aggregateLlmUsage(events, query);
+  if (events.length >= 50000) report.truncated = true;
+  return report;
 }
 
 async function resolvePanelApiProject(

@@ -210,10 +210,13 @@ export async function llmUsage(
       ...(args.bucket === undefined ? {} : { bucket: args.bucket }),
       ...(args.groupBy === undefined ? {} : { groupBy: args.groupBy }),
       ...(args.model === undefined ? {} : { model: args.model }),
-      ...(args.token === undefined ? {} : { poolTokenId: args.token })
+      ...(args.token === undefined ? {} : { poolTokenId: args.token }),
+      limit: 5000
     };
     const events = await runtime.store.listLlmUsageEvents(query);
-    return jsonResult({ ok: true, report: aggregateLlmUsage(events, query) });
+    const report = aggregateLlmUsage(events, query);
+    if (events.length >= 5000) report.truncated = true;
+    return jsonResult({ ok: true, report });
   } catch (error) {
     return jsonResult({ ok: false, error: errorMessage(error) }, true);
   }

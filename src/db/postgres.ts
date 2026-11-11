@@ -3805,7 +3805,7 @@ export class PostgresStore implements ProjectStore {
     const now = new Date().toISOString();
     const overlap = await this.pool.query(
       `SELECT 1 FROM llm_price_book
-        WHERE provider = $1 AND model = $2 AND currency = $3
+        WHERE provider = $1 AND model = $2
           AND ($5::text IS NULL OR effective_from < $5)
           AND (effective_to IS NULL OR effective_to > $4)
           AND ($6::text IS NULL OR id <> $6)
@@ -3902,7 +3902,10 @@ export class PostgresStore implements ProjectStore {
     const estimatedTokens = input.estimatedPromptTokens + input.estimatedOutputTokens;
     const ttlMs = input.ttlMs ?? llmReservationTtlMs(this.env);
     const expiresAt = new Date(Date.parse(at) + ttlMs).toISOString();
-    const projectId = await this.resolveProjectId(input.projectRoot);
+    const projectId =
+      input.projectId !== undefined
+        ? input.projectId
+        : await this.resolveProjectId(input.projectRoot);
 
     const reservation: LlmReservationRecord = {
       id: randomUUID(),
@@ -4004,7 +4007,6 @@ export class PostgresStore implements ProjectStore {
 
   async settleLlmReservation(input: SettleLlmReservationInput): Promise<LlmUsageRecord | null> {
     const at = input.at ?? new Date().toISOString();
-    const actualMicros = input.costMicrosBase ?? input.costMicros ?? 0;
     return this.withTransaction<LlmUsageRecord | null>(async (run) => {
       const res = await run("SELECT * FROM llm_reservations WHERE id = $1 FOR UPDATE", [
         input.reservationId
@@ -4012,6 +4014,7 @@ export class PostgresStore implements ProjectStore {
       if (res.rows.length === 0) return null;
       const reservation = mapLlmReservation(res.rows[0]!);
       if (reservation.status !== "active") return null;
+      const counterMicros = input.costMicrosBase ?? reservation.reservedMicros;
 
       await run(
         `UPDATE llm_budget_counters
@@ -4028,7 +4031,7 @@ export class PostgresStore implements ProjectStore {
           reservation.estimatedTokens,
           reservation.reservedMicros,
           input.usage.totalTokens,
-          actualMicros,
+          counterMicros,
           at
         ]
       );
@@ -4071,6 +4074,15 @@ export class PostgresStore implements ProjectStore {
         errorClass: input.errorClass ?? null
       };
       await insertLlmUsageRow(run, usage);
+      const retentionDays = llmUsageRetentionDays(this.env);
+      if (retentionDays > 0) {
+        const cutoff = llmUsageRetentionCutoffIso(retentionDays);
+        await run("DELETE FROM llm_usage_events WHERE at < $1", [cutoff]);
+        await run(
+          "DELETE FROM llm_reservations WHERE status <> 'active' AND COALESCE(settled_at, created_at) < $1",
+          [cutoff]
+        );
+      }
       return usage;
     });
   }
@@ -4182,6 +4194,15 @@ export class PostgresStore implements ProjectStore {
         };
         await insertLlmUsageRow(run, usage);
         settled += 1;
+      }
+      const retentionDays = llmUsageRetentionDays(this.env);
+      if (retentionDays > 0) {
+        const cutoff = llmUsageRetentionCutoffIso(retentionDays);
+        await run("DELETE FROM llm_usage_events WHERE at < $1", [cutoff]);
+        await run(
+          "DELETE FROM llm_reservations WHERE status <> 'active' AND COALESCE(settled_at, created_at) < $1",
+          [cutoff]
+        );
       }
       return { settled, released: 0 };
     });

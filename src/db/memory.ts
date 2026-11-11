@@ -2363,9 +2363,9 @@ export class MemoryStore implements ProjectStore {
     const now = new Date().toISOString();
     const overlaps = this.poolPrices.some(
       (price) =>
+        price.id !== input.id &&
         price.provider === input.provider &&
         price.model === input.model &&
-        price.currency === input.currency &&
         (input.effectiveTo === null || input.effectiveTo === undefined || price.effectiveFrom < input.effectiveTo) &&
         (price.effectiveTo === null || price.effectiveTo > input.effectiveFrom)
     );
@@ -2430,7 +2430,10 @@ export class MemoryStore implements ProjectStore {
     const estimatedTokens = input.estimatedPromptTokens + input.estimatedOutputTokens;
     const ttlMs = input.ttlMs ?? llmReservationTtlMs(this.env);
     const expiresAt = new Date(Date.parse(at) + ttlMs).toISOString();
-    const projectId = this.resolveProjectId(input.projectRoot);
+    const projectId =
+      input.projectId !== undefined
+        ? input.projectId
+        : this.resolveProjectId(input.projectRoot);
 
     const key = counterKey(token.id, periodKey);
     let counter = this.poolCounters.get(key);
@@ -2498,12 +2501,12 @@ export class MemoryStore implements ProjectStore {
     const reservation = this.poolReservations.find((r) => r.id === input.reservationId);
     if (reservation === undefined || reservation.status !== "active") return null;
     const counter = this.poolCounters.get(counterKey(reservation.poolTokenId, reservation.periodKey));
-    const actualMicros = input.costMicrosBase ?? input.costMicros ?? 0;
+    const counterMicros = input.costMicrosBase ?? reservation.reservedMicros;
     if (counter !== undefined) {
       counter.reservedTokens = Math.max(0, counter.reservedTokens - reservation.estimatedTokens);
       counter.reservedMicros = Math.max(0, counter.reservedMicros - reservation.reservedMicros);
       counter.usedTokens += input.usage.totalTokens;
-      counter.usedMicros += actualMicros;
+      counter.usedMicros += counterMicros;
       counter.activeReservations = Math.max(0, counter.activeReservations - 1);
       counter.updatedAt = at;
     }
@@ -2544,6 +2547,7 @@ export class MemoryStore implements ProjectStore {
       errorClass: input.errorClass ?? null
     };
     this.poolUsage.push(usage);
+    this.prunePoolUsage();
     return cloneUsage(usage);
   }
 
@@ -2624,6 +2628,7 @@ export class MemoryStore implements ProjectStore {
       this.poolUsage.push(usage);
       settled += 1;
     }
+    this.prunePoolUsage();
     return { settled, released: 0 };
   }
 

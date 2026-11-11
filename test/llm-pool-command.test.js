@@ -366,3 +366,42 @@ test("llm_pool_list returns only bound tokens with masked keys", async () => {
     await client.close();
   }
 });
+
+test("llm pool bind rejects a non-active token", async () => {
+  const store = await setupStore();
+  const io = makeIo();
+  const token = await store.upsertLlmPoolToken({
+    name: "pending",
+    provider: "custom",
+    baseUrl: "https://pool.example.com",
+    apiKey: null,
+    status: "pending_token",
+    modelAllowlist: ["m"]
+  });
+  const code = await runLlmCommand(
+    ["pool", "bind", "--project", "/w/p", "--entry", "entry", "--token", token.id, "--model", "m"],
+    { store, env: {}, ...io }
+  );
+  assert.equal(code, 1);
+  assert.match(io.errors.join("\n"), /pending_token|状态/);
+});
+
+test("llm pool unbind clears the binding", async () => {
+  const store = await setupStore();
+  const io = makeIo();
+  const token = await store.upsertLlmPoolToken({
+    name: "bound",
+    provider: "custom",
+    baseUrl: "https://pool.example.com",
+    apiKey: "sk-pool",
+    modelAllowlist: ["m"]
+  });
+  await store.setLlmPoolBinding({ rootPath: "/w/p", name: "entry", poolTokenId: token.id, poolModel: "m" });
+  const code = await runLlmCommand(
+    ["pool", "unbind", "--project", "/w/p", "--entry", "entry"],
+    { store, env: {}, ...io }
+  );
+  assert.equal(code, 0, io.errors.join("\n"));
+  const [entry] = await store.listLlms("/w/p");
+  assert.equal(entry.poolTokenId, null);
+});

@@ -609,6 +609,9 @@ export class Runtime {
   }
 
   async makeChatFor(entry: LlmEntry, options: ChatOptions = {}): Promise<ChatFn> {
+    void this.store.reconcileLlmReservations({ limit: 20 }).catch((error: unknown) => {
+      logWarn(`LLM 预留 TTL 回收失败：${errorMessage(error)}`);
+    });
     return makeChatForRuntime({
       store: this.store,
       projectRoot: this.project.rootDir,

@@ -6,6 +6,7 @@ import {
   isMissingContentError,
   makeChatFn,
   type ChatContent,
+  type ChatFn,
   type ChatMessage,
   type ChatUsage
 } from "../llm/chat.js";
@@ -263,9 +264,13 @@ export async function runLoop(
       usageCounts.set(phase, attempt);
       record.tokenUsage = [...(record.tokenUsage ?? []), { ...usage, phase, attempt }];
     };
-  const chat =
-    deps.chat ??
-    (await runtime.makeChatFor(entry, { onUsage: collectUsage("execute") }));
+  let chat: ChatFn;
+  try {
+    chat = deps.chat ?? (await runtime.makeChatFor(entry, { onUsage: collectUsage("execute") }));
+  } catch (error) {
+    finish(record, "failed", `LLM 不可用：${errorMessage(error)}`);
+    return;
+  }
   const visionChat =
     deps.visionChat ??
     (visionTarget

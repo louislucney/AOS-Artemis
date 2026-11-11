@@ -15,6 +15,57 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
 }
 
+function outputTokensOf(value: unknown): number | null {
+  const record = asRecord(value);
+  if (record === null) return null;
+  const raw = record.completion_tokens ?? record.output_tokens;
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0
+    ? Math.trunc(raw)
+    : null;
+}
+
+function mergeUsage(
+  previous: NormalizedUsage | null,
+  raw: unknown
+): NormalizedUsage | null {
+  const normalized = normalizeUsage(raw);
+  if (normalized !== null) {
+    if (previous === null) return normalized;
+    return {
+      baseInputTokens: normalized.baseInputTokens > 0 ? normalized.baseInputTokens : previous.baseInputTokens,
+      cacheCreationTokens:
+        normalized.cacheCreationTokens > 0
+          ? normalized.cacheCreationTokens
+          : previous.cacheCreationTokens,
+      cacheReadTokens:
+        normalized.cacheReadTokens > 0 ? normalized.cacheReadTokens : previous.cacheReadTokens,
+      outputTokens:
+        normalized.outputTokens > 0 ? normalized.outputTokens : previous.outputTokens,
+      totalTokens: 0
+    };
+  }
+  const output = outputTokensOf(raw);
+  if (previous === null || output === null) return null;
+  return {
+    baseInputTokens: previous.baseInputTokens,
+    cacheCreationTokens: previous.cacheCreationTokens,
+    cacheReadTokens: previous.cacheReadTokens,
+    outputTokens: Math.max(previous.outputTokens, output),
+    totalTokens: 0
+  };
+}
+
+function withTotal(usage: NormalizedUsage): NormalizedUsage {
+  return {
+    ...usage,
+    totalTokens:
+      usage.baseInputTokens +
+      usage.cacheCreationTokens +
+      usage.cacheReadTokens +
+      usage.outputTokens
+  };
+}
+
 export function createStreamTap(): StreamTap {
   const decoder = new TextDecoder();
   let buffer = "";
@@ -23,13 +74,13 @@ export function createStreamTap(): StreamTap {
 
   const consume = (event: Record<string, unknown>): void => {
     if (event.usage !== undefined) {
-      const normalized = normalizeUsage(event.usage);
-      if (normalized !== null) captured = normalized;
+      const merged = mergeUsage(captured, event.usage);
+      if (merged !== null) captured = withTotal(merged);
     }
     const message = asRecord(event.message);
     if (message?.usage !== undefined) {
-      const normalized = normalizeUsage(message.usage);
-      if (normalized !== null) captured = normalized;
+      const merged = mergeUsage(captured, message.usage);
+      if (merged !== null) captured = withTotal(merged);
     }
     const choices = Array.isArray(event.choices) ? event.choices : [];
     const first = asRecord(choices[0]);

@@ -96,10 +96,11 @@ function rate(value: number | null, fallback = 0): number {
 }
 
 function costMicrosOf(usage: NormalizedUsage, price: LlmPriceRecord): number {
+  const inputRate = rate(price.inputMicrosPerMtok);
   const micros =
-    usage.baseInputTokens * rate(price.inputMicrosPerMtok) +
-    usage.cacheCreationTokens * rate(price.cacheWriteMicrosPerMtok) +
-    usage.cacheReadTokens * rate(price.cacheReadMicrosPerMtok) +
+    usage.baseInputTokens * inputRate +
+    usage.cacheCreationTokens * rate(price.cacheWriteMicrosPerMtok, inputRate) +
+    usage.cacheReadTokens * rate(price.cacheReadMicrosPerMtok, inputRate) +
     usage.outputTokens * rate(price.outputMicrosPerMtok);
   return Math.round(micros / 1_000_000);
 }

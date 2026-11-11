@@ -130,3 +130,21 @@ test("provider adapter leaves non-DeepSeek targets untouched", () => {
   assert.equal(result.rewritten, false);
   assert.equal(result.body, body);
 });
+
+test("stream tap merges Anthropic message_start and message_delta usage", () => {
+  const tap = createStreamTap();
+  tap.push(
+    Buffer.from(
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":100,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":1}}}\n\n'
+    )
+  );
+  tap.push(Buffer.from('data: {"type":"message_delta","usage":{"output_tokens":15}}\n\n'));
+  tap.end();
+  const usage = tap.usage();
+  assert.ok(usage);
+  assert.equal(usage.baseInputTokens, 100);
+  assert.equal(usage.cacheCreationTokens, 20);
+  assert.equal(usage.cacheReadTokens, 30);
+  assert.equal(usage.outputTokens, 15);
+  assert.equal(usage.totalTokens, 165);
+});

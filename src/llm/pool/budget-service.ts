@@ -105,18 +105,19 @@ export async function settleReservation(input: {
       input.reservation.estimatedPromptTokens,
       input.reservation.estimatedOutputTokens
     );
+  const unpriced = input.price.id === "penalty" || input.price.version === 0;
   const cost = computeCost(usage, input.price, input.baseCurrency);
   return input.store.settleLlmReservation({
     reservationId: input.reservation.id,
     usage,
     usageSource: input.usage === null ? "estimated" : input.usageSource,
-    costMicros: cost.costMicros,
-    currency: cost.currency,
-    costMicrosBase: cost.costMicrosBase,
+    costMicros: unpriced ? null : cost.costMicros,
+    currency: unpriced ? null : cost.currency,
+    costMicrosBase: unpriced ? null : cost.costMicrosBase,
     baseCurrency: cost.baseCurrency,
-    fxRateToBase: cost.fxRateToBase,
-    priceBookId: cost.priceBookId,
-    priceVersion: cost.priceVersion,
+    fxRateToBase: unpriced ? null : cost.fxRateToBase,
+    priceBookId: unpriced ? null : cost.priceBookId,
+    priceVersion: unpriced ? null : cost.priceVersion,
     status: input.status,
     errorClass: input.errorClass ?? null,
     at: input.at

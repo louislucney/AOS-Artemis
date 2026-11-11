@@ -11,8 +11,6 @@ import { createChatBudget, LlmBudgetError } from "./chat-budget.js";
 import { baseCurrencyFrom, computeCost, findPrice, penaltyRate } from "./pricing.js";
 import { resolvePoolTokenKey } from "./resolve.js";
 
-const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
-
 /** Minimal active-entry shape shared by Runtime and the design runtime. */
 export interface ChatEntryLike {
   name?: string;
@@ -43,13 +41,8 @@ export interface RecordLocalLlmUsageInput {
   estimated: boolean;
   prices: readonly LlmPriceRecord[];
   baseCurrency: string;
+  env?: NodeJS.ProcessEnv;
   at?: string;
-}
-
-function defaultMaxOutputTokens(env: NodeJS.ProcessEnv): number {
-  const raw = (env.AOS_LLM_DEFAULT_MAX_OUTPUT_TOKENS ?? "").trim();
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
 function modelAllowed(token: LlmPoolTokenRecord, model: string): boolean {
@@ -69,7 +62,8 @@ export async function recordLocalLlmUsage(input: RecordLocalLlmUsageInput): Prom
   const at = input.at ?? new Date().toISOString();
   const price =
     findPrice(input.prices, input.provider, input.model, at) ??
-    penaltyRate(input.prices, input.baseCurrency, process.env);
+    penaltyRate(input.prices, input.baseCurrency, input.env ?? process.env);
+  const unpriced = price.id === "penalty" || price.version === 0;
   const cost = computeCost(input.usage, price, input.baseCurrency);
   try {
     await input.store.recordLlmUsage({
@@ -79,13 +73,13 @@ export async function recordLocalLlmUsage(input: RecordLocalLlmUsageInput): Prom
       model: input.model,
       usage: input.usage,
       usageSource: input.estimated ? "estimated" : "provider",
-      costMicros: cost.costMicros,
-      currency: cost.currency,
-      costMicrosBase: cost.costMicrosBase,
+      costMicros: unpriced ? null : cost.costMicros,
+      currency: unpriced ? null : cost.currency,
+      costMicrosBase: unpriced ? null : cost.costMicrosBase,
       baseCurrency: input.baseCurrency,
-      fxRateToBase: cost.fxRateToBase,
-      priceBookId: cost.priceBookId,
-      priceVersion: cost.priceVersion,
+      fxRateToBase: unpriced ? null : cost.fxRateToBase,
+      priceBookId: unpriced ? null : cost.priceBookId,
+      priceVersion: unpriced ? null : cost.priceVersion,
       source: "local_chat",
       status: input.estimated ? "settled_estimated" : "ok",
       at
@@ -190,8 +184,7 @@ export async function makeChatForRuntime(input: MakeChatForRuntimeInput): Promis
         baseUrl: target.baseUrl,
         apiKey: target.apiKey,
         model: target.model,
-        provider: target.provider,
-        maxOutputTokens: defaultMaxOutputTokens(env)
+        provider: target.provider
       },
       { ...options, budget }
     );
@@ -209,7 +202,8 @@ export async function makeChatForRuntime(input: MakeChatForRuntimeInput): Promis
         usage,
         estimated,
         prices,
-        baseCurrency: baseCurrencyFrom(env)
+        baseCurrency: baseCurrencyFrom(env),
+        env
       });
     });
   return makeChatFn(

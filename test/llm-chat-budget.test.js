@@ -188,3 +188,69 @@ test("chat without a pool token records local usage with poolTokenId=null", asyn
   assert.equal(events[0].totalTokens, 60);
   assert.equal(events[0].usageSource, "provider");
 });
+
+test("chat body read failure settles the reservation instead of leaking it", async () => {
+  const store = new MemoryStore();
+  const token = await setupToken(store);
+  const chat = await makeChatForRuntime({
+    store,
+    projectRoot: ROOT,
+    env: {},
+    entry: poolEntry(token),
+    options: {
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => {
+          throw new Error("body reset");
+        }
+      })
+    }
+  });
+  await assert.rejects(() => chat([{ role: "user", content: "hi" }]), /body reset/);
+  const snapshot = await store.getLlmBudgetSnapshot(token.id);
+  assert.equal(snapshot.activeReservations, 0);
+  assert.equal(snapshot.reservedMicros, 0);
+  const events = await store.listLlmUsageEvents({});
+  assert.equal(events.length, 1);
+  assert.equal(events[0].status, "settled_estimated");
+});
+
+test("unpriced pool usage is recorded with null cost and charges the estimate", async () => {
+  const bareStore = new MemoryStore();
+  await bareStore.upsertProject({ rootPath: ROOT, name: "p", hostId: null });
+  const bareToken = await bareStore.upsertLlmPoolToken({
+    name: "bare",
+    provider: "custom",
+    baseUrl: "https://pool.example.com/v1",
+    apiKey: "sk-pool",
+    status: "active",
+    modelAllowlist: ["m"],
+    budgetPeriod: "total",
+    budgetLimitMicros: 1_000_000,
+    maxConcurrency: 10
+  });
+  await bareStore.upsertLlm(ROOT, { name: "entry", model: "m", apiKey: null, makeActive: true });
+  await bareStore.setLlmPoolBinding({ rootPath: ROOT, name: "entry", poolTokenId: bareToken.id, poolModel: "m" });
+  const bareChat = await makeChatForRuntime({
+    store: bareStore,
+    projectRoot: ROOT,
+    env: {},
+    entry: poolEntry(bareToken),
+    options: {
+      fetchFn: async () =>
+        jsonResponse({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 2 }
+        })
+    }
+  });
+  assert.equal(await bareChat([{ role: "user", content: "hi" }]), "ok");
+  const events = await bareStore.listLlmUsageEvents({});
+  assert.equal(events.length, 1);
+  assert.equal(events[0].costMicros, null);
+  assert.equal(events[0].costMicrosBase, null);
+  const snapshot = await bareStore.getLlmBudgetSnapshot(bareToken.id);
+  assert.ok(snapshot.usedMicros > 0);
+  assert.equal(snapshot.reservedMicros, 0);
+});

@@ -155,6 +155,7 @@ export class FileStore implements ProjectStore {
   private claimLock: { tail: Promise<void> } = { tail: Promise.resolve() };
   private poolMem: MemoryStore;
   private poolLock: { tail: Promise<void> } = { tail: Promise.resolve() };
+  private readonly poolHome: string;
   private readonly poolFilePath: string;
   private readonly llmUsageFilePath: string;
   private poolLoaded = false;
@@ -163,7 +164,12 @@ export class FileStore implements ProjectStore {
   private poolUsageSeenMtimeMs: number | null = null;
   private poolUsageWrites = 0;
 
-  private constructor(homeDir: string, env: NodeJS.ProcessEnv, hostId: string | null = null) {
+  private constructor(
+    homeDir: string,
+    env: NodeJS.ProcessEnv,
+    hostId: string | null = null,
+    poolHome: string = homeDir
+  ) {
     this.homeDir = homeDir;
     this.env = env;
     this.eventsFsync = (env.AOS_EVENTS_FSYNC ?? "").trim() === "1";
@@ -172,8 +178,10 @@ export class FileStore implements ProjectStore {
     this.poolMem = new MemoryStore(null, env);
     this.webIndexPath = path.join(homeDir, "web-projects.jsonl");
     this.hostStatePath = path.join(homeDir, "host-state.json");
+    this.poolHome = poolHome;
     const poolFile = (env.AOS_LLM_POOL_FILE ?? "").trim();
-    this.poolFilePath = poolFile === "" ? path.join(homeDir, "llm-pool.json") : path.resolve(poolFile);
+    this.poolFilePath =
+      poolFile === "" ? path.join(poolHome, "llm-pool.json") : path.resolve(poolFile);
     const usageFile = (env.AOS_LLM_USAGE_FILE ?? "").trim();
     this.llmUsageFilePath =
       usageFile === "" ? path.join(homeDir, "llm-usage.jsonl") : path.resolve(usageFile);
@@ -182,9 +190,15 @@ export class FileStore implements ProjectStore {
   static async create(options: FileStoreOptions = {}): Promise<FileStore> {
     const env = options.env ?? process.env;
     const homeDir = path.resolve(options.homeDir ?? resolveLedgerHome(env));
+    // 池 token/价格是服务级资源；只有测试/显式 homeDir 才跟着项目台账走，避免把
+    // llm-pool.json（含 key）放进项目 .artemis 被产物服务读取。
+    const poolHome =
+      options.homeDir !== undefined ? homeDir : path.join(homedir(), ".aos", "ledger");
     await mkdir(homeDir, { recursive: true });
+    await mkdir(poolHome, { recursive: true });
     await assertWritable(homeDir);
-    const store = new FileStore(homeDir, env);
+    await assertWritable(poolHome);
+    const store = new FileStore(homeDir, env, null, poolHome);
     await store.loadRegistry();
     return store;
   }
@@ -198,7 +212,7 @@ export class FileStore implements ProjectStore {
   }
 
   scopeHost(hostId: string | null): ProjectStore {
-    const view = new FileStore(this.homeDir, this.env, hostId);
+    const view = new FileStore(this.homeDir, this.env, hostId, this.poolHome);
     view.buckets = this.buckets;
     view.registry = this.registry;
     view.hostMem = this.hostMem;
@@ -313,7 +327,11 @@ export class FileStore implements ProjectStore {
   }
 
   async reserveLlmBudget(input: ReserveLlmBudgetInput): Promise<ReserveLlmBudgetResult> {
-    return this.runPoolMutation(() => this.poolMem.reserveLlmBudget(input));
+    const projectId =
+      input.projectId !== undefined ? input.projectId : await this.poolProjectId(input.projectRoot);
+    return this.runPoolMutation(() =>
+      this.poolMem.reserveLlmBudget({ ...input, projectId })
+    );
   }
 
   async settleLlmReservation(input: SettleLlmReservationInput): Promise<LlmUsageRecord | null> {
@@ -337,7 +355,27 @@ export class FileStore implements ProjectStore {
   }
 
   async recordLlmUsage(input: RecordLlmUsageInput): Promise<LlmUsageRecord> {
-    return this.runPoolMutation(() => this.poolMem.recordLlmUsage(input));
+    const projectId =
+      input.projectId !== undefined
+        ? input.projectId
+        : await this.poolProjectId(input.projectRoot);
+    return this.withPoolLock(async () => {
+      await this.ensurePoolLoaded();
+      const record = await this.poolMem.recordLlmUsage({ ...input, projectId });
+      await this.appendPoolUsage([record]);
+      return record;
+    });
+  }
+
+  private async poolProjectId(projectRoot: string | null): Promise<string | null> {
+    if (projectRoot === null) return null;
+    try {
+      const bucket = await this.bucket(projectRoot);
+      const project = await this.scopedMem(bucket, this.hostId).getProjectByPath(projectRoot);
+      return project?.id ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async listLlmUsageEvents(query: LlmUsageQuery = {}): Promise<LlmUsageRecord[]> {

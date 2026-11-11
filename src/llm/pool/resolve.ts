@@ -127,17 +127,17 @@ async function poolResolution(
     model,
     mode
   } as const;
-  if (bound === null) {
+  if (bound === null && mode === "pinned") {
     return { ...base, candidates: [], error: "token-disabled" };
-  }
-  const key = resolvePoolTokenKey(bound, env);
-  if (bound.status !== "active" || key === null) {
-    return { ...base, candidates: [], error: "token-disabled" };
-  }
-  if (!modelAllowed(bound, model)) {
-    return { ...base, candidates: [], error: "model-not-allowed" };
   }
   if (mode === "pinned") {
+    const key = bound === null ? null : resolvePoolTokenKey(bound, env);
+    if (bound === null || bound.status !== "active" || key === null) {
+      return { ...base, candidates: [], error: "token-disabled" };
+    }
+    if (!modelAllowed(bound, model)) {
+      return { ...base, candidates: [], error: "model-not-allowed" };
+    }
     return {
       ...base,
       candidates: [tokenCandidate(entry.name, bound, model, key, mode)],

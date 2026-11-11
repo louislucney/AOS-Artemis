@@ -44,9 +44,11 @@ export function normalizeUsage(raw: unknown): NormalizedUsage | null {
       cacheCreationTokens = count(record.cache_creation_input_tokens) ?? 0;
       baseInputTokens = Math.max(0, (prompt ?? 0) - cacheReadTokens);
     } else {
+      // Unknown shape: do not subtract cache from prompt (the provider may already
+      // exclude it); count prompt as base and add reported cache buckets.
       cacheReadTokens = count(record.cache_read_input_tokens) ?? 0;
       cacheCreationTokens = count(record.cache_creation_input_tokens) ?? 0;
-      baseInputTokens = Math.max(0, (prompt ?? 0) - cacheReadTokens - cacheCreationTokens);
+      baseInputTokens = prompt ?? 0;
     }
   }
 
