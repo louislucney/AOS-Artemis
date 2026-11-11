@@ -536,29 +536,51 @@ function taskCaseIdsForProgress(task: { caseIds: string[] }): boolean {
   return task.caseIds.length > 0;
 }
 
-/** Android 包是否已安装；用于跳过同包重复安装，避免设备只弹“重新打开”导致安装中止。 */
-export async function androidPackageInstalled(
+/** 设备上已安装的 APK 是否与任务下发的 APK 完全一致（按 sha256）。
+ * 只看包名会跳过旧版本/不同构建；只有哈希一致才跳过安装。 */
+export async function androidInstalledApkMatches(
   env: NodeJS.ProcessEnv,
   serial: string,
   packageName: string,
+  expectedSha256: string,
   exec: typeof defaultExec = defaultExec
 ): Promise<boolean> {
   const adb = resolveAdbPath(env, process.platform);
   if (adb.path === null) return false;
-  const result = await exec(
+  const expected = expectedSha256.trim().toLowerCase();
+  if (expected === "") return false;
+  const paths = await exec(
     adb.path,
-    ["-s", serial, "shell", "pm", "list", "packages", packageName],
+    ["-s", serial, "shell", "pm", "path", packageName],
     { timeoutMs: 10_000, env }
   );
-  return result.code === 0 && result.stdout.split(/\r?\n/).includes(`package:${packageName}`);
+  if (paths.code !== 0) return false;
+  const apkPaths = paths.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("package:"))
+    .map((line) => line.slice("package:".length));
+  for (const apkPath of apkPaths) {
+    const hash = await exec(
+      adb.path,
+      ["-s", serial, "shell", "sha256sum", apkPath],
+      { timeoutMs: 15_000, env }
+    );
+    if (hash.code !== 0) continue;
+    const actual = (hash.stdout.trim().split(/\s+/)[0] ?? "").toLowerCase();
+    if (actual === expected) return true;
+  }
+  return false;
 }
 
 export async function materializeTaskApp(
   runtime: Runtime,
   task: { id: string; appAssetId: string | null },
   bundle: Awaited<ReturnType<NonNullable<ProjectStore["getTaskBundle"]>>> | null
-): Promise<{ ok: true; path: string | null } | { ok: false; error: string }> {
-  if (task.appAssetId === null) return { ok: true, path: null };
+): Promise<
+  { ok: true; path: string | null; sha256: string | null } | { ok: false; error: string }
+> {
+  if (task.appAssetId === null) return { ok: true, path: null, sha256: null };
   const cacheDir = path.join(runtime.project.rootDir, ".artemis", "cache", "apps");
   const targetFor = (filename: string, sha256: string): string => {
     const ext = path.extname(filename).toLowerCase();
@@ -580,7 +602,7 @@ export async function materializeTaskApp(
       fs.mkdirSync(cacheDir, { recursive: true });
       const target = targetFor(downloaded.filename, actual);
       if (!fs.existsSync(target)) writeFileAtomicBuffer(target, downloaded.buffer);
-      return { ok: true, path: target };
+      return { ok: true, path: target, sha256: actual };
     } catch (error) {
       return { ok: false, error: `安装包下载失败：${errorMessage(error)}` };
     }
@@ -593,7 +615,11 @@ export async function materializeTaskApp(
   if (!fs.existsSync(resolved)) {
     return { ok: false, error: `安装包文件不存在：${asset.filename}` };
   }
-  return { ok: true, path: resolved };
+  const sha256 =
+    asset.sha256.trim() === ""
+      ? createHash("sha256").update(fs.readFileSync(resolved)).digest("hex")
+      : asset.sha256.trim();
+  return { ok: true, path: resolved, sha256 };
 }
 
 async function suiteRunTask(
@@ -749,7 +775,7 @@ async function suiteRunTask(
   await progress.report("app_started", 10, { message: "启动被测应用" });
   const taskApp =
     flags.get("app-path") !== null
-      ? ({ ok: true, path: null } as const)
+      ? ({ ok: true, path: null, sha256: null } as const)
       : await materializeTaskApp(runtime, task, bundle);
   if (!taskApp.ok) {
     io.errorLog(taskApp.error);
@@ -801,26 +827,32 @@ async function suiteRunTask(
     runnerEnv.AOS_APP_INSTALL_POLICY ?? "skip-if-present"
   ).trim();
   let skipTaskAppInstall = false;
+  const expectedAppSha = (taskApp.sha256 ?? "").trim();
   if (
     taskApp.path !== null &&
     taskAppPackage !== "" &&
+    expectedAppSha !== "" &&
     appInstallPolicy !== "always" &&
     devices.length > 0 &&
     devices.every((serial) => classifyIosSerial(serial) === null)
   ) {
     const installed = await Promise.all(
-      devices.map((serial) => androidPackageInstalled(runnerEnv, serial, taskAppPackage))
+      devices.map((serial) =>
+        androidInstalledApkMatches(runnerEnv, serial, taskAppPackage, expectedAppSha)
+      )
     );
     if (installed.every(Boolean)) {
       skipTaskAppInstall = true;
       say(
-        `应用 ${taskAppPackage} 已在设备安装：跳过重复安装（AOS_APP_INSTALL_POLICY=always 可强制）`
+        `应用 ${taskAppPackage} 已安装且 APK SHA 一致（${expectedAppSha.slice(0, 12)}）：跳过重复安装（AOS_APP_INSTALL_POLICY=always 可强制）`
       );
+    } else {
+      say(`应用 ${taskAppPackage} 已安装但 APK SHA 不一致或未安装：执行前安装`);
     }
   }
   if (taskApp.path !== null) {
     if (skipTaskAppInstall) {
-      say(`任务安装包：${path.basename(taskApp.path)}（已安装，跳过本次安装）`);
+      say(`任务安装包：${path.basename(taskApp.path)}（SHA 一致，跳过本次安装）`);
     } else {
       baseOptions.appPath = taskApp.path;
       say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);

@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
 import {
-  androidPackageInstalled,
+  androidInstalledApkMatches,
   materializeTaskApp,
   runSuiteCommand
 } from "../dist/suite-command.js";
@@ -928,31 +928,38 @@ test("suite runner: control URL from project .env is used (bundle scenario)", as
   );
 });
 
-test("androidPackageInstalled: exact package match", async () => {
+test("androidInstalledApkMatches: compares installed APK sha256", async () => {
+  const expected = "a".repeat(64);
   const calls = [];
   const exec = async (command, args) => {
     calls.push({ command, args });
-    return { code: 0, stdout: "package:com.example.app\n", stderr: "" };
+    if (args.includes("path")) {
+      return { code: 0, stdout: "package:/data/app/base.apk\n", stderr: "" };
+    }
+    return { code: 0, stdout: `${expected}  /data/app/base.apk\n`, stderr: "" };
   };
   assert.equal(
-    await androidPackageInstalled(
+    await androidInstalledApkMatches(
       { AOS_ADB_PATH: "/fake/adb" },
       "serial-1",
       "com.example.app",
+      expected,
       exec
     ),
     true
   );
   assert.equal(
-    await androidPackageInstalled(
+    await androidInstalledApkMatches(
       { AOS_ADB_PATH: "/fake/adb" },
       "serial-1",
-      "com.example.app2",
+      "com.example.app",
+      "b".repeat(64),
       exec
     ),
     false
   );
   assert.deepEqual(calls[0].args.slice(0, 4), ["-s", "serial-1", "shell", "pm"]);
+  assert.deepEqual(calls[1].args.slice(0, 4), ["-s", "serial-1", "shell", "sha256sum"]);
 });
 
 test("materializeTaskApp: 控制面下载按任务 id，不拿资产 id 当任务 id", async () => {
