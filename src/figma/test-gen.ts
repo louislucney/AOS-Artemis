@@ -51,7 +51,8 @@ import {
   type FeatureWarning,
   type PriorFeature
 } from "./features.js";
-import { makeChatFn, type ChatFn } from "../llm/chat.js";
+import { makeChatForRuntime } from "../llm/pool/chat-factory.js";
+import type { ChatFn } from "../llm/chat.js";
 import { testsFingerprint } from "./run-manifest.js";
 import { captureFigmaScreens } from "./render.js";
 import {
@@ -71,7 +72,7 @@ import { capturePenScreens } from "../pen/screens.js";
 import type { PenExecFn } from "../pen/cli.js";
 import type { PenEnsureFn } from "../pen/install.js";
 import type { PenScreenRenderInput, PenScreenRenderResult } from "../pen/render.js";
-import { errorMessage, writeFileAtomic } from "../util.js";
+import { errorMessage, logWarn, writeFileAtomic } from "../util.js";
 import type { DesignRuntimeLike } from "./design-runtime.js";
 import {
   collectCaseDefectFeedback,
@@ -1985,8 +1986,19 @@ function loadI18nKeys(runtime: DesignRuntimeLike): Map<string, string> {
 async function resolveNamingChat(runtime: DesignRuntimeLike): Promise<ChatFn | null> {
   if (!runtime.activeEntry) return null;
   const entry = await runtime.activeEntry();
-  if (!entry || !entry.model || !entry.baseUrl || !entry.apiKey) return null;
-  return makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model });
+  if (!entry || !entry.model) return null;
+  if (!entry.poolTokenId && (!entry.baseUrl || !entry.apiKey)) return null;
+  try {
+    return await makeChatForRuntime({
+      store: runtime.store,
+      projectRoot: runtime.project.rootDir,
+      env: { ...(runtime.project.dotenvValues ?? {}), ...process.env },
+      entry
+    });
+  } catch (error) {
+    logWarn(`设计命名 LLM 不可用：${errorMessage(error)}`);
+    return null;
+  }
 }
 
 async function resolveDesignName(

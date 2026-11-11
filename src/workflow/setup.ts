@@ -165,21 +165,33 @@ function llmPingNeed(name: string, detail: string): SetupNeed {
 export async function checkLlm(runtime: Runtime, deps: SetupDeps = {}): Promise<SetupNeed | null> {
   const entry = await runtime.activeEntry();
   if (!entry) return llmConfigNeed(null);
-  if (!hasValue(entry.model) || !hasValue(entry.baseUrl) || !hasValue(entry.apiKey)) {
+  const poolBound = entry.poolTokenId !== null && entry.poolTokenId !== undefined;
+  if (
+    !hasValue(entry.model) ||
+    (!poolBound && (!hasValue(entry.baseUrl) || !hasValue(entry.apiKey)))
+  ) {
     const missing = [
       ...(hasValue(entry.model) ? [] : ["model"]),
-      ...(hasValue(entry.baseUrl) ? [] : ["base_url"]),
-      ...(hasValue(entry.apiKey) ? [] : ["api_key"])
+      ...(poolBound || hasValue(entry.baseUrl) ? [] : ["base_url"]),
+      ...(poolBound || hasValue(entry.apiKey) ? [] : ["api_key"])
     ];
     return llmConfigNeed(`LLM 条目「${entry.name}」缺 ${missing.join(" / ")}`);
   }
 
-  const chat = deps.chat ?? makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model });
   const timeoutMs = deps.llmTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
   const logLine = deps.log ?? logInfo;
   const startedAtMs = Date.now();
   let reply: string;
   try {
+    const chat =
+      deps.chat ??
+      (typeof runtime.makeChatFor === "function"
+        ? await runtime.makeChatFor(entry)
+        : makeChatFn({
+            baseUrl: entry.baseUrl ?? "",
+            apiKey: entry.apiKey ?? "",
+            model: entry.model
+          }));
     reply = await chat([{ role: "user", content: "ping" }], AbortSignal.timeout(timeoutMs));
   } catch (error) {
     const detail = errorMessage(error);

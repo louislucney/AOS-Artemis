@@ -17,7 +17,11 @@ import {
   type FlowHint,
   type FlowWarning
 } from "../figma/flows.js";
-import { makeChatFn, type ChatFn } from "../llm/chat.js";
+import type { ChatFn } from "../llm/chat.js";
+import {
+  makeChatForRuntime,
+  resolveChatEntryTarget
+} from "../llm/pool/chat-factory.js";
 import {
   openVisionCapabilityCache,
   parseDeclaredVision,
@@ -1242,8 +1246,7 @@ async function applyVision(
   let capabilityCache: VisionCapabilityCache | null = null;
   if (!chat) {
     const entry = runtime.activeEntry ? await runtime.activeEntry() : null;
-    model = entry?.model ?? undefined;
-    if (!entry || !entry.model || !entry.baseUrl || !entry.apiKey) {
+    if (!entry || !entry.model) {
       return skippedVision(
         requested,
         "无可用 active LLM",
@@ -1257,20 +1260,50 @@ async function applyVision(
       );
     }
     const env = { ...process.env, ...dotenv };
-    capabilityKey = visionCapabilityKey(entry.baseUrl, entry.model);
+    let target;
+    try {
+      target = await resolveChatEntryTarget({ store: runtime.store, env, entry });
+    } catch (error) {
+      return skippedVision(
+        requested,
+        "池 token 不可用",
+        [
+          {
+            code: "vision-unavailable",
+            message: `视觉识别已跳过：active LLM 不可用（${errorMessage(error)}）`
+          }
+        ],
+        { coverageByTarget: preCollectionCoverage(preCollection, "vision-unavailable") }
+      );
+    }
+    model = target.model;
+    if (!target.baseUrl || !target.apiKey) {
+      return skippedVision(
+        requested,
+        "无可用 active LLM",
+        [
+          {
+            code: "vision-unavailable",
+            message: "视觉识别已跳过：无可用 active LLM（缺 model/baseUrl/key，用 aos_configure 配置）"
+          }
+        ],
+        { coverageByTarget: preCollectionCoverage(preCollection, "vision-unavailable") }
+      );
+    }
+    capabilityKey = visionCapabilityKey(target.baseUrl, target.model);
     capabilityCache = openVisionCapabilityCache(path.join(runtime.configDirAbs, "llm-capabilities.json"));
     if (requested === "on") {
       capabilitySource = "override";
       preWarnings = [
         {
           code: "vision-model-unverified",
-          message: `模型「${entry.model}」按 vision:true 显式强制尝试（不查声明与缓存）`
+          message: `模型「${target.model}」按 vision:true 显式强制尝试（不查声明与缓存）`
         }
       ];
     } else {
       const resolution = resolveVisionCapability({
-        model: entry.model,
-        baseUrl: entry.baseUrl,
+        model: target.model,
+        baseUrl: target.baseUrl,
         declared: parseDeclaredVision(env),
         cached: capabilityCache.get(capabilityKey),
         ttlMs: visionCacheTtlMsFromEnv(env)
@@ -1279,11 +1312,11 @@ async function applyVision(
       if (resolution.capable === false) {
         const message =
           resolution.source === "declared"
-            ? `视觉识别已跳过：AOS_LLM_VISION 声明 active 模型「${entry.model}」无视觉能力（可 vision:true 强制尝试或切换视觉模型）`
-            : `视觉识别已跳过：已记录 active 模型「${entry.model}」不接受图片输入（缓存期内不再尝试；可 vision:true 覆盖或切换视觉模型）`;
+            ? `视觉识别已跳过：AOS_LLM_VISION 声明 active 模型「${target.model}」无视觉能力（可 vision:true 强制尝试或切换视觉模型）`
+            : `视觉识别已跳过：已记录 active 模型「${target.model}」不接受图片输入（缓存期内不再尝试；可 vision:true 覆盖或切换视觉模型）`;
         return skippedVision(
           requested,
-          `模型「${entry.model}」无视觉能力（${resolution.source}）`,
+          `模型「${target.model}」无视觉能力（${resolution.source}）`,
           [{ code: "vision-unavailable", message }],
           { coverageByTarget: preCollectionCoverage(preCollection, "vision-unavailable") }
         );
@@ -1292,12 +1325,17 @@ async function applyVision(
         preWarnings = [
           {
             code: "vision-model-unverified",
-            message: `模型「${entry.model}」未判定为视觉能力，按尝试处理（若拒绝图片将自动记录并跳过）`
+            message: `模型「${target.model}」未判定为视觉能力，按尝试处理（若拒绝图片将自动记录并跳过）`
           }
         ];
       }
     }
-    chat = makeChatFn({ baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model });
+    chat = await makeChatForRuntime({
+      store: runtime.store,
+      projectRoot: runtime.project.rootDir,
+      env,
+      entry
+    });
   }
 
   let assets: PenScreenAssets;

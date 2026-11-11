@@ -7,6 +7,10 @@ export interface DesignLlmEntry {
   model?: string | null;
   baseUrl?: string | null;
   apiKey?: string | null;
+  provider?: string | null;
+  poolTokenId?: string | null;
+  poolMode?: "pinned" | "auto";
+  poolModel?: string | null;
 }
 
 /** Runtime surface used by design extraction/generation.

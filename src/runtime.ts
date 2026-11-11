@@ -61,6 +61,12 @@ import { hostAddressHistoryFrom } from "./host/online.js";
 import { primaryIp, selfReportedAddresses } from "./runner/host-snapshot.js";
 import { ModelCatalog, type FetchLike, type ModelReport, type RefreshReport } from "./llm/catalog.js";
 import { fetchCenterLlm } from "./llm/center.js";
+import type { ChatFn, ChatOptions } from "./llm/chat.js";
+import {
+  makeChatForRuntime,
+  recordLocalLlmUsage as recordLocalLlmUsageEvent,
+  type RecordLocalLlmUsageInput
+} from "./llm/pool/chat-factory.js";
 import {
   entriesFromConfig,
   entryFromEnvScan,
@@ -481,6 +487,10 @@ export class Runtime {
       this.writeActiveConfig(active);
     }
 
+    void this.store.reconcileLlmReservations({ limit: 20 }).catch((error: unknown) => {
+      logWarn(`LLM 预留 TTL 回收失败：${errorMessage(error)}`);
+    });
+
     try {
       const imported = await autoImportLocalLedger(this, { env: this._baseEnv });
       if (imported.status === "error") {
@@ -596,6 +606,20 @@ export class Runtime {
     }
 
     return entries[0] ?? null;
+  }
+
+  async makeChatFor(entry: LlmEntry, options: ChatOptions = {}): Promise<ChatFn> {
+    return makeChatForRuntime({
+      store: this.store,
+      projectRoot: this.project.rootDir,
+      env: { ...this.project.dotenvValues, ...this._baseEnv },
+      entry,
+      options
+    });
+  }
+
+  async recordLocalLlmUsage(input: Omit<RecordLocalLlmUsageInput, "store">): Promise<void> {
+    await recordLocalLlmUsageEvent({ store: this.store, ...input });
   }
 
   async setupInfo(): Promise<SetupInfo> {

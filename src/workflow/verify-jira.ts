@@ -240,11 +240,11 @@ export async function verifyJiraIssue(
       mappingAttempted = true;
       const previous = await readPreviousMapping(resolved.client, issue.key);
       const entry = await runtime.activeEntry();
-      const chatTarget =
-        entry !== null && entry.baseUrl !== null && entry.apiKey !== null
-          ? { baseUrl: entry.baseUrl, apiKey: entry.apiKey, model: entry.model }
-          : { baseUrl: "", apiKey: "", model: "" };
-      const chat = deps.chat ?? makeChatFn(chatTarget);
+      const chat =
+        deps.chat ??
+        (entry !== null
+          ? await runtime.makeChatFor(entry)
+          : makeChatFn({ baseUrl: "", apiKey: "", model: "" }));
       const selection = await selectCasesWithLlm(chat, {
         issue: {
           key: issue.key,

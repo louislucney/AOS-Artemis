@@ -265,10 +265,7 @@ export async function runLoop(
     };
   const chat =
     deps.chat ??
-    makeChatFn(
-      { baseUrl: entry.baseUrl ?? "", apiKey: entry.apiKey ?? "", model: entry.model },
-      { onUsage: collectUsage("execute") }
-    );
+    (await runtime.makeChatFor(entry, { onUsage: collectUsage("execute") }));
   const visionChat =
     deps.visionChat ??
     (visionTarget

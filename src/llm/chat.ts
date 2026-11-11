@@ -1,3 +1,7 @@
+import type { LlmUsageStatus, NormalizedUsage } from "../db/types.js";
+import { estimateMessagesTokens, estimateTextTokens } from "./pool/estimate.js";
+import { estimatedUsage, normalizeUsage } from "./pool/usage.js";
+
 export type ChatContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
@@ -13,6 +17,9 @@ export interface ChatTarget {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** Used for pre-flight reservation and the outbound `max_tokens`. */
+  maxOutputTokens?: number;
+  provider?: string;
 }
 
 export interface ChatUsage {
@@ -20,6 +27,16 @@ export interface ChatUsage {
   completionTokens: number;
   cacheCreateTokens: number;
   cacheReadTokens: number;
+  normalized?: NormalizedUsage;
+}
+
+export interface ChatBudgetReservation {
+  settle(usage: NormalizedUsage | null, status?: LlmUsageStatus): Promise<void>;
+  release(): Promise<void>;
+}
+
+export interface ChatBudget {
+  reserve(messages: ChatMessage[], maxOutputTokens?: number): Promise<ChatBudgetReservation>;
 }
 
 export interface ChatOptions {
@@ -28,6 +45,9 @@ export interface ChatOptions {
   temperature?: number;
   /** 可选 token 计量回调；不改变 `ChatFn` 签名，现有调用方零修改。 */
   onUsage?: (usage: ChatUsage) => void;
+  /** Normalized accounting callback; `estimated` marks a charge derived from the estimate. */
+  onNormalizedUsage?: (usage: NormalizedUsage, estimated: boolean) => void | Promise<void>;
+  budget?: ChatBudget;
 }
 
 export type ChatFn = (messages: ChatMessage[], signal?: AbortSignal) => Promise<string>;
@@ -135,6 +155,10 @@ export function makeChatFn(target: ChatTarget, options: ChatOptions = {}): ChatF
   const base = target.baseUrl.replace(/\/+$/, "");
 
   return async (messages, signal) => {
+    const reservation =
+      options.budget === undefined
+        ? null
+        : await options.budget.reserve(messages, target.maxOutputTokens);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const onAbort = (): void => controller.abort();
@@ -147,11 +171,21 @@ export function makeChatFn(target: ChatTarget, options: ChatOptions = {}): ChatF
           "content-type": "application/json",
           authorization: `Bearer ${target.apiKey}`
         },
-        body: JSON.stringify({ model: target.model, messages, temperature }),
+        body: JSON.stringify({
+          model: target.model,
+          messages,
+          temperature,
+          ...(target.maxOutputTokens === undefined
+            ? {}
+            : { max_tokens: target.maxOutputTokens })
+        }),
         signal: controller.signal
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (reservation !== null) {
+        await reservation.settle(null, "settled_estimated");
+      }
       throw new ChatError(`LLM 请求失败: ${message}`);
     } finally {
       clearTimeout(timer);
@@ -160,6 +194,7 @@ export function makeChatFn(target: ChatTarget, options: ChatOptions = {}): ChatF
 
     const text = await response.text();
     if (!response.ok) {
+      if (reservation !== null) await reservation.release();
       throw new ChatError(`LLM 响应 HTTP ${response.status}`, {
         status: response.status,
         body: text.slice(0, 500)
@@ -169,15 +204,26 @@ export function makeChatFn(target: ChatTarget, options: ChatOptions = {}): ChatF
     try {
       payload = JSON.parse(text) as ChatCompletionPayload;
     } catch {
+      if (reservation !== null) await reservation.release();
       throw new ChatError("LLM 响应不是合法 JSON", { body: text.slice(0, 500) });
     }
     if (payload.error?.message) {
+      if (reservation !== null) await reservation.release();
       throw new ChatError(`LLM 返回错误: ${String(payload.error.message)}`, { body: text.slice(0, 500) });
     }
+    const normalized = normalizeUsage(payload.usage);
     const usage = usageOf(payload);
     if (usage !== null) options.onUsage?.(usage);
     const choice = payload.choices?.[0];
     const content = contentText(choice?.message?.content);
+    const estimated =
+      normalized === null
+        ? estimatedUsage(estimateMessagesTokens(messages), estimateTextTokens(content ?? ""))
+        : normalized;
+    await options.onNormalizedUsage?.(estimated, normalized === null);
+    if (reservation !== null) {
+      await reservation.settle(normalized, normalized === null ? "settled_estimated" : "ok");
+    }
     if (content === null) {
       const finish =
         typeof choice?.finish_reason === "string" ? `（finish_reason=${choice.finish_reason}）` : "";

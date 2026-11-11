@@ -20,6 +20,10 @@ import {
   visionCapabilityKey
 } from "../llm/vision-capability.js";
 import { makeChatFn, type ChatFn } from "../llm/chat.js";
+import {
+  resolveChatEntryTarget,
+  type ResolvedChatTarget
+} from "../llm/pool/chat-factory.js";
 import { runDesignReading } from "../design/reading/run.js";
 import type { DesignReadingResult } from "../design/reading/types.js";
 import { emptyReadingStats } from "../design/reading/types.js";
@@ -453,46 +457,61 @@ export async function designToTest(
       if (entry === null) {
         reading = skippedReading("未配置 active LLM，跳过设计阅读", "vision-required");
       } else {
-        const baseUrl = entry.baseUrl ?? "";
-        const apiKey = entry.apiKey ?? "";
         const env = { ...process.env, ...(runtime.project.dotenvValues ?? {}) };
-        const cache = openVisionCapabilityCache(
-          path.join(runtime.configDirAbs, "llm-capabilities.json")
-        );
-        const resolution = resolveVisionCapability({
-          model: entry.model,
-          baseUrl,
-          declared: parseDeclaredVision(env),
-          cached: cache.get(visionCapabilityKey(baseUrl, entry.model)),
-          ttlMs: visionCacheTtlMsFromEnv(env)
-        });
-        if (baseUrl === "" || apiKey === "") {
-          reading = skippedReading("active LLM 缺 baseUrl/apiKey，跳过设计阅读", "vision-required");
-        } else if (resolution.capable === false) {
+        let target: ResolvedChatTarget | null = null;
+        try {
+          target = await resolveChatEntryTarget({ store: runtime.store, env, entry });
+        } catch (error) {
           reading = skippedReading(
-            `当前模型「${entry.model}」无视觉能力（${resolution.source}），拒绝发送设计图；可切换视觉模型或 reading:false`,
+            `active LLM 不可用：${errorMessage(error)}`,
             "vision-required"
           );
-        } else if (resolution.capable === "unknown" && readingMode !== true) {
-          reading = skippedReading(
-            `当前模型「${entry.model}」视觉能力未确认，自动阅读已跳过；可设 AOS_LLM_VISION=1 或 reading:true 强制尝试`,
-            "vision-model-unverified"
+        }
+        if (target !== null) {
+          const baseUrl = target.baseUrl;
+          const apiKey = target.apiKey;
+          const effectiveModel = target.model;
+          const cache = openVisionCapabilityCache(
+            path.join(runtime.configDirAbs, "llm-capabilities.json")
           );
-        } else {
-          if (resolution.capable === "unknown") {
-            warnings = [
-              ...warnings,
-              ...normalizeWarnings([
-                {
-                  code: "vision-model-unverified",
-                  message: `模型「${entry.model}」视觉能力未确认，按 reading:true 强制尝试`
-                }
-              ])
-            ];
-            warningsAvailable = true;
+          const resolution = resolveVisionCapability({
+            model: effectiveModel,
+            baseUrl,
+            declared: parseDeclaredVision(env),
+            cached: cache.get(visionCapabilityKey(baseUrl, effectiveModel)),
+            ttlMs: visionCacheTtlMsFromEnv(env)
+          });
+          if (baseUrl === "" || apiKey === "") {
+            reading = skippedReading("active LLM 缺 baseUrl/apiKey，跳过设计阅读", "vision-required");
+          } else if (resolution.capable === false) {
+            reading = skippedReading(
+              `当前模型「${effectiveModel}」无视觉能力（${resolution.source}），拒绝发送设计图；可切换视觉模型或 reading:false`,
+              "vision-required"
+            );
+          } else if (resolution.capable === "unknown" && readingMode !== true) {
+            reading = skippedReading(
+              `当前模型「${effectiveModel}」视觉能力未确认，自动阅读已跳过；可设 AOS_LLM_VISION=1 或 reading:true 强制尝试`,
+              "vision-model-unverified"
+            );
+          } else {
+            if (resolution.capable === "unknown") {
+              warnings = [
+                ...warnings,
+                ...normalizeWarnings([
+                  {
+                    code: "vision-model-unverified",
+                    message: `模型「${effectiveModel}」视觉能力未确认，按 reading:true 强制尝试`
+                  }
+                ])
+              ];
+              warningsAvailable = true;
+            }
+            chat =
+              typeof runtime.makeChatFor === "function"
+                ? await runtime.makeChatFor(entry)
+                : makeChatFn({ baseUrl, apiKey, model: effectiveModel });
+            model = effectiveModel;
           }
-          chat = makeChatFn({ baseUrl, apiKey, model: entry.model });
-          model = entry.model;
         }
       }
     }
