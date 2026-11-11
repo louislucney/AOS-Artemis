@@ -15,6 +15,7 @@ import { printUserUsage, runUserCommand } from "./user-command.js";
 import { runServer } from "./server.js";
 import { printSuiteUsage, runSuiteCommand } from "./suite-command.js";
 import { runUsageCommand } from "./usage-command.js";
+import { printLlmUsage, runLlmCommand } from "./llm/command.js";
 import { runPanelCommand } from "./panel-command.js";
 import { runCmsOpen } from "./open/command.js";
 import { printWebUsage, runWebCommand } from "./web-command.js";
@@ -55,6 +56,9 @@ Usage:
                     使用统计：默认当前项目摘要（--days 默认 7）；--json 机器可读；
                     --all 跨项目总览；--project 选择已注册项目；
                     --host 只看该主机项目（--web 下仍为监听地址）
+  mobile-testing-mcp llm pool|price|usage [options]
+                    LLM 资源池：token 增改/禁用/绑定、价格表与用量（key 只显示 masked；
+                    见 "mobile-testing-mcp llm help"）
   mobile-testing-mcp usage --web [--port 8766] [--host 127.0.0.1]
                     只读看板（复用 /usage 与 /usage.json）；端口占用 exit 2
   mobile-testing-mcp panel --web [--port 8767] [--host 127.0.0.1] [--workspace <dir>]
@@ -89,6 +93,7 @@ void (async () => {
     else if (command === "host") printHostUsage((line) => console.log(line));
     else if (command === "user") printUserUsage((line) => console.log(line));
     else if (command === "web") printWebUsage((line) => console.log(line));
+    else if (command === "llm") printLlmUsage((line) => console.log(line));
     else printUsage();
     return;
   }
@@ -152,6 +157,11 @@ void (async () => {
     }
     case "usage": {
       const code = await runUsageCommand(rest);
+      process.exit(code);
+      break;
+    }
+    case "llm": {
+      const code = await runLlmCommand(rest);
       process.exit(code);
       break;
     }

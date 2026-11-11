@@ -1,9 +1,23 @@
 import type { NativeToolDefinition } from "./types.js";
 import { z } from "zod";
-import { llmList, llmModels, llmSwitch, type LlmModelsArgs, type LlmSwitchArgs } from "../llm.js";
+import {
+  llmList,
+  llmModels,
+  llmPoolList,
+  llmSwitch,
+  type LlmModelsArgs,
+  type LlmSwitchArgs
+} from "../llm.js";
 
 /** LLM 域原生工具（DESIGN §13.89）。 */
 export const LLM_NATIVE_TOOLS: NativeToolDefinition[] = [
+  {
+    name: "llm_pool_list",
+    description:
+      "查看当前项目绑定的 LLM 资源池 token（只读）：状态/模型/预算/token 快照，key 只返回 masked 预览；不返回其他项目或未绑定 token。管理（增改/绑定/价格）用 CLI `llm pool ...`。",
+    schema: z.object({}),
+    handler: (runtime) => llmPoolList(runtime)
+  },
   {
     name: "llm_list",
     description:

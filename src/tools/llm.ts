@@ -1,6 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { AOS_MCP_VERSION, maskSecret } from "../util.js";
+import { AOS_MCP_VERSION, errorMessage, maskSecret } from "../util.js";
 import { bridgeState } from "../figma/bridge.js";
 import { ENV_JIRA_API_TOKEN } from "../jira/config.js";
 import { childLogFilePath, logFilePath } from "../log.js";
@@ -130,6 +130,60 @@ export async function llmList(runtime: Runtime): Promise<CallToolResult> {
       note: runtime.storeNote
     }
   });
+}
+
+/** 当前项目绑定的资源池 token（只读）；不返回全局池，也不返回原始 key。 */
+export async function llmPoolList(runtime: Runtime): Promise<CallToolResult> {
+  try {
+    const entries = await runtime.entries();
+    const ids = [
+      ...new Set(
+        entries
+          .map((entry) => entry.poolTokenId)
+          .filter((id): id is string => id !== null)
+      )
+    ];
+    const env = { ...runtime.project.dotenvValues, ...runtime.baseEnv };
+    const tokens = [];
+    for (const id of ids) {
+      const token = await runtime.store.getLlmPoolToken(id);
+      if (token === null) continue;
+      const key = resolvePoolTokenKey(token, env);
+      let snapshot = null;
+      try {
+        snapshot = await runtime.store.getLlmBudgetSnapshot(id);
+      } catch {
+        snapshot = null;
+      }
+      tokens.push({
+        id: token.id,
+        name: token.name,
+        provider: token.provider,
+        models: [...token.modelAllowlist],
+        status: token.status,
+        priority: token.priority,
+        budget: {
+          period: token.budgetPeriod,
+          limitMicros: token.budgetLimitMicros,
+          limitTokens: token.budgetLimitTokens,
+          currency: token.currency,
+          maxConcurrency: token.maxConcurrency
+        },
+        supportsStreamUsage: token.supportsStreamUsage,
+        lastValidatedAt: token.lastValidatedAt,
+        lastError: token.lastError,
+        key: {
+          present: key !== null,
+          preview: key === null ? null : maskSecret(key),
+          envVar: token.keyEnv
+        },
+        snapshot
+      });
+    }
+    return jsonResult({ ok: true, tokens });
+  } catch (error) {
+    return jsonResult({ ok: false, error: errorMessage(error) }, true);
+  }
 }
 
 /** Model catalog: cached vendor model lists + on-demand refresh (12h background TTL). */
