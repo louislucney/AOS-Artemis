@@ -542,7 +542,7 @@ function writeBundleReadme(staging, target) {
   fs.writeFileSync(
     path.join(staging, "README.md"),
     [
-      `# AOS-ARTEMIS runner（${platform}）`,
+      `# AOS-ARTEMIS runner（${platform}） · v${pkg.version}`,
       "",
       "这个包在**执行机本机**运行 MCP 执行代码：中心只下发任务，runner 领取后用本机设备执行并回传结果。",
       "不需要 Maestro、JDK，也不需要中心反向连本机 adb。",

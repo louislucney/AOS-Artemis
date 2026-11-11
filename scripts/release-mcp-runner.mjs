@@ -85,6 +85,14 @@ execFileSync("npm", ["run", "verify"], { cwd: root, stdio: "inherit" });
 
 const onlineZip = path.join(outDir, `aos-artemis-runner-${version}-win32-x64.zip`);
 if (!fs.existsSync(onlineZip)) fail(`在线包不存在：${onlineZip}`);
+const bundleReadme = execFileSync(
+  "unzip",
+  ["-p", onlineZip, `aos-artemis-runner-${version}-win32-x64/README.md`],
+  { encoding: "utf8" }
+);
+if (!bundleReadme.includes(`v${version}`)) {
+  fail(`包内 README.md 未包含版本号 v${version}`);
+}
 
 const deps = findOfflineDeps();
 const stageName = `aos-artemis-runner-${version}-win32-x64-offline`;
