@@ -899,12 +899,45 @@ test("panel web: 任务视图（状态/设备运行/指引）与未知 task 404"
       }
     ]
   });
+  await store.recordSuiteRun({
+    rootPath: projectDir,
+    createdAt: "2026-10-14T09:05:00.000Z",
+    run: {
+      trigger: "cli",
+      regressionTaskId: task.id,
+      caseSetId: set.id,
+      featureKey: "f-1",
+      featureName: "登录流程 2",
+      platform: "android",
+      device: "emulator-5554",
+      appVersion: null,
+      status: "completed",
+      startedAt: "2026-10-14T09:00:00.000Z",
+      finishedAt: "2026-10-14T09:05:00.000Z",
+      total: 1,
+      passed: 1,
+      failed: 0,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "pass",
+      exitCode: 0,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: []
+  });
 
   const html = await handlePanelRequest(
     new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&task=${encodeURIComponent(task.id)}`),
     deps
   );
   assert.equal(html.status, 200);
+  assert.match(
+    html.body,
+    /共 2 个用例集运行 · 1 台设备/,
+    "设备运行按用例集×设备计数，不把同一设备算成两台"
+  );
   const taskJson = JSON.parse(
     (
       await handlePanelRequest(

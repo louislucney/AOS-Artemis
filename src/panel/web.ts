@@ -2729,6 +2729,14 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
   if (task.cancelNote !== null) cancelParts.push(`备注 ${task.cancelNote}`);
   const cancelLine =
     cancelParts.length === 0 ? "" : ` · 取消：${escapeHtml(cancelParts.join(" · "))}`;
+  const runDevices = new Set(
+    detail.runs
+      .map((run) => run.device)
+      .filter((device): device is string => device !== null && device !== "")
+  );
+  const runSummary = `共 ${detail.runs.length} 个用例集运行${
+    runDevices.size === 0 ? "" : ` · ${runDevices.size} 台设备`
+  }`;
   const covered = detail.runners.some(
     (entry) =>
       entry.online && task.platforms.every((platform) => entry.platforms.includes(platform))
@@ -2774,7 +2782,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
                 )}">查看失败证据</a>`
               : ""
           }</p>`,
-      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · 共 ${detail.runs.length} 个设备运行${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
+      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · ${runSummary}${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
         const priorityBadge = cBadge({
@@ -2799,7 +2807,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         const cancellable =
           task.status === "pending" || running || stopping;
         const cancelConfirm = `确认取消该任务？${running || stopping ? "执行机将在当前用例边界停止并确认（状态先为「停止中」，确认后「已取消」）。" : "任务尚未执行，将直接标记为「已取消」。"}取消为终态：不释放、不自动重试；需重跑请用「重新派发」或新建任务。`;
-        const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生设备运行 ${detail.runs.length} 个保留）；状态先为「停止中」，执行机确认后转「已取消」。`;
+        const stopConfirm = `确认停止该任务？领取方：${runnerNote}；执行机将在当前用例边界停止后续（已产生 ${detail.runs.length} 个运行记录保留）；状态先为「停止中」，执行机确认后转「已取消」。`;
         const rerunConfirm = "确认重新派发？将按原引用/端/基线创建一个新任务（当前任务保留）。";
         const failedCaseIds = [...new Set(detail.runs.flatMap((run) => run.failedCaseIds))];
         const rerunFailedConfirm = `确认只重跑本次任务的 ${failedCaseIds.length} 条失败用例？将创建一个新任务（当前任务保留）。`;
