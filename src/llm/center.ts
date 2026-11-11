@@ -117,7 +117,10 @@ export async function fetchCenterLlm(
       fallback: null,
       nodeOverrides: null,
       source: "store",
-      isActive: true
+      isActive: true,
+      poolTokenId: null,
+      poolMode: "pinned",
+      poolModel: null
     },
     error: null
   };

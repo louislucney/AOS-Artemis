@@ -8,6 +8,8 @@ import { PROVIDER_PRESETS, presetSummary } from "../llm/providers.js";
 import { scanVisionHealth } from "../ios/vision-health.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { entryIssues } from "../llm/registry.js";
+import { resolvePoolTokenKey } from "../llm/pool/resolve.js";
+import type { LlmPoolTokenRecord } from "../db/types.js";
 import type { Runtime } from "../runtime.js";
 import { clientTtlFrom, isClientOnline } from "../host/online.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
@@ -45,6 +47,18 @@ export async function llmList(runtime: Runtime): Promise<CallToolResult> {
   for (const issue of runtime.project.validation.warnings) warnings.push(issue.message);
   if (setup.required) warnings.push(setup.message);
 
+  const poolTokens = new Map<string, LlmPoolTokenRecord>();
+  for (const entry of entries) {
+    if (entry.poolTokenId === null || poolTokens.has(entry.poolTokenId)) continue;
+    try {
+      const token = await runtime.store.getLlmPoolToken(entry.poolTokenId);
+      if (token !== null) poolTokens.set(token.id, token);
+    } catch {
+      /* store degraded: llm_list still reports the binding without the token */
+    }
+  }
+  const poolEnv = { ...runtime.project.dotenvValues, ...runtime.baseEnv };
+
   const llms = entries.map((entry) => {
     const report = reportByEntry.get(entry.name) ?? null;
     if (report?.deprecated) {
@@ -53,19 +67,34 @@ export async function llmList(runtime: Runtime): Promise<CallToolResult> {
           (report.suggestedModel ? `（建议：${report.suggestedModel}）` : "")
       );
     }
+    const poolToken =
+      entry.poolTokenId === null ? null : (poolTokens.get(entry.poolTokenId) ?? null);
+    const poolKey = poolToken === null ? null : resolvePoolTokenKey(poolToken, poolEnv);
+    const key =
+      entry.poolTokenId === null
+        ? {
+            present: entry.apiKey !== null && entry.apiKey !== "",
+            preview: entry.apiKey ? maskSecret(entry.apiKey) : null,
+            envVar: entry.keyEnvName
+          }
+        : {
+            present: poolKey !== null,
+            preview: poolKey ? maskSecret(poolKey) : null,
+            envVar: poolToken?.keyEnv ?? null
+          };
     return {
       name: entry.name,
       provider: entry.provider,
       model: entry.model,
       baseUrl: entry.baseUrl,
-      key: {
-        present: entry.apiKey !== null && entry.apiKey !== "",
-        preview: entry.apiKey ? maskSecret(entry.apiKey) : null,
-        envVar: entry.keyEnvName
-      },
+      key,
       fallback: entry.fallback ?? { provider: entry.provider, model: entry.model },
       source: entry.source,
       isActive: entry.name === active?.name,
+      pool: entry.poolTokenId
+        ? { tokenId: entry.poolTokenId, mode: entry.poolMode, model: entry.poolModel }
+        : null,
+      poolStatus: poolToken?.status ?? null,
       issues: entryIssues(entry),
       models: report
         ? {

@@ -1,6 +1,6 @@
 import type { AosConfig, LlmProfile, ProviderId } from "../config/types.js";
 import { apiKeyEnvFor, type ValueResolver } from "../config/validate.js";
-import type { ProjectLlmRecord } from "../db/types.js";
+import type { LlmPoolMode, ProjectLlmRecord } from "../db/types.js";
 import type { EnvScanResult } from "../projects/scan.js";
 import { resolveProfileKey } from "../artemis/assembly.js";
 
@@ -16,6 +16,9 @@ export interface LlmEntry {
   nodeOverrides: Record<string, unknown> | null;
   source: "store" | "config" | "env";
   isActive: boolean;
+  poolTokenId: string | null;
+  poolMode: LlmPoolMode;
+  poolModel: string | null;
 }
 
 export function entriesFromConfig(config: AosConfig, resolver: ValueResolver): LlmEntry[] {
@@ -37,7 +40,10 @@ export function entriesFromConfig(config: AosConfig, resolver: ValueResolver): L
       fallback: profile.fallback ?? null,
       nodeOverrides: profile.nodeOverrides ?? null,
       source: "config" as const,
-      isActive: false
+      isActive: false,
+      poolTokenId: null,
+      poolMode: "pinned",
+      poolModel: null
     };
   });
 }
@@ -53,7 +59,10 @@ export function entryFromStore(record: ProjectLlmRecord): LlmEntry {
     fallback: null,
     nodeOverrides: null,
     source: "store",
-    isActive: record.isActive
+    isActive: record.isActive,
+    poolTokenId: record.poolTokenId,
+    poolMode: record.poolMode ?? "pinned",
+    poolModel: record.poolModel
   };
 }
 
@@ -70,7 +79,10 @@ export function entryFromEnvScan(scan: EnvScanResult): LlmEntry | null {
     fallback: null,
     nodeOverrides: null,
     source: "env",
-    isActive: false
+    isActive: false,
+    poolTokenId: null,
+    poolMode: "pinned",
+    poolModel: null
   };
 }
 
@@ -88,8 +100,10 @@ export function mergeEntries(...groups: LlmEntry[][]): LlmEntry[] {
 export function entryIssues(entry: LlmEntry): string[] {
   const issues: string[] = [];
   if (!entry.model || entry.model.trim() === "") issues.push("缺少 model");
-  if (!entry.apiKey) issues.push("缺少 api_key");
-  if (entry.provider !== "google" && !entry.baseUrl) issues.push("缺少 base_url");
+  if (!entry.apiKey && entry.poolTokenId === null) issues.push("缺少 api_key");
+  if (entry.provider !== "google" && !entry.baseUrl && entry.poolTokenId === null) {
+    issues.push("缺少 base_url");
+  }
   return issues;
 }
 
