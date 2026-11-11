@@ -8,6 +8,10 @@ import { errorMessage, log, writeFileAtomic } from "../util.js";
 import { MemoryStore, type MemoryStoreState } from "./memory.js";
 import { hydrateProjectLedger } from "./hydrate.js";
 import { retentionCutoffIso } from "./usage-event.js";
+import {
+  llmUsageRetentionCutoffIso,
+  llmUsageRetentionDays
+} from "../llm/pool/period.js";
 import { normalizeSince, payloadBytes, payloadHash } from "../events/payload.js";
 import { eventCutoffIso, eventRetentionPolicy } from "../events/retention.js";
 import type {
@@ -28,6 +32,12 @@ import type {
   HostAddressRecord,
   HostRecord,
   HostSessionRecord,
+  LlmBudgetSnapshot,
+  LlmPoolMode,
+  LlmPoolTokenRecord,
+  LlmPriceRecord,
+  LlmUsageQuery,
+  LlmUsageRecord,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
@@ -39,21 +49,27 @@ import type {
   RecordProjectEventResult,
   PutModelCacheInput,
   RecordCaseSetInput,
+  RecordLlmUsageInput,
   RecordSuiteRunInput,
   RecordTaskInput,
   RecordUsageEventInput,
   RegressionTaskRecord,
   RegressionTaskStatus,
   RenewDeviceLeasesInput,
+  ReserveLlmBudgetInput,
+  ReserveLlmBudgetResult,
   RunnerRecord,
   ScheduleRecord,
   SaveExcelMappingInput,
   SetCaseIssueKeyInput,
+  SettleLlmReservationInput,
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
   UpsertHostInput,
   UpsertLlmInput,
+  UpsertLlmPoolTokenInput,
+  UpsertLlmPriceInput,
   UpsertRunnerInput,
   UpsertWebRunnerInput,
   UsageEventQuery,
@@ -137,6 +153,15 @@ export class FileStore implements ProjectStore {
   private hostStateSeenMtimeMs: number | null = null;
   private hostStateLoaded = false;
   private claimLock: { tail: Promise<void> } = { tail: Promise.resolve() };
+  private poolMem: MemoryStore;
+  private poolLock: { tail: Promise<void> } = { tail: Promise.resolve() };
+  private readonly poolFilePath: string;
+  private readonly llmUsageFilePath: string;
+  private poolLoaded = false;
+  private poolLoad: Promise<void> | null = null;
+  private poolStateSeenMtimeMs: number | null = null;
+  private poolUsageSeenMtimeMs: number | null = null;
+  private poolUsageWrites = 0;
 
   private constructor(homeDir: string, env: NodeJS.ProcessEnv, hostId: string | null = null) {
     this.homeDir = homeDir;
@@ -144,8 +169,14 @@ export class FileStore implements ProjectStore {
     this.eventsFsync = (env.AOS_EVENTS_FSYNC ?? "").trim() === "1";
     this.hostId = hostId;
     this.hostMem = new MemoryStore(null, env);
+    this.poolMem = new MemoryStore(null, env);
     this.webIndexPath = path.join(homeDir, "web-projects.jsonl");
     this.hostStatePath = path.join(homeDir, "host-state.json");
+    const poolFile = (env.AOS_LLM_POOL_FILE ?? "").trim();
+    this.poolFilePath = poolFile === "" ? path.join(homeDir, "llm-pool.json") : path.resolve(poolFile);
+    const usageFile = (env.AOS_LLM_USAGE_FILE ?? "").trim();
+    this.llmUsageFilePath =
+      usageFile === "" ? path.join(homeDir, "llm-usage.jsonl") : path.resolve(usageFile);
   }
 
   static async create(options: FileStoreOptions = {}): Promise<FileStore> {
@@ -176,6 +207,13 @@ export class FileStore implements ProjectStore {
     view.hostStateSeenMtimeMs = this.hostStateSeenMtimeMs;
     view.hostStateLoaded = this.hostStateLoaded;
     view.claimLock = this.claimLock;
+    view.poolMem = this.poolMem;
+    view.poolLock = this.poolLock;
+    view.poolLoaded = this.poolLoaded;
+    view.poolLoad = this.poolLoad;
+    view.poolStateSeenMtimeMs = this.poolStateSeenMtimeMs;
+    view.poolUsageSeenMtimeMs = this.poolUsageSeenMtimeMs;
+    view.poolUsageWrites = this.poolUsageWrites;
     return view;
   }
 
@@ -234,6 +272,234 @@ export class FileStore implements ProjectStore {
     const updated = await this.scopedMem(bucket, this.hostId).setActiveLlm(rootPath, name);
     if (updated) await this.persist(bucket, "setActiveLlm");
     return updated;
+  }
+
+  async setLlmPoolBinding(input: {
+    rootPath: string;
+    name: string;
+    poolTokenId: string | null;
+    poolMode?: LlmPoolMode;
+    poolModel?: string | null;
+  }): Promise<boolean> {
+    const bucket = await this.bucket(input.rootPath);
+    const updated = await this.scopedMem(bucket, this.hostId).setLlmPoolBinding(input);
+    if (updated) await this.persist(bucket, "setLlmPoolBinding");
+    return updated;
+  }
+
+  async listLlmPoolTokens(): Promise<LlmPoolTokenRecord[]> {
+    await this.ensurePoolLoaded();
+    return this.poolMem.listLlmPoolTokens();
+  }
+
+  async getLlmPoolToken(id: string): Promise<LlmPoolTokenRecord | null> {
+    await this.ensurePoolLoaded();
+    return this.poolMem.getLlmPoolToken(id);
+  }
+
+  async upsertLlmPoolToken(input: UpsertLlmPoolTokenInput): Promise<LlmPoolTokenRecord> {
+    return this.runPoolMutation(() => this.poolMem.upsertLlmPoolToken(input));
+  }
+
+  async listLlmPrices(
+    query: { provider?: string; model?: string; at?: string } = {}
+  ): Promise<LlmPriceRecord[]> {
+    await this.ensurePoolLoaded();
+    return this.poolMem.listLlmPrices(query);
+  }
+
+  async upsertLlmPrice(input: UpsertLlmPriceInput): Promise<LlmPriceRecord> {
+    return this.runPoolMutation(() => this.poolMem.upsertLlmPrice(input));
+  }
+
+  async reserveLlmBudget(input: ReserveLlmBudgetInput): Promise<ReserveLlmBudgetResult> {
+    return this.runPoolMutation(() => this.poolMem.reserveLlmBudget(input));
+  }
+
+  async settleLlmReservation(input: SettleLlmReservationInput): Promise<LlmUsageRecord | null> {
+    return this.runPoolMutation(() => this.poolMem.settleLlmReservation(input));
+  }
+
+  async releaseLlmReservation(input: { reservationId: string; at?: string }): Promise<boolean> {
+    return this.runPoolMutation(() => this.poolMem.releaseLlmReservation(input));
+  }
+
+  async reconcileLlmReservations(input: { at?: string; limit?: number } = {}): Promise<{
+    settled: number;
+    released: number;
+  }> {
+    return this.runPoolMutation(() => this.poolMem.reconcileLlmReservations(input));
+  }
+
+  async getLlmBudgetSnapshot(tokenId: string, at?: string): Promise<LlmBudgetSnapshot | null> {
+    await this.ensurePoolLoaded();
+    return this.poolMem.getLlmBudgetSnapshot(tokenId, at);
+  }
+
+  async recordLlmUsage(input: RecordLlmUsageInput): Promise<LlmUsageRecord> {
+    return this.runPoolMutation(() => this.poolMem.recordLlmUsage(input));
+  }
+
+  async listLlmUsageEvents(query: LlmUsageQuery = {}): Promise<LlmUsageRecord[]> {
+    await this.ensurePoolLoaded();
+    return this.poolMem.listLlmUsageEvents(query);
+  }
+
+  private runPoolMutation<T>(fn: () => Promise<T>): Promise<T> {
+    return this.withPoolLock(async () => {
+      await this.ensurePoolLoaded();
+      const before = new Set(this.poolMem.exportState().poolUsage.map((event) => event.id));
+      const result = await fn();
+      const added = this.poolMem
+        .exportState()
+        .poolUsage.filter((event) => !before.has(event.id));
+      await this.persistPoolState();
+      await this.appendPoolUsage(added);
+      return result;
+    });
+  }
+
+  private withPoolLock<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.poolLock.tail.then(fn, fn);
+    this.poolLock.tail = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
+  }
+
+  private async ensurePoolLoaded(): Promise<void> {
+    if (this.poolLoad === null) this.poolLoad = this.loadPoolState();
+    await this.poolLoad;
+    await this.syncPoolFromDisk();
+  }
+
+  private async loadPoolState(): Promise<void> {
+    try {
+      await mkdir(path.dirname(this.poolFilePath), { recursive: true });
+      await mkdir(path.dirname(this.llmUsageFilePath), { recursive: true });
+      const raw = await readIfExists(this.poolFilePath);
+      if (raw !== null) {
+        try {
+          const parsed = JSON.parse(raw) as { state?: Partial<MemoryStoreState> };
+          if (parsed && typeof parsed === "object" && parsed.state) {
+            this.poolMem.importState(parsed.state);
+          }
+        } catch (error) {
+          log(`LLM 池文件解析失败（忽略）：${errorMessage(error)}`);
+        }
+      }
+      const usage = await readJsonl<LlmUsageRecord>(this.llmUsageFilePath);
+      const pruned = this.pruneLoadedPoolUsage(usage);
+      this.poolMem.importState({ poolUsage: pruned });
+      this.poolStateSeenMtimeMs = await mtimeMs(this.poolFilePath);
+      this.poolUsageSeenMtimeMs = await mtimeMs(this.llmUsageFilePath);
+      if (pruned.length !== usage.length) await this.rewritePoolUsage();
+    } catch (error) {
+      log(`LLM 池文件加载失败（忽略）：${errorMessage(error)}`);
+    }
+    this.poolLoaded = true;
+  }
+
+  private pruneLoadedPoolUsage(usage: LlmUsageRecord[]): LlmUsageRecord[] {
+    const retentionDays = llmUsageRetentionDays(this.env);
+    if (retentionDays <= 0) return usage;
+    const cutoff = llmUsageRetentionCutoffIso(retentionDays);
+    return usage.filter((event) => event.at >= cutoff);
+  }
+
+  private async syncPoolFromDisk(): Promise<void> {
+    const stateMtime = await mtimeMs(this.poolFilePath);
+    if (
+      stateMtime !== null &&
+      this.poolStateSeenMtimeMs !== null &&
+      stateMtime !== this.poolStateSeenMtimeMs
+    ) {
+      const raw = await readIfExists(this.poolFilePath);
+      if (raw !== null) {
+        try {
+          const parsed = JSON.parse(raw) as { state?: Partial<MemoryStoreState> };
+          if (parsed && typeof parsed === "object" && parsed.state) {
+            this.poolMem.importState(parsed.state);
+          }
+        } catch (error) {
+          log(`LLM 池文件合并读取失败（忽略）：${errorMessage(error)}`);
+        }
+      }
+    }
+    this.poolStateSeenMtimeMs = stateMtime ?? this.poolStateSeenMtimeMs;
+
+    const usageMtime = await mtimeMs(this.llmUsageFilePath);
+    if (
+      usageMtime !== null &&
+      this.poolUsageSeenMtimeMs !== null &&
+      usageMtime !== this.poolUsageSeenMtimeMs
+    ) {
+      const diskUsage = await readJsonl<LlmUsageRecord>(this.llmUsageFilePath);
+      const byId = new Map(
+        this.poolMem.exportState().poolUsage.map((event) => [event.id, event] as const)
+      );
+      for (const event of diskUsage) byId.set(event.id, event);
+      this.poolMem.importState({ poolUsage: [...byId.values()] });
+    }
+    this.poolUsageSeenMtimeMs = usageMtime ?? this.poolUsageSeenMtimeMs;
+  }
+
+  private async persistPoolState(): Promise<void> {
+    try {
+      const state = this.poolMem.exportState();
+      const payload = JSON.stringify({
+        v: 1,
+        updatedAt: new Date().toISOString(),
+        state: {
+          poolTokens: state.poolTokens,
+          poolPrices: state.poolPrices,
+          poolCounters: state.poolCounters,
+          poolReservations: state.poolReservations
+        }
+      });
+      await writeFileAtomicAsync(this.poolFilePath, payload);
+      this.poolStateSeenMtimeMs = await mtimeMs(this.poolFilePath);
+    } catch (error) {
+      this.noteWriteFailure(error);
+      log(`LLM 池文件写入失败：${errorMessage(error)}`);
+    }
+  }
+
+  private async appendPoolUsage(records: LlmUsageRecord[]): Promise<void> {
+    if (records.length > 0) {
+      try {
+        await mkdir(path.dirname(this.llmUsageFilePath), { recursive: true });
+        await appendFile(
+          this.llmUsageFilePath,
+          `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+          "utf8"
+        );
+        this.poolUsageSeenMtimeMs = await mtimeMs(this.llmUsageFilePath);
+        this.poolUsageWrites += records.length;
+      } catch (error) {
+        this.noteWriteFailure(error);
+        log(`LLM 用量文件追加失败：${errorMessage(error)}`);
+      }
+    }
+    const retentionDays = llmUsageRetentionDays(this.env);
+    if (retentionDays > 0 && this.poolUsageWrites >= 100) {
+      this.poolUsageWrites = 0;
+      await this.rewritePoolUsage();
+    }
+  }
+
+  private async rewritePoolUsage(): Promise<void> {
+    try {
+      await mkdir(path.dirname(this.llmUsageFilePath), { recursive: true });
+      const usage = this.poolMem.exportState().poolUsage;
+      const content = usage.map((event) => JSON.stringify(event)).join("\n");
+      await writeFileAtomicAsync(this.llmUsageFilePath, content === "" ? "" : `${content}\n`);
+      this.poolUsageSeenMtimeMs = await mtimeMs(this.llmUsageFilePath);
+    } catch (error) {
+      this.noteWriteFailure(error);
+      log(`LLM 用量文件写入失败：${errorMessage(error)}`);
+    }
   }
 
   async getModelCache(rootPath: string, cacheKey: string): Promise<ModelCacheRecord | null> {

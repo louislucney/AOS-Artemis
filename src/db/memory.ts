@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import { buildAuditEvent, cloneAuditEvent, normalizeAuditLimit } from "./audit-event.js";
 import {
+  budgetPeriodKey,
+  llmReservationTtlMs,
+  llmUsageEventsLimit,
+  llmUsageRetentionCutoffIso,
+  llmUsageRetentionDays
+} from "../llm/pool/period.js";
+import {
   AmbiguousProjectError,
   capabilitiesSatisfyPlatforms,
   deviceLeaseTtlMs,
@@ -36,6 +43,13 @@ import type {
   HostAddressRecord,
   HostRecord,
   HostSessionRecord,
+  LlmBudgetSnapshot,
+  LlmPoolMode,
+  LlmPoolTokenRecord,
+  LlmPriceRecord,
+  LlmReservationRecord,
+  LlmUsageQuery,
+  LlmUsageRecord,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
@@ -44,6 +58,7 @@ import type {
   ProjectEventQuery,
   ProjectEventRecord,
   RecordProjectEventResult,
+  RecordLlmUsageInput,
   PutModelCacheInput,
   RecordCaseSetInput,
   RecordExcelWritebackInput,
@@ -53,15 +68,20 @@ import type {
   RegressionTaskRecord,
   RegressionTaskStatus,
   RenewDeviceLeasesInput,
+  ReserveLlmBudgetInput,
+  ReserveLlmBudgetResult,
   RunnerRecord,
   ScheduleRecord,
   SaveExcelMappingInput,
   SetCaseIssueKeyInput,
+  SettleLlmReservationInput,
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
   UpsertHostInput,
   UpsertLlmInput,
+  UpsertLlmPoolTokenInput,
+  UpsertLlmPriceInput,
   UpsertRunnerInput,
   UpsertWebRunnerInput,
   UsageEventQuery,
@@ -72,6 +92,17 @@ import type {
   WebProjectRecord,
   WebRunnerRecord
 } from "./types.js";
+
+export interface LlmBudgetCounterState {
+  poolTokenId: string;
+  periodKey: string;
+  usedTokens: number;
+  usedMicros: number;
+  reservedTokens: number;
+  reservedMicros: number;
+  activeReservations: number;
+  updatedAt: string;
+}
 
 export interface MemoryStoreState {
   projects: ProjectRecord[];
@@ -94,6 +125,11 @@ export interface MemoryStoreState {
   webAssets: WebAssetRecord[];
   excelMappings: ExcelMappingRecord[];
   excelWritebacks: ExcelWritebackRecord[];
+  poolTokens: LlmPoolTokenRecord[];
+  poolPrices: LlmPriceRecord[];
+  poolUsage: LlmUsageRecord[];
+  poolCounters: LlmBudgetCounterState[];
+  poolReservations: LlmReservationRecord[];
 }
 
 /** In-session fallback when PostgreSQL is unavailable (degraded mode). */
@@ -123,6 +159,11 @@ export class MemoryStore implements ProjectStore {
   private webAssetDedupe = new Map<string, string>();
   private excelMappings: ExcelMappingRecord[] = [];
   private excelWritebacks: ExcelWritebackRecord[] = [];
+  private poolTokens: LlmPoolTokenRecord[] = [];
+  private poolPrices: LlmPriceRecord[] = [];
+  private poolUsage: LlmUsageRecord[] = [];
+  private poolCounters = new Map<string, LlmBudgetCounterState>();
+  private poolReservations: LlmReservationRecord[] = [];
 
   constructor(
     hostId: string | null = null,
@@ -164,6 +205,11 @@ export class MemoryStore implements ProjectStore {
     view.webAssetDedupe = this.webAssetDedupe;
     view.excelMappings = this.excelMappings;
     view.excelWritebacks = this.excelWritebacks;
+    view.poolTokens = this.poolTokens;
+    view.poolPrices = this.poolPrices;
+    view.poolUsage = this.poolUsage;
+    view.poolCounters = this.poolCounters;
+    view.poolReservations = this.poolReservations;
     return view;
   }
 
@@ -231,6 +277,9 @@ export class MemoryStore implements ProjectStore {
       record.baseUrl = input.baseUrl ?? record.baseUrl;
       record.model = input.model;
       record.apiKey = input.apiKey ?? record.apiKey;
+      if (input.poolTokenId !== undefined) record.poolTokenId = input.poolTokenId;
+      if (input.poolMode !== undefined) record.poolMode = input.poolMode;
+      if (input.poolModel !== undefined) record.poolModel = input.poolModel;
       record.updatedAt = now;
     } else {
       record = {
@@ -243,7 +292,10 @@ export class MemoryStore implements ProjectStore {
         apiKey: input.apiKey ?? null,
         isActive: false,
         createdAt: now,
-        updatedAt: now
+        updatedAt: now,
+        poolTokenId: input.poolTokenId ?? null,
+        poolMode: input.poolMode ?? "pinned",
+        poolModel: input.poolModel ?? null
       };
       list.push(record);
     }
@@ -258,6 +310,23 @@ export class MemoryStore implements ProjectStore {
     if (!target) return false;
     for (const entry of list) entry.isActive = false;
     target.isActive = true;
+    target.updatedAt = new Date().toISOString();
+    return true;
+  }
+
+  async setLlmPoolBinding(input: {
+    rootPath: string;
+    name: string;
+    poolTokenId: string | null;
+    poolMode?: LlmPoolMode;
+    poolModel?: string | null;
+  }): Promise<boolean> {
+    const list = this.llms.get(input.rootPath) ?? [];
+    const target = list.find((entry) => entry.name === input.name);
+    if (!target) return false;
+    target.poolTokenId = input.poolTokenId;
+    if (input.poolMode !== undefined) target.poolMode = input.poolMode;
+    if (input.poolModel !== undefined) target.poolModel = input.poolModel;
     target.updatedAt = new Date().toISOString();
     return true;
   }
@@ -2116,7 +2185,12 @@ export class MemoryStore implements ProjectStore {
       webProjects: this.webProjects.map(cloneWebProject),
       webAssets: this.webAssets.map(cloneWebAsset),
       excelMappings: this.excelMappings.map(cloneExcelMapping),
-      excelWritebacks: this.excelWritebacks.map(cloneExcelWriteback)
+      excelWritebacks: this.excelWritebacks.map(cloneExcelWriteback),
+      poolTokens: this.poolTokens.map(clonePoolToken),
+      poolPrices: this.poolPrices.map(clonePrice),
+      poolUsage: this.poolUsage.map(cloneUsage),
+      poolCounters: [...this.poolCounters.values()].map((counter) => ({ ...counter })),
+      poolReservations: this.poolReservations.map(cloneReservation)
     };
   }
 
@@ -2158,6 +2232,17 @@ export class MemoryStore implements ProjectStore {
     if (data.excelWritebacks) {
       this.excelWritebacks = data.excelWritebacks.map(cloneExcelWriteback);
     }
+    if (data.poolTokens) this.poolTokens = data.poolTokens.map(clonePoolToken);
+    if (data.poolPrices) this.poolPrices = data.poolPrices.map(clonePrice);
+    if (data.poolUsage) this.poolUsage = data.poolUsage.map(cloneUsage);
+    if (data.poolCounters) {
+      this.poolCounters = new Map(
+        data.poolCounters.map((counter) => [counterKey(counter.poolTokenId, counter.periodKey), { ...counter }])
+      );
+    }
+    if (data.poolReservations) {
+      this.poolReservations = data.poolReservations.map(cloneReservation);
+    }
   }
 
   private pruneUsageEvents(projectId: string | null, policy: UsagePrunePolicy): void {
@@ -2188,6 +2273,440 @@ export class MemoryStore implements ProjectStore {
 
   async close(): Promise<void> {
     /* nothing to do */
+  }
+
+  async listLlmPoolTokens(): Promise<LlmPoolTokenRecord[]> {
+    return [...this.poolTokens]
+      .sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
+      .map(clonePoolToken);
+  }
+
+  async getLlmPoolToken(id: string): Promise<LlmPoolTokenRecord | null> {
+    const found = this.poolTokens.find((token) => token.id === id);
+    return found === undefined ? null : clonePoolToken(found);
+  }
+
+  async upsertLlmPoolToken(input: UpsertLlmPoolTokenInput): Promise<LlmPoolTokenRecord> {
+    const now = input.at ?? new Date().toISOString();
+    let existing = input.id !== undefined ? this.poolTokens.find((t) => t.id === input.id) : undefined;
+    if (existing === undefined) {
+      existing = this.poolTokens.find((t) => t.name === input.name);
+    }
+    let record: LlmPoolTokenRecord;
+    if (existing !== undefined) {
+      existing.name = input.name;
+      existing.provider = input.provider;
+      existing.baseUrl = input.baseUrl;
+      if (input.apiKey !== undefined) existing.apiKey = input.apiKey;
+      if (input.keyEnv !== undefined) existing.keyEnv = input.keyEnv;
+      if (input.modelAllowlist !== undefined) existing.modelAllowlist = [...input.modelAllowlist];
+      if (input.status !== undefined) existing.status = input.status;
+      if (input.priority !== undefined) existing.priority = input.priority;
+      if (input.budgetPeriod !== undefined) existing.budgetPeriod = input.budgetPeriod;
+      if (input.budgetLimitMicros !== undefined) existing.budgetLimitMicros = input.budgetLimitMicros;
+      if (input.budgetLimitTokens !== undefined) existing.budgetLimitTokens = input.budgetLimitTokens;
+      if (input.currency !== undefined) existing.currency = input.currency;
+      if (input.maxConcurrency !== undefined) existing.maxConcurrency = input.maxConcurrency;
+      if (input.supportsStreamUsage !== undefined) {
+        existing.supportsStreamUsage = input.supportsStreamUsage;
+      }
+      if (input.lastValidatedAt !== undefined) existing.lastValidatedAt = input.lastValidatedAt;
+      if (input.lastError !== undefined) existing.lastError = input.lastError;
+      if (input.createdBy !== undefined) existing.createdBy = input.createdBy;
+      existing.updatedAt = now;
+      record = existing;
+    } else {
+      record = {
+        id: input.id ?? randomUUID(),
+        name: input.name,
+        provider: input.provider,
+        baseUrl: input.baseUrl,
+        apiKey: input.apiKey ?? null,
+        keyEnv: input.keyEnv ?? null,
+        modelAllowlist: [...(input.modelAllowlist ?? [])],
+        status: input.status ?? "active",
+        priority: input.priority ?? 0,
+        budgetPeriod: input.budgetPeriod ?? "total",
+        budgetLimitMicros: input.budgetLimitMicros ?? null,
+        budgetLimitTokens: input.budgetLimitTokens ?? null,
+        currency: input.currency ?? "CNY",
+        maxConcurrency: input.maxConcurrency ?? 10,
+        supportsStreamUsage: input.supportsStreamUsage ?? false,
+        lastValidatedAt: input.lastValidatedAt ?? null,
+        lastError: input.lastError ?? null,
+        createdBy: input.createdBy ?? null,
+        createdAt: now,
+        updatedAt: now
+      };
+      this.poolTokens.push(record);
+    }
+    return clonePoolToken(record);
+  }
+
+  async listLlmPrices(
+    query: { provider?: string; model?: string; at?: string } = {}
+  ): Promise<LlmPriceRecord[]> {
+    return this.poolPrices
+      .filter((price) => query.provider === undefined || price.provider === query.provider)
+      .filter((price) => query.model === undefined || price.model === query.model)
+      .filter(
+        (price) =>
+          query.at === undefined ||
+          (price.effectiveFrom <= query.at &&
+            (price.effectiveTo === null || price.effectiveTo > query.at))
+      )
+      .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))
+      .map(clonePrice);
+  }
+
+  async upsertLlmPrice(input: UpsertLlmPriceInput): Promise<LlmPriceRecord> {
+    const now = new Date().toISOString();
+    const overlaps = this.poolPrices.some(
+      (price) =>
+        price.provider === input.provider &&
+        price.model === input.model &&
+        price.currency === input.currency &&
+        (input.effectiveTo === null || input.effectiveTo === undefined || price.effectiveFrom < input.effectiveTo) &&
+        (price.effectiveTo === null || price.effectiveTo > input.effectiveFrom)
+    );
+    if (overlaps) throw new Error("llm-price-overlap");
+
+    if (input.id !== undefined) {
+      const existing = this.poolPrices.find((price) => price.id === input.id);
+      if (existing !== undefined) {
+        existing.provider = input.provider;
+        existing.model = input.model;
+        existing.currency = input.currency;
+        existing.fxRateToBase = input.fxRateToBase ?? 1;
+        existing.inputMicrosPerMtok = input.inputMicrosPerMtok;
+        existing.outputMicrosPerMtok = input.outputMicrosPerMtok;
+        existing.cacheReadMicrosPerMtok = input.cacheReadMicrosPerMtok ?? null;
+        existing.cacheWriteMicrosPerMtok = input.cacheWriteMicrosPerMtok ?? null;
+        existing.effectiveFrom = input.effectiveFrom;
+        existing.effectiveTo = input.effectiveTo ?? null;
+        existing.createdBy = input.createdBy ?? null;
+        existing.note = input.note ?? null;
+        return clonePrice(existing);
+      }
+    }
+
+    const version =
+      this.poolPrices
+        .filter(
+          (price) =>
+            price.provider === input.provider &&
+            price.model === input.model &&
+            price.currency === input.currency
+        )
+        .reduce((max, price) => Math.max(max, price.version), 0) + 1;
+    const record: LlmPriceRecord = {
+      id: input.id ?? randomUUID(),
+      version,
+      provider: input.provider,
+      model: input.model,
+      currency: input.currency,
+      fxRateToBase: input.fxRateToBase ?? 1,
+      inputMicrosPerMtok: input.inputMicrosPerMtok,
+      outputMicrosPerMtok: input.outputMicrosPerMtok,
+      cacheReadMicrosPerMtok: input.cacheReadMicrosPerMtok ?? null,
+      cacheWriteMicrosPerMtok: input.cacheWriteMicrosPerMtok ?? null,
+      effectiveFrom: input.effectiveFrom,
+      effectiveTo: input.effectiveTo ?? null,
+      createdBy: input.createdBy ?? null,
+      note: input.note ?? null,
+      createdAt: now
+    };
+    this.poolPrices.push(record);
+    return clonePrice(record);
+  }
+
+  async reserveLlmBudget(input: ReserveLlmBudgetInput): Promise<ReserveLlmBudgetResult> {
+    const at = input.at ?? new Date().toISOString();
+    const token = this.poolTokens.find((t) => t.id === input.poolTokenId);
+    if (token === undefined) return { ok: false, reason: "token-not-found", snapshot: null };
+    if (token.status !== "active") return { ok: false, reason: "token-inactive", snapshot: null };
+
+    const periodKey = budgetPeriodKey(token.budgetPeriod, at);
+    const estimatedTokens = input.estimatedPromptTokens + input.estimatedOutputTokens;
+    const ttlMs = input.ttlMs ?? llmReservationTtlMs(this.env);
+    const expiresAt = new Date(Date.parse(at) + ttlMs).toISOString();
+    const projectId = this.resolveProjectId(input.projectRoot);
+
+    const key = counterKey(token.id, periodKey);
+    let counter = this.poolCounters.get(key);
+    if (counter === undefined) {
+      counter = {
+        poolTokenId: token.id,
+        periodKey,
+        usedTokens: 0,
+        usedMicros: 0,
+        reservedTokens: 0,
+        reservedMicros: 0,
+        activeReservations: 0,
+        updatedAt: at
+      };
+      this.poolCounters.set(key, counter);
+    }
+    const withinMicros =
+      token.budgetLimitMicros === null ||
+      counter.usedMicros + counter.reservedMicros + input.estimatedMicros <= token.budgetLimitMicros;
+    const withinTokens =
+      token.budgetLimitTokens === null ||
+      counter.usedTokens + counter.reservedTokens + estimatedTokens <= token.budgetLimitTokens;
+    const withinConcurrency = counter.activeReservations < token.maxConcurrency;
+    if (!withinMicros || !withinTokens || !withinConcurrency) {
+      const snapshot = memoryBuildSnapshot(token, counter);
+      const reason: "budget-exhausted" | "concurrency-limit" =
+        !withinConcurrency ? "concurrency-limit" : "budget-exhausted";
+      return { ok: false, reason, snapshot };
+    }
+
+    counter.reservedTokens += estimatedTokens;
+    counter.reservedMicros += input.estimatedMicros;
+    counter.activeReservations += 1;
+    counter.updatedAt = at;
+
+    const reservation: LlmReservationRecord = {
+      id: randomUUID(),
+      poolTokenId: token.id,
+      periodKey,
+      projectId,
+      projectRoot: input.projectRoot,
+      provider: input.provider,
+      model: input.model,
+      source: input.source,
+      estimatedPromptTokens: input.estimatedPromptTokens,
+      estimatedOutputTokens: input.estimatedOutputTokens,
+      estimatedTokens,
+      reservedMicros: input.estimatedMicros,
+      status: "active",
+      createdAt: at,
+      expiresAt,
+      settledAt: null,
+      hostId: input.hostId ?? null,
+      sessionId: input.sessionId ?? null,
+      taskId: input.taskId ?? null,
+      traceId: input.traceId ?? null,
+      requestId: input.requestId ?? null
+    };
+    this.poolReservations.push(reservation);
+    return { ok: true, reservation: cloneReservation(reservation) };
+  }
+
+  async settleLlmReservation(input: SettleLlmReservationInput): Promise<LlmUsageRecord | null> {
+    const at = input.at ?? new Date().toISOString();
+    const reservation = this.poolReservations.find((r) => r.id === input.reservationId);
+    if (reservation === undefined || reservation.status !== "active") return null;
+    const counter = this.poolCounters.get(counterKey(reservation.poolTokenId, reservation.periodKey));
+    const actualMicros = input.costMicrosBase ?? input.costMicros ?? 0;
+    if (counter !== undefined) {
+      counter.reservedTokens = Math.max(0, counter.reservedTokens - reservation.estimatedTokens);
+      counter.reservedMicros = Math.max(0, counter.reservedMicros - reservation.reservedMicros);
+      counter.usedTokens += input.usage.totalTokens;
+      counter.usedMicros += actualMicros;
+      counter.activeReservations = Math.max(0, counter.activeReservations - 1);
+      counter.updatedAt = at;
+    }
+    reservation.status = "settled";
+    reservation.settledAt = at;
+    const usage: LlmUsageRecord = {
+      id: randomUUID(),
+      at,
+      projectId: reservation.projectId,
+      projectRoot: reservation.projectRoot,
+      hostId: reservation.hostId,
+      sessionId: reservation.sessionId,
+      taskId: reservation.taskId,
+      traceId: reservation.traceId,
+      poolTokenId: reservation.poolTokenId,
+      provider: reservation.provider,
+      model: reservation.model,
+      baseInputTokens: input.usage.baseInputTokens,
+      cacheCreationTokens: input.usage.cacheCreationTokens,
+      cacheReadTokens: input.usage.cacheReadTokens,
+      outputTokens: input.usage.outputTokens,
+      totalTokens: input.usage.totalTokens,
+      usageSource: input.usageSource,
+      estimatedTokens: reservation.estimatedTokens,
+      reservedMicros: reservation.reservedMicros,
+      reservationId: reservation.id,
+      settledAt: at,
+      costMicros: input.costMicros,
+      currency: input.currency,
+      costMicrosBase: input.costMicrosBase,
+      baseCurrency: input.baseCurrency,
+      fxRateToBase: input.fxRateToBase,
+      priceBookId: input.priceBookId,
+      priceVersion: input.priceVersion,
+      source: reservation.source,
+      requestId: reservation.requestId,
+      status: input.status,
+      errorClass: input.errorClass ?? null
+    };
+    this.poolUsage.push(usage);
+    return cloneUsage(usage);
+  }
+
+  async releaseLlmReservation(input: { reservationId: string; at?: string }): Promise<boolean> {
+    const at = input.at ?? new Date().toISOString();
+    const reservation = this.poolReservations.find((r) => r.id === input.reservationId);
+    if (reservation === undefined || reservation.status !== "active") return false;
+    const counter = this.poolCounters.get(counterKey(reservation.poolTokenId, reservation.periodKey));
+    if (counter !== undefined) {
+      counter.reservedTokens = Math.max(0, counter.reservedTokens - reservation.estimatedTokens);
+      counter.reservedMicros = Math.max(0, counter.reservedMicros - reservation.reservedMicros);
+      counter.activeReservations = Math.max(0, counter.activeReservations - 1);
+      counter.updatedAt = at;
+    }
+    reservation.status = "released";
+    return true;
+  }
+
+  async reconcileLlmReservations(input: {
+    at?: string;
+    limit?: number;
+  } = {}): Promise<{ settled: number; released: number }> {
+    const at = input.at ?? new Date().toISOString();
+    const limit = input.limit ?? 100;
+    const expired = this.poolReservations
+      .filter((r) => r.status === "active" && r.expiresAt <= at)
+      .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt))
+      .slice(0, limit);
+    let settled = 0;
+    for (const reservation of expired) {
+      const counter = this.poolCounters.get(
+        counterKey(reservation.poolTokenId, reservation.periodKey)
+      );
+      if (counter !== undefined) {
+        counter.reservedTokens = Math.max(0, counter.reservedTokens - reservation.estimatedTokens);
+        counter.reservedMicros = Math.max(0, counter.reservedMicros - reservation.reservedMicros);
+        counter.usedTokens += reservation.estimatedTokens;
+        counter.usedMicros += reservation.reservedMicros;
+        counter.activeReservations = Math.max(0, counter.activeReservations - 1);
+        counter.updatedAt = at;
+      }
+      reservation.status = "settled";
+      reservation.settledAt = at;
+      const usage: LlmUsageRecord = {
+        id: randomUUID(),
+        at,
+        projectId: reservation.projectId,
+        projectRoot: reservation.projectRoot,
+        hostId: reservation.hostId,
+        sessionId: reservation.sessionId,
+        taskId: reservation.taskId,
+        traceId: reservation.traceId,
+        poolTokenId: reservation.poolTokenId,
+        provider: reservation.provider,
+        model: reservation.model,
+        baseInputTokens: reservation.estimatedPromptTokens,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: reservation.estimatedOutputTokens,
+        totalTokens: reservation.estimatedTokens,
+        usageSource: "estimated",
+        estimatedTokens: reservation.estimatedTokens,
+        reservedMicros: reservation.reservedMicros,
+        reservationId: reservation.id,
+        settledAt: at,
+        costMicros: null,
+        currency: null,
+        costMicrosBase: null,
+        baseCurrency: "CNY",
+        fxRateToBase: null,
+        priceBookId: null,
+        priceVersion: null,
+        source: reservation.source,
+        requestId: reservation.requestId,
+        status: "settled_estimated",
+        errorClass: "reservation-ttl"
+      };
+      this.poolUsage.push(usage);
+      settled += 1;
+    }
+    return { settled, released: 0 };
+  }
+
+  async getLlmBudgetSnapshot(tokenId: string, at?: string): Promise<LlmBudgetSnapshot | null> {
+    const token = this.poolTokens.find((t) => t.id === tokenId);
+    if (token === undefined) return null;
+    const periodKey = budgetPeriodKey(token.budgetPeriod, at);
+    return memoryBuildSnapshot(token, this.poolCounters.get(counterKey(tokenId, periodKey)));
+  }
+
+  async recordLlmUsage(input: RecordLlmUsageInput): Promise<LlmUsageRecord> {
+    const at = input.at ?? new Date().toISOString();
+    const projectId =
+      input.projectId !== undefined ? input.projectId : this.resolveProjectId(input.projectRoot);
+    const usage: LlmUsageRecord = {
+      id: randomUUID(),
+      at,
+      projectId,
+      projectRoot: input.projectRoot,
+      hostId: input.hostId ?? null,
+      sessionId: input.sessionId ?? null,
+      taskId: input.taskId ?? null,
+      traceId: input.traceId ?? null,
+      poolTokenId: input.poolTokenId,
+      provider: input.provider,
+      model: input.model,
+      baseInputTokens: input.usage.baseInputTokens,
+      cacheCreationTokens: input.usage.cacheCreationTokens,
+      cacheReadTokens: input.usage.cacheReadTokens,
+      outputTokens: input.usage.outputTokens,
+      totalTokens: input.usage.totalTokens,
+      usageSource: input.usageSource,
+      estimatedTokens: input.estimatedTokens ?? null,
+      reservedMicros: input.reservedMicros ?? null,
+      reservationId: input.reservationId ?? null,
+      settledAt: input.settledAt ?? null,
+      costMicros: input.costMicros,
+      currency: input.currency,
+      costMicrosBase: input.costMicrosBase,
+      baseCurrency: input.baseCurrency,
+      fxRateToBase: input.fxRateToBase,
+      priceBookId: input.priceBookId,
+      priceVersion: input.priceVersion,
+      source: input.source,
+      requestId: input.requestId ?? null,
+      status: input.status,
+      errorClass: input.errorClass ?? null
+    };
+    this.poolUsage.push(usage);
+    this.prunePoolUsage();
+    return cloneUsage(usage);
+  }
+
+  async listLlmUsageEvents(query: LlmUsageQuery = {}): Promise<LlmUsageRecord[]> {
+    return this.poolUsage
+      .filter((event) => query.projectRoot === undefined || event.projectRoot === query.projectRoot)
+      .filter((event) => query.poolTokenId === undefined || event.poolTokenId === query.poolTokenId)
+      .filter((event) => query.provider === undefined || event.provider === query.provider)
+      .filter((event) => query.model === undefined || event.model === query.model)
+      .filter((event) => query.since === undefined || event.at >= query.since)
+      .filter((event) => query.until === undefined || event.at <= query.until)
+      .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))
+      .slice(0, llmUsageEventsLimit(query.limit))
+      .map(cloneUsage);
+  }
+
+  private resolveProjectId(projectRoot: string | null): string | null {
+    if (projectRoot === null) return null;
+    try {
+      return this.getProjectRecord(projectRoot)?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private prunePoolUsage(): void {
+    const retentionDays = llmUsageRetentionDays(this.env);
+    if (retentionDays <= 0) return;
+    const cutoff = llmUsageRetentionCutoffIso(retentionDays);
+    replaceInPlace(
+      this.poolUsage,
+      this.poolUsage.filter((event) => event.at >= cutoff)
+    );
   }
 
   taskCount(): number {
@@ -2329,6 +2848,59 @@ function cloneExcelMapping(record: ExcelMappingRecord): ExcelMappingRecord {
 
 function cloneExcelWriteback(record: ExcelWritebackRecord): ExcelWritebackRecord {
   return { ...record, status: record.status === "pending" ? "pending" : "confirmed" };
+}
+
+function counterKey(poolTokenId: string, periodKey: string): string {
+  return `${poolTokenId}\u0000${periodKey}`;
+}
+
+function clonePoolToken(record: LlmPoolTokenRecord): LlmPoolTokenRecord {
+  return { ...record, modelAllowlist: [...record.modelAllowlist] };
+}
+
+function clonePrice(record: LlmPriceRecord): LlmPriceRecord {
+  return { ...record };
+}
+
+function cloneUsage(record: LlmUsageRecord): LlmUsageRecord {
+  return { ...record };
+}
+
+function cloneReservation(record: LlmReservationRecord): LlmReservationRecord {
+  return { ...record };
+}
+
+function memoryBuildSnapshot(
+  token: LlmPoolTokenRecord,
+  counter: LlmBudgetCounterState | undefined,
+  periodKey: string = budgetPeriodKey(token.budgetPeriod)
+): LlmBudgetSnapshot {
+  const usedTokens = counter?.usedTokens ?? 0;
+  const usedMicros = counter?.usedMicros ?? 0;
+  const reservedTokens = counter?.reservedTokens ?? 0;
+  const reservedMicros = counter?.reservedMicros ?? 0;
+  const activeReservations = counter?.activeReservations ?? 0;
+  return {
+    poolTokenId: token.id,
+    period: token.budgetPeriod,
+    periodKey: counter?.periodKey ?? periodKey,
+    usedTokens,
+    usedMicros,
+    reservedTokens,
+    reservedMicros,
+    limitTokens: token.budgetLimitTokens,
+    limitMicros: token.budgetLimitMicros,
+    activeReservations,
+    maxConcurrency: token.maxConcurrency,
+    remainingTokens:
+      token.budgetLimitTokens === null
+        ? null
+        : Math.max(0, token.budgetLimitTokens - usedTokens - reservedTokens),
+    remainingMicros:
+      token.budgetLimitMicros === null
+        ? null
+        : Math.max(0, token.budgetLimitMicros - usedMicros - reservedMicros)
+  };
 }
 
 function cloneMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {

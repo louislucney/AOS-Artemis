@@ -8,6 +8,13 @@ import {
 import { hostStrictFrom } from "../host/strict.js";
 import { errorMessage } from "../util.js";
 import {
+  budgetPeriodKey,
+  llmReservationTtlMs,
+  llmUsageEventsLimit,
+  llmUsageRetentionCutoffIso,
+  llmUsageRetentionDays
+} from "../llm/pool/period.js";
+import {
   buildUsageEvent,
   isUsageErrorClass,
   normalizeUsageLimit,
@@ -27,6 +34,18 @@ import type {
   HostAddressRecord,
   HostRecord,
   HostSessionRecord,
+  LlmBudgetPeriod,
+  LlmBudgetSnapshot,
+  LlmPoolMode,
+  LlmPoolStatus,
+  LlmPoolTokenRecord,
+  LlmPriceRecord,
+  LlmReservationRecord,
+  LlmUsageOrigin,
+  LlmUsageQuery,
+  LlmUsageRecord,
+  LlmUsageSource,
+  LlmUsageStatus,
   ModelCacheRecord,
   ProjectLlmRecord,
   ProjectRecord,
@@ -35,6 +54,7 @@ import type {
   ProjectEventQuery,
   ProjectEventRecord,
   RecordProjectEventResult,
+  RecordLlmUsageInput,
   PutModelCacheInput,
   RecordCaseSetInput,
   RecordSuiteRunInput,
@@ -45,17 +65,22 @@ import type {
   RegressionTaskRef,
   RegressionTaskStatus,
   RenewDeviceLeasesInput,
+  ReserveLlmBudgetInput,
+  ReserveLlmBudgetResult,
   RunnerDevice,
   RunnerRecord,
   RunnerTools,
   ScheduleRecord,
   SetCaseIssueKeyInput,
+  SettleLlmReservationInput,
   SuiteRunCaseRecord,
   SuiteRunRecord,
   TaskStatRecord,
   UpdateCaseVerdictInput,
   UpsertHostInput,
   UpsertLlmInput,
+  UpsertLlmPoolTokenInput,
+  UpsertLlmPriceInput,
   UpsertRunnerInput,
   UpsertWebRunnerInput,
   LegacyLedgerImportResult,
@@ -483,7 +508,123 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_lookup_idx
      ON excel_writeback_journal(root_path, asset_id, cell_ref, written_at)`,
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_cell_key_idx
-     ON excel_writeback_journal(root_path, asset_id, sheet_name, case_id, column_key, written_at)`
+     ON excel_writeback_journal(root_path, asset_id, sheet_name, case_id, column_key, written_at)`,
+  `CREATE TABLE IF NOT EXISTS llm_pool_tokens (
+     id TEXT PRIMARY KEY,
+     name TEXT NOT NULL UNIQUE,
+     provider TEXT NOT NULL,
+     base_url TEXT NOT NULL,
+     api_key TEXT,
+     key_env TEXT,
+     model_allowlist TEXT NOT NULL DEFAULT '[]',
+     status TEXT NOT NULL DEFAULT 'active',
+     priority INTEGER NOT NULL DEFAULT 0,
+     budget_period TEXT NOT NULL DEFAULT 'monthly',
+     budget_limit_micros BIGINT,
+     budget_limit_tokens BIGINT,
+     currency TEXT NOT NULL DEFAULT 'CNY',
+     max_concurrency INTEGER NOT NULL DEFAULT 10,
+     supports_stream_usage BOOLEAN NOT NULL DEFAULT FALSE,
+     last_validated_at TEXT,
+     last_error TEXT,
+     created_by TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   )`,
+  `CREATE TABLE IF NOT EXISTS llm_price_book (
+     id TEXT PRIMARY KEY,
+     version INTEGER NOT NULL,
+     provider TEXT NOT NULL,
+     model TEXT NOT NULL,
+     currency TEXT NOT NULL,
+     fx_rate_to_base DOUBLE PRECISION NOT NULL DEFAULT 1,
+     input_micros_per_mtok BIGINT NOT NULL,
+     output_micros_per_mtok BIGINT NOT NULL,
+     cache_read_micros_per_mtok BIGINT,
+     cache_write_micros_per_mtok BIGINT,
+     effective_from TEXT NOT NULL,
+     effective_to TEXT,
+     created_by TEXT,
+     note TEXT,
+     created_at TEXT NOT NULL,
+     UNIQUE (provider, model, currency, effective_from)
+   )`,
+  `CREATE TABLE IF NOT EXISTS llm_usage_events (
+     id TEXT PRIMARY KEY,
+     at TEXT NOT NULL,
+     project_id TEXT,
+     project_root TEXT,
+     host_id TEXT,
+     session_id TEXT,
+     task_id TEXT,
+     trace_id TEXT,
+     pool_token_id TEXT,
+     provider TEXT NOT NULL,
+     model TEXT NOT NULL,
+     base_input_tokens BIGINT NOT NULL,
+     cache_creation_tokens BIGINT NOT NULL,
+     cache_read_tokens BIGINT NOT NULL,
+     output_tokens BIGINT NOT NULL,
+     total_tokens BIGINT NOT NULL,
+     usage_source TEXT NOT NULL,
+     estimated_tokens BIGINT,
+     reserved_micros BIGINT,
+     reservation_id TEXT,
+     settled_at TEXT,
+     cost_micros BIGINT,
+     currency TEXT,
+     cost_micros_base BIGINT,
+     base_currency TEXT NOT NULL,
+     fx_rate_to_base DOUBLE PRECISION,
+     price_book_id TEXT,
+     price_version INTEGER,
+     source TEXT NOT NULL,
+     request_id TEXT,
+     status TEXT NOT NULL,
+     error_class TEXT
+   )`,
+  `CREATE INDEX IF NOT EXISTS llm_usage_events_project_at_idx
+     ON llm_usage_events(project_id, at)`,
+  `CREATE INDEX IF NOT EXISTS llm_usage_events_token_at_idx
+     ON llm_usage_events(pool_token_id, at)`,
+  `CREATE INDEX IF NOT EXISTS llm_usage_events_model_at_idx
+     ON llm_usage_events(model, at)`,
+  `CREATE INDEX IF NOT EXISTS llm_usage_events_reservation_idx
+     ON llm_usage_events(reservation_id)`,
+  `CREATE TABLE IF NOT EXISTS llm_budget_counters (
+     pool_token_id TEXT NOT NULL,
+     period_key TEXT NOT NULL,
+     used_tokens BIGINT NOT NULL DEFAULT 0,
+     used_micros BIGINT NOT NULL DEFAULT 0,
+     reserved_tokens BIGINT NOT NULL DEFAULT 0,
+     reserved_micros BIGINT NOT NULL DEFAULT 0,
+     active_reservations INTEGER NOT NULL DEFAULT 0,
+     updated_at TEXT NOT NULL,
+     PRIMARY KEY (pool_token_id, period_key)
+   )`,
+  `CREATE TABLE IF NOT EXISTS llm_reservations (
+     id TEXT PRIMARY KEY,
+     pool_token_id TEXT NOT NULL,
+     period_key TEXT NOT NULL,
+     project_id TEXT,
+     project_root TEXT NOT NULL,
+     provider TEXT NOT NULL,
+     model TEXT NOT NULL,
+     source TEXT NOT NULL,
+     estimated_prompt_tokens BIGINT NOT NULL,
+     estimated_output_tokens BIGINT NOT NULL,
+     estimated_tokens BIGINT NOT NULL,
+     reserved_micros BIGINT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'active',
+     created_at TEXT NOT NULL,
+     expires_at TEXT NOT NULL,
+     settled_at TEXT,
+     host_id TEXT,
+     session_id TEXT,
+     task_id TEXT,
+     trace_id TEXT,
+     request_id TEXT
+   )`
 ];
 
 const MIGRATIONS = [
@@ -552,7 +693,10 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_pending_idx
      ON excel_writeback_journal(root_path, asset_id, status, written_at)`,
   `CREATE INDEX IF NOT EXISTS regression_tasks_web_claim_idx
-     ON regression_tasks(status, target_host_id, device_serial)`
+     ON regression_tasks(status, target_host_id, device_serial)`,
+  `ALTER TABLE project_llms ADD COLUMN IF NOT EXISTS pool_token_id TEXT`,
+  `ALTER TABLE project_llms ADD COLUMN IF NOT EXISTS pool_mode TEXT NOT NULL DEFAULT 'pinned'`,
+  `ALTER TABLE project_llms ADD COLUMN IF NOT EXISTS pool_model TEXT`
 ];
 
 /** 迁移 advisory lock 的固定键（避免并发首启各自跑 DDL）。 */
@@ -786,26 +930,39 @@ export class PostgresStore implements ProjectStore {
     let id: string;
     if (existing.rows.length > 0) {
       id = String(existing.rows[0]!.id);
+      const sets = ["provider = $3", "base_url = $4", "model = $5", "api_key = $6", "updated_at = $7"];
+      const values: unknown[] = [
+        id,
+        project.id,
+        input.provider ?? "custom",
+        input.baseUrl ?? null,
+        input.model,
+        input.apiKey ?? null,
+        now
+      ];
+      if (input.poolTokenId !== undefined) {
+        values.push(input.poolTokenId);
+        sets.push(`pool_token_id = $${values.length}`);
+      }
+      if (input.poolMode !== undefined) {
+        values.push(input.poolMode);
+        sets.push(`pool_mode = $${values.length}`);
+      }
+      if (input.poolModel !== undefined) {
+        values.push(input.poolModel);
+        sets.push(`pool_model = $${values.length}`);
+      }
       await this.pool.query(
-        `UPDATE project_llms
-            SET provider = $3, base_url = $4, model = $5, api_key = $6, updated_at = $7
-          WHERE id = $1 AND project_id = $2`,
-        [
-          id,
-          project.id,
-          input.provider ?? "custom",
-          input.baseUrl ?? null,
-          input.model,
-          input.apiKey ?? null,
-          now
-        ]
+        `UPDATE project_llms SET ${sets.join(", ")} WHERE id = $1 AND project_id = $2`,
+        values
       );
     } else {
       id = randomUUID();
       await this.pool.query(
         `INSERT INTO project_llms
-           (id, project_id, name, provider, base_url, model, api_key, is_active, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8, $8)`,
+           (id, project_id, name, provider, base_url, model, api_key, is_active,
+            pool_token_id, pool_mode, pool_model, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8, $9, $10, $11, $11)`,
         [
           id,
           project.id,
@@ -814,6 +971,9 @@ export class PostgresStore implements ProjectStore {
           input.baseUrl ?? null,
           input.model,
           input.apiKey ?? null,
+          input.poolTokenId ?? null,
+          input.poolMode ?? "pinned",
+          input.poolModel ?? null,
           now
         ]
       );
@@ -839,6 +999,34 @@ export class PostgresStore implements ProjectStore {
       `UPDATE project_llms SET is_active = TRUE, updated_at = $3
         WHERE project_id = $1 AND name = $2 RETURNING id`,
       [project.id, name, now]
+    );
+    return updated.rows.length > 0;
+  }
+
+  async setLlmPoolBinding(input: {
+    rootPath: string;
+    name: string;
+    poolTokenId: string | null;
+    poolMode?: LlmPoolMode;
+    poolModel?: string | null;
+  }): Promise<boolean> {
+    const project = await this.getProjectByPath(input.rootPath);
+    if (!project) return false;
+    const now = new Date().toISOString();
+    const sets = ["pool_token_id = $3", "updated_at = $4"];
+    const values: unknown[] = [project.id, input.name, input.poolTokenId, now];
+    if (input.poolMode !== undefined) {
+      values.push(input.poolMode);
+      sets.push(`pool_mode = $${values.length}`);
+    }
+    if (input.poolModel !== undefined) {
+      values.push(input.poolModel);
+      sets.push(`pool_model = $${values.length}`);
+    }
+    const updated = await this.pool.query(
+      `UPDATE project_llms SET ${sets.join(", ")}
+        WHERE project_id = $1 AND name = $2 RETURNING id`,
+      values
     );
     return updated.rows.length > 0;
   }
@@ -3486,6 +3674,625 @@ export class PostgresStore implements ProjectStore {
     }
   }
 
+  async listLlmPoolTokens(): Promise<LlmPoolTokenRecord[]> {
+    const result = await this.pool.query(
+      "SELECT * FROM llm_pool_tokens ORDER BY priority ASC, name ASC"
+    );
+    return result.rows.map(mapLlmPoolToken);
+  }
+
+  async getLlmPoolToken(id: string): Promise<LlmPoolTokenRecord | null> {
+    const result = await this.pool.query("SELECT * FROM llm_pool_tokens WHERE id = $1", [id]);
+    return result.rows.length > 0 ? mapLlmPoolToken(result.rows[0]!) : null;
+  }
+
+  async upsertLlmPoolToken(input: UpsertLlmPoolTokenInput): Promise<LlmPoolTokenRecord> {
+    const now = input.at ?? new Date().toISOString();
+    let existing: QueryResultLike;
+    if (input.id !== undefined) {
+      existing = await this.pool.query("SELECT * FROM llm_pool_tokens WHERE id = $1", [input.id]);
+      if (existing.rows.length === 0) {
+        existing = await this.pool.query("SELECT * FROM llm_pool_tokens WHERE name = $1", [
+          input.name
+        ]);
+      }
+    } else {
+      existing = await this.pool.query("SELECT * FROM llm_pool_tokens WHERE name = $1", [
+        input.name
+      ]);
+    }
+
+    let id: string;
+    if (existing.rows.length > 0) {
+      id = String(existing.rows[0]!.id);
+      const sets: string[] = [];
+      const values: unknown[] = [];
+      const add = (column: string, value: unknown): void => {
+        values.push(value);
+        sets.push(`${column} = $${values.length}`);
+      };
+      add("name", input.name);
+      add("provider", input.provider);
+      add("base_url", input.baseUrl);
+      if (input.apiKey !== undefined) add("api_key", input.apiKey);
+      if (input.keyEnv !== undefined) add("key_env", input.keyEnv);
+      if (input.modelAllowlist !== undefined) {
+        add("model_allowlist", JSON.stringify(input.modelAllowlist));
+      }
+      if (input.status !== undefined) add("status", input.status);
+      if (input.priority !== undefined) add("priority", input.priority);
+      if (input.budgetPeriod !== undefined) add("budget_period", input.budgetPeriod);
+      if (input.budgetLimitMicros !== undefined) add("budget_limit_micros", input.budgetLimitMicros);
+      if (input.budgetLimitTokens !== undefined) add("budget_limit_tokens", input.budgetLimitTokens);
+      if (input.currency !== undefined) add("currency", input.currency);
+      if (input.maxConcurrency !== undefined) add("max_concurrency", input.maxConcurrency);
+      if (input.supportsStreamUsage !== undefined) {
+        add("supports_stream_usage", input.supportsStreamUsage);
+      }
+      if (input.lastValidatedAt !== undefined) add("last_validated_at", input.lastValidatedAt);
+      if (input.lastError !== undefined) add("last_error", input.lastError);
+      if (input.createdBy !== undefined) add("created_by", input.createdBy);
+      add("updated_at", now);
+      values.push(id);
+      await this.pool.query(
+        `UPDATE llm_pool_tokens SET ${sets.join(", ")} WHERE id = $${values.length}`,
+        values
+      );
+    } else {
+      id = input.id ?? randomUUID();
+      await this.pool.query(
+        `INSERT INTO llm_pool_tokens
+           (id, name, provider, base_url, api_key, key_env, model_allowlist, status, priority,
+            budget_period, budget_limit_micros, budget_limit_tokens, currency, max_concurrency,
+            supports_stream_usage, last_validated_at, last_error, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $19)`,
+        [
+          id,
+          input.name,
+          input.provider,
+          input.baseUrl,
+          input.apiKey ?? null,
+          input.keyEnv ?? null,
+          JSON.stringify(input.modelAllowlist ?? []),
+          input.status ?? "active",
+          input.priority ?? 0,
+          input.budgetPeriod ?? "monthly",
+          input.budgetLimitMicros ?? null,
+          input.budgetLimitTokens ?? null,
+          input.currency ?? "CNY",
+          input.maxConcurrency ?? 10,
+          input.supportsStreamUsage ?? false,
+          input.lastValidatedAt ?? null,
+          input.lastError ?? null,
+          input.createdBy ?? null,
+          now
+        ]
+      );
+    }
+
+    const result = await this.pool.query("SELECT * FROM llm_pool_tokens WHERE id = $1", [id]);
+    return mapLlmPoolToken(result.rows[0]!);
+  }
+
+  async listLlmPrices(
+    query: { provider?: string; model?: string; at?: string } = {}
+  ): Promise<LlmPriceRecord[]> {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (query.provider !== undefined) {
+      values.push(query.provider);
+      clauses.push(`provider = $${values.length}`);
+    }
+    if (query.model !== undefined) {
+      values.push(query.model);
+      clauses.push(`model = $${values.length}`);
+    }
+    if (query.at !== undefined) {
+      values.push(query.at);
+      clauses.push(`effective_from <= $${values.length}`);
+      values.push(query.at);
+      clauses.push(`(effective_to IS NULL OR effective_to > $${values.length})`);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const result = await this.pool.query(
+      `SELECT * FROM llm_price_book ${where} ORDER BY effective_from DESC`,
+      values
+    );
+    return result.rows.map(mapLlmPrice);
+  }
+
+  async upsertLlmPrice(input: UpsertLlmPriceInput): Promise<LlmPriceRecord> {
+    const now = new Date().toISOString();
+    const overlap = await this.pool.query(
+      `SELECT 1 FROM llm_price_book
+        WHERE provider = $1 AND model = $2 AND currency = $3
+          AND ($5::text IS NULL OR effective_from < $5)
+          AND (effective_to IS NULL OR effective_to > $4)
+          AND ($6::text IS NULL OR id <> $6)
+        LIMIT 1`,
+      [
+        input.provider,
+        input.model,
+        input.currency,
+        input.effectiveFrom,
+        input.effectiveTo ?? null,
+        input.id ?? null
+      ]
+    );
+    if (overlap.rows.length > 0) throw new Error("llm-price-overlap");
+
+    let id: string;
+    if (input.id !== undefined) {
+      const existing = await this.pool.query("SELECT * FROM llm_price_book WHERE id = $1", [
+        input.id
+      ]);
+      if (existing.rows.length > 0) {
+        id = input.id;
+        await this.pool.query(
+          `UPDATE llm_price_book
+              SET provider = $2, model = $3, currency = $4, fx_rate_to_base = $5,
+                  input_micros_per_mtok = $6, output_micros_per_mtok = $7,
+                  cache_read_micros_per_mtok = $8, cache_write_micros_per_mtok = $9,
+                  effective_from = $10, effective_to = $11, created_by = $12, note = $13
+            WHERE id = $1`,
+          [
+            id,
+            input.provider,
+            input.model,
+            input.currency,
+            input.fxRateToBase ?? 1,
+            input.inputMicrosPerMtok,
+            input.outputMicrosPerMtok,
+            input.cacheReadMicrosPerMtok ?? null,
+            input.cacheWriteMicrosPerMtok ?? null,
+            input.effectiveFrom,
+            input.effectiveTo ?? null,
+            input.createdBy ?? null,
+            input.note ?? null
+          ]
+        );
+        const result = await this.pool.query("SELECT * FROM llm_price_book WHERE id = $1", [id]);
+        return mapLlmPrice(result.rows[0]!);
+      }
+      id = input.id;
+    } else {
+      id = randomUUID();
+    }
+
+    const versionResult = await this.pool.query(
+      "SELECT COALESCE(MAX(version), 0) AS v FROM llm_price_book WHERE provider = $1 AND model = $2 AND currency = $3",
+      [input.provider, input.model, input.currency]
+    );
+    const version = Number(versionResult.rows[0]!.v) + 1;
+    await this.pool.query(
+      `INSERT INTO llm_price_book
+         (id, version, provider, model, currency, fx_rate_to_base, input_micros_per_mtok,
+          output_micros_per_mtok, cache_read_micros_per_mtok, cache_write_micros_per_mtok,
+          effective_from, effective_to, created_by, note, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      [
+        id,
+        version,
+        input.provider,
+        input.model,
+        input.currency,
+        input.fxRateToBase ?? 1,
+        input.inputMicrosPerMtok,
+        input.outputMicrosPerMtok,
+        input.cacheReadMicrosPerMtok ?? null,
+        input.cacheWriteMicrosPerMtok ?? null,
+        input.effectiveFrom,
+        input.effectiveTo ?? null,
+        input.createdBy ?? null,
+        input.note ?? null,
+        now
+      ]
+    );
+    const result = await this.pool.query("SELECT * FROM llm_price_book WHERE id = $1", [id]);
+    return mapLlmPrice(result.rows[0]!);
+  }
+
+  async reserveLlmBudget(input: ReserveLlmBudgetInput): Promise<ReserveLlmBudgetResult> {
+    const at = input.at ?? new Date().toISOString();
+    const token = await this.getLlmPoolToken(input.poolTokenId);
+    if (token === null) return { ok: false, reason: "token-not-found", snapshot: null };
+    if (token.status !== "active") return { ok: false, reason: "token-inactive", snapshot: null };
+
+    const periodKey = budgetPeriodKey(token.budgetPeriod, at);
+    const estimatedTokens = input.estimatedPromptTokens + input.estimatedOutputTokens;
+    const ttlMs = input.ttlMs ?? llmReservationTtlMs(this.env);
+    const expiresAt = new Date(Date.parse(at) + ttlMs).toISOString();
+    const projectId = await this.resolveProjectId(input.projectRoot);
+
+    const reservation: LlmReservationRecord = {
+      id: randomUUID(),
+      poolTokenId: token.id,
+      periodKey,
+      projectId,
+      projectRoot: input.projectRoot,
+      provider: input.provider,
+      model: input.model,
+      source: input.source,
+      estimatedPromptTokens: input.estimatedPromptTokens,
+      estimatedOutputTokens: input.estimatedOutputTokens,
+      estimatedTokens,
+      reservedMicros: input.estimatedMicros,
+      status: "active",
+      createdAt: at,
+      expiresAt,
+      settledAt: null,
+      hostId: input.hostId ?? null,
+      sessionId: input.sessionId ?? null,
+      taskId: input.taskId ?? null,
+      traceId: input.traceId ?? null,
+      requestId: input.requestId ?? null
+    };
+
+    return this.withTransaction<ReserveLlmBudgetResult>(async (run) => {
+      await run(
+        `INSERT INTO llm_budget_counters
+           (pool_token_id, period_key, used_tokens, used_micros, reserved_tokens, reserved_micros, active_reservations, updated_at)
+         VALUES ($1, $2, 0, 0, 0, 0, 0, $3)
+         ON CONFLICT (pool_token_id, period_key) DO NOTHING`,
+        [token.id, periodKey, at]
+      );
+      const updated = await run(
+        `UPDATE llm_budget_counters
+            SET reserved_tokens = reserved_tokens + $3,
+                reserved_micros = reserved_micros + $4,
+                active_reservations = active_reservations + 1,
+                updated_at = $5
+          WHERE pool_token_id = $1 AND period_key = $2
+            AND ($6::bigint IS NULL OR used_micros + reserved_micros + $4 <= $6)
+            AND ($7::bigint IS NULL OR used_tokens + reserved_tokens + $3 <= $7)
+            AND active_reservations < $8
+        RETURNING *`,
+        [
+          token.id,
+          periodKey,
+          estimatedTokens,
+          input.estimatedMicros,
+          at,
+          token.budgetLimitMicros,
+          token.budgetLimitTokens,
+          token.maxConcurrency
+        ]
+      );
+      if (updated.rows.length === 0) {
+        const counter = await run(
+          "SELECT * FROM llm_budget_counters WHERE pool_token_id = $1 AND period_key = $2",
+          [token.id, periodKey]
+        );
+        const snapshot = buildBudgetSnapshot(token, counter.rows[0]);
+        const reason: "budget-exhausted" | "concurrency-limit" =
+          snapshot.activeReservations >= token.maxConcurrency ? "concurrency-limit" : "budget-exhausted";
+        return { ok: false, reason, snapshot };
+      }
+      await run(
+        `INSERT INTO llm_reservations
+           (id, pool_token_id, period_key, project_id, project_root, provider, model, source,
+            estimated_prompt_tokens, estimated_output_tokens, estimated_tokens, reserved_micros,
+            status, created_at, expires_at, settled_at, host_id, session_id, task_id, trace_id, request_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+        [
+          reservation.id,
+          reservation.poolTokenId,
+          reservation.periodKey,
+          reservation.projectId,
+          reservation.projectRoot,
+          reservation.provider,
+          reservation.model,
+          reservation.source,
+          reservation.estimatedPromptTokens,
+          reservation.estimatedOutputTokens,
+          reservation.estimatedTokens,
+          reservation.reservedMicros,
+          reservation.status,
+          reservation.createdAt,
+          reservation.expiresAt,
+          reservation.settledAt,
+          reservation.hostId,
+          reservation.sessionId,
+          reservation.taskId,
+          reservation.traceId,
+          reservation.requestId
+        ]
+      );
+      return { ok: true, reservation };
+    });
+  }
+
+  async settleLlmReservation(input: SettleLlmReservationInput): Promise<LlmUsageRecord | null> {
+    const at = input.at ?? new Date().toISOString();
+    const actualMicros = input.costMicrosBase ?? input.costMicros ?? 0;
+    return this.withTransaction<LlmUsageRecord | null>(async (run) => {
+      const res = await run("SELECT * FROM llm_reservations WHERE id = $1 FOR UPDATE", [
+        input.reservationId
+      ]);
+      if (res.rows.length === 0) return null;
+      const reservation = mapLlmReservation(res.rows[0]!);
+      if (reservation.status !== "active") return null;
+
+      await run(
+        `UPDATE llm_budget_counters
+            SET reserved_tokens = GREATEST(0, reserved_tokens - $3),
+                reserved_micros = GREATEST(0, reserved_micros - $4),
+                used_tokens = used_tokens + $5,
+                used_micros = used_micros + $6,
+                active_reservations = GREATEST(0, active_reservations - 1),
+                updated_at = $7
+          WHERE pool_token_id = $1 AND period_key = $2`,
+        [
+          reservation.poolTokenId,
+          reservation.periodKey,
+          reservation.estimatedTokens,
+          reservation.reservedMicros,
+          input.usage.totalTokens,
+          actualMicros,
+          at
+        ]
+      );
+      await run("UPDATE llm_reservations SET status = 'settled', settled_at = $2 WHERE id = $1", [
+        reservation.id,
+        at
+      ]);
+      const usage: LlmUsageRecord = {
+        id: randomUUID(),
+        at,
+        projectId: reservation.projectId,
+        projectRoot: reservation.projectRoot,
+        hostId: reservation.hostId,
+        sessionId: reservation.sessionId,
+        taskId: reservation.taskId,
+        traceId: reservation.traceId,
+        poolTokenId: reservation.poolTokenId,
+        provider: reservation.provider,
+        model: reservation.model,
+        baseInputTokens: input.usage.baseInputTokens,
+        cacheCreationTokens: input.usage.cacheCreationTokens,
+        cacheReadTokens: input.usage.cacheReadTokens,
+        outputTokens: input.usage.outputTokens,
+        totalTokens: input.usage.totalTokens,
+        usageSource: input.usageSource,
+        estimatedTokens: reservation.estimatedTokens,
+        reservedMicros: reservation.reservedMicros,
+        reservationId: reservation.id,
+        settledAt: at,
+        costMicros: input.costMicros,
+        currency: input.currency,
+        costMicrosBase: input.costMicrosBase,
+        baseCurrency: input.baseCurrency,
+        fxRateToBase: input.fxRateToBase,
+        priceBookId: input.priceBookId,
+        priceVersion: input.priceVersion,
+        source: reservation.source,
+        requestId: reservation.requestId,
+        status: input.status,
+        errorClass: input.errorClass ?? null
+      };
+      await insertLlmUsageRow(run, usage);
+      return usage;
+    });
+  }
+
+  async releaseLlmReservation(input: { reservationId: string; at?: string }): Promise<boolean> {
+    const at = input.at ?? new Date().toISOString();
+    return this.withTransaction<boolean>(async (run) => {
+      const res = await run("SELECT * FROM llm_reservations WHERE id = $1 FOR UPDATE", [
+        input.reservationId
+      ]);
+      if (res.rows.length === 0) return false;
+      const reservation = mapLlmReservation(res.rows[0]!);
+      if (reservation.status !== "active") return false;
+      await run(
+        `UPDATE llm_budget_counters
+            SET reserved_tokens = GREATEST(0, reserved_tokens - $3),
+                reserved_micros = GREATEST(0, reserved_micros - $4),
+                active_reservations = GREATEST(0, active_reservations - 1),
+                updated_at = $5
+          WHERE pool_token_id = $1 AND period_key = $2`,
+        [
+          reservation.poolTokenId,
+          reservation.periodKey,
+          reservation.estimatedTokens,
+          reservation.reservedMicros,
+          at
+        ]
+      );
+      await run("UPDATE llm_reservations SET status = 'released' WHERE id = $1", [
+        reservation.id
+      ]);
+      return true;
+    });
+  }
+
+  async reconcileLlmReservations(input: {
+    at?: string;
+    limit?: number;
+  } = {}): Promise<{ settled: number; released: number }> {
+    const at = input.at ?? new Date().toISOString();
+    const limit = input.limit ?? 100;
+    return this.withTransaction<{ settled: number; released: number }>(async (run) => {
+      const expired = await run(
+        `SELECT * FROM llm_reservations
+          WHERE status = 'active' AND expires_at <= $1
+          ORDER BY expires_at ASC
+          LIMIT $2
+          FOR UPDATE`,
+        [at, limit]
+      );
+      let settled = 0;
+      for (const row of expired.rows) {
+        const reservation = mapLlmReservation(row);
+        await run(
+          `UPDATE llm_budget_counters
+              SET reserved_tokens = GREATEST(0, reserved_tokens - $3),
+                  reserved_micros = GREATEST(0, reserved_micros - $4),
+                  used_tokens = used_tokens + $5,
+                  used_micros = used_micros + $4,
+                  active_reservations = GREATEST(0, active_reservations - 1),
+                  updated_at = $6
+            WHERE pool_token_id = $1 AND period_key = $2`,
+          [
+            reservation.poolTokenId,
+            reservation.periodKey,
+            reservation.estimatedTokens,
+            reservation.reservedMicros,
+            reservation.estimatedTokens,
+            at
+          ]
+        );
+        await run("UPDATE llm_reservations SET status = 'settled', settled_at = $2 WHERE id = $1", [
+          reservation.id,
+          at
+        ]);
+        const usage: LlmUsageRecord = {
+          id: randomUUID(),
+          at,
+          projectId: reservation.projectId,
+          projectRoot: reservation.projectRoot,
+          hostId: reservation.hostId,
+          sessionId: reservation.sessionId,
+          taskId: reservation.taskId,
+          traceId: reservation.traceId,
+          poolTokenId: reservation.poolTokenId,
+          provider: reservation.provider,
+          model: reservation.model,
+          baseInputTokens: reservation.estimatedPromptTokens,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          outputTokens: reservation.estimatedOutputTokens,
+          totalTokens: reservation.estimatedTokens,
+          usageSource: "estimated",
+          estimatedTokens: reservation.estimatedTokens,
+          reservedMicros: reservation.reservedMicros,
+          reservationId: reservation.id,
+          settledAt: at,
+          costMicros: null,
+          currency: null,
+          costMicrosBase: null,
+          baseCurrency: "CNY",
+          fxRateToBase: null,
+          priceBookId: null,
+          priceVersion: null,
+          source: reservation.source,
+          requestId: reservation.requestId,
+          status: "settled_estimated",
+          errorClass: "reservation-ttl"
+        };
+        await insertLlmUsageRow(run, usage);
+        settled += 1;
+      }
+      return { settled, released: 0 };
+    });
+  }
+
+  async getLlmBudgetSnapshot(tokenId: string, at?: string): Promise<LlmBudgetSnapshot | null> {
+    const token = await this.getLlmPoolToken(tokenId);
+    if (token === null) return null;
+    const periodKey = budgetPeriodKey(token.budgetPeriod, at);
+    const result = await this.pool.query(
+      "SELECT * FROM llm_budget_counters WHERE pool_token_id = $1 AND period_key = $2",
+      [tokenId, periodKey]
+    );
+    return buildBudgetSnapshot(token, result.rows[0], periodKey);
+  }
+
+  async recordLlmUsage(input: RecordLlmUsageInput): Promise<LlmUsageRecord> {
+    const id = randomUUID();
+    const at = input.at ?? new Date().toISOString();
+    const projectId =
+      input.projectId !== undefined ? input.projectId : await this.resolveProjectId(input.projectRoot);
+    const usage: LlmUsageRecord = {
+      id,
+      at,
+      projectId,
+      projectRoot: input.projectRoot,
+      hostId: input.hostId ?? null,
+      sessionId: input.sessionId ?? null,
+      taskId: input.taskId ?? null,
+      traceId: input.traceId ?? null,
+      poolTokenId: input.poolTokenId,
+      provider: input.provider,
+      model: input.model,
+      baseInputTokens: input.usage.baseInputTokens,
+      cacheCreationTokens: input.usage.cacheCreationTokens,
+      cacheReadTokens: input.usage.cacheReadTokens,
+      outputTokens: input.usage.outputTokens,
+      totalTokens: input.usage.totalTokens,
+      usageSource: input.usageSource,
+      estimatedTokens: input.estimatedTokens ?? null,
+      reservedMicros: input.reservedMicros ?? null,
+      reservationId: input.reservationId ?? null,
+      settledAt: input.settledAt ?? null,
+      costMicros: input.costMicros,
+      currency: input.currency,
+      costMicrosBase: input.costMicrosBase,
+      baseCurrency: input.baseCurrency,
+      fxRateToBase: input.fxRateToBase,
+      priceBookId: input.priceBookId,
+      priceVersion: input.priceVersion,
+      source: input.source,
+      requestId: input.requestId ?? null,
+      status: input.status,
+      errorClass: input.errorClass ?? null
+    };
+    await insertLlmUsageRow((text, values) => this.pool.query(text, values), usage);
+    const retentionDays = llmUsageRetentionDays(this.env);
+    if (retentionDays > 0) {
+      await this.pool.query("DELETE FROM llm_usage_events WHERE at < $1", [
+        llmUsageRetentionCutoffIso(retentionDays)
+      ]);
+    }
+    return usage;
+  }
+
+  async listLlmUsageEvents(query: LlmUsageQuery = {}): Promise<LlmUsageRecord[]> {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (query.projectRoot !== undefined) {
+      values.push(query.projectRoot);
+      clauses.push(`project_root = $${values.length}`);
+    }
+    if (query.poolTokenId !== undefined) {
+      values.push(query.poolTokenId);
+      clauses.push(`pool_token_id = $${values.length}`);
+    }
+    if (query.provider !== undefined) {
+      values.push(query.provider);
+      clauses.push(`provider = $${values.length}`);
+    }
+    if (query.model !== undefined) {
+      values.push(query.model);
+      clauses.push(`model = $${values.length}`);
+    }
+    if (query.since !== undefined) {
+      values.push(query.since);
+      clauses.push(`at >= $${values.length}`);
+    }
+    if (query.until !== undefined) {
+      values.push(query.until);
+      clauses.push(`at <= $${values.length}`);
+    }
+    values.push(llmUsageEventsLimit(query.limit));
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const result = await this.pool.query(
+      `SELECT * FROM llm_usage_events ${where} ORDER BY at DESC, id DESC LIMIT $${values.length}`,
+      values
+    );
+    return result.rows.map(mapLlmUsage);
+  }
+
+  private async resolveProjectId(projectRoot: string | null): Promise<string | null> {
+    if (projectRoot === null) return null;
+    try {
+      const project = await this.getProjectByPath(projectRoot);
+      return project?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   async close(): Promise<void> {
     try {
       await this.pool.end?.();
@@ -3604,7 +4411,10 @@ function mapLlm(row: Record<string, unknown>): ProjectLlmRecord {
     apiKey: row.api_key === null || row.api_key === undefined ? null : String(row.api_key),
     isActive: Boolean(row.is_active),
     createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at)
+    updatedAt: String(row.updated_at),
+    poolTokenId: nullableString(row.pool_token_id),
+    poolMode: row.pool_mode === "auto" ? "auto" : "pinned",
+    poolModel: nullableString(row.pool_model)
   };
 }
 
@@ -3722,6 +4532,207 @@ function parseTaskRefs(value: unknown): RegressionTaskRef[] {
 
 function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
+}
+
+function nullableNumber(value: unknown): number | null {
+  return value === null || value === undefined ? null : Number(value);
+}
+
+function mapLlmPoolToken(row: Record<string, unknown>): LlmPoolTokenRecord {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    provider: String(row.provider),
+    baseUrl: String(row.base_url),
+    apiKey: nullableString(row.api_key),
+    keyEnv: nullableString(row.key_env),
+    modelAllowlist: parseStringArray(row.model_allowlist),
+    status: (row.status as LlmPoolStatus) ?? "active",
+    priority: Number(row.priority),
+    budgetPeriod: (row.budget_period as LlmBudgetPeriod) ?? "total",
+    budgetLimitMicros: nullableNumber(row.budget_limit_micros),
+    budgetLimitTokens: nullableNumber(row.budget_limit_tokens),
+    currency: String(row.currency),
+    maxConcurrency: Number(row.max_concurrency),
+    supportsStreamUsage: Boolean(row.supports_stream_usage),
+    lastValidatedAt: nullableString(row.last_validated_at),
+    lastError: nullableString(row.last_error),
+    createdBy: nullableString(row.created_by),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at)
+  };
+}
+
+function mapLlmPrice(row: Record<string, unknown>): LlmPriceRecord {
+  return {
+    id: String(row.id),
+    version: Number(row.version),
+    provider: String(row.provider),
+    model: String(row.model),
+    currency: String(row.currency),
+    fxRateToBase: Number(row.fx_rate_to_base),
+    inputMicrosPerMtok: Number(row.input_micros_per_mtok),
+    outputMicrosPerMtok: Number(row.output_micros_per_mtok),
+    cacheReadMicrosPerMtok: nullableNumber(row.cache_read_micros_per_mtok),
+    cacheWriteMicrosPerMtok: nullableNumber(row.cache_write_micros_per_mtok),
+    effectiveFrom: String(row.effective_from),
+    effectiveTo: nullableString(row.effective_to),
+    createdBy: nullableString(row.created_by),
+    note: nullableString(row.note),
+    createdAt: String(row.created_at)
+  };
+}
+
+function mapLlmUsage(row: Record<string, unknown>): LlmUsageRecord {
+  return {
+    id: String(row.id),
+    at: String(row.at),
+    projectId: nullableString(row.project_id),
+    projectRoot: nullableString(row.project_root),
+    hostId: nullableString(row.host_id),
+    sessionId: nullableString(row.session_id),
+    taskId: nullableString(row.task_id),
+    traceId: nullableString(row.trace_id),
+    poolTokenId: nullableString(row.pool_token_id),
+    provider: String(row.provider),
+    model: String(row.model),
+    baseInputTokens: Number(row.base_input_tokens),
+    cacheCreationTokens: Number(row.cache_creation_tokens),
+    cacheReadTokens: Number(row.cache_read_tokens),
+    outputTokens: Number(row.output_tokens),
+    totalTokens: Number(row.total_tokens),
+    usageSource: (row.usage_source as LlmUsageSource) ?? "provider",
+    estimatedTokens: nullableNumber(row.estimated_tokens),
+    reservedMicros: nullableNumber(row.reserved_micros),
+    reservationId: nullableString(row.reservation_id),
+    settledAt: nullableString(row.settled_at),
+    costMicros: nullableNumber(row.cost_micros),
+    currency: nullableString(row.currency),
+    costMicrosBase: nullableNumber(row.cost_micros_base),
+    baseCurrency: String(row.base_currency),
+    fxRateToBase: nullableNumber(row.fx_rate_to_base),
+    priceBookId: nullableString(row.price_book_id),
+    priceVersion: nullableNumber(row.price_version),
+    source: (row.source as LlmUsageOrigin) ?? "center_proxy",
+    requestId: nullableString(row.request_id),
+    status: (row.status as LlmUsageStatus) ?? "ok",
+    errorClass: nullableString(row.error_class)
+  };
+}
+
+function mapLlmReservation(row: Record<string, unknown>): LlmReservationRecord {
+  return {
+    id: String(row.id),
+    poolTokenId: String(row.pool_token_id),
+    periodKey: String(row.period_key),
+    projectId: nullableString(row.project_id),
+    projectRoot: String(row.project_root),
+    provider: String(row.provider),
+    model: String(row.model),
+    source: (row.source as LlmUsageOrigin) ?? "center_proxy",
+    estimatedPromptTokens: Number(row.estimated_prompt_tokens),
+    estimatedOutputTokens: Number(row.estimated_output_tokens),
+    estimatedTokens: Number(row.estimated_tokens),
+    reservedMicros: Number(row.reserved_micros),
+    status: (row.status as LlmReservationRecord["status"]) ?? "active",
+    createdAt: String(row.created_at),
+    expiresAt: String(row.expires_at),
+    settledAt: nullableString(row.settled_at),
+    hostId: nullableString(row.host_id),
+    sessionId: nullableString(row.session_id),
+    taskId: nullableString(row.task_id),
+    traceId: nullableString(row.trace_id),
+    requestId: nullableString(row.request_id)
+  };
+}
+
+function buildBudgetSnapshot(
+  token: LlmPoolTokenRecord,
+  counter: Record<string, unknown> | undefined,
+  periodKey?: string
+): LlmBudgetSnapshot {
+  const usedTokens = counter === undefined ? 0 : Number(counter.used_tokens);
+  const usedMicros = counter === undefined ? 0 : Number(counter.used_micros);
+  const reservedTokens = counter === undefined ? 0 : Number(counter.reserved_tokens);
+  const reservedMicros = counter === undefined ? 0 : Number(counter.reserved_micros);
+  const activeReservations = counter === undefined ? 0 : Number(counter.active_reservations);
+  return {
+    poolTokenId: token.id,
+    period: token.budgetPeriod,
+    periodKey:
+      counter === undefined
+        ? (periodKey ?? budgetPeriodKey(token.budgetPeriod))
+        : String(counter.period_key),
+    usedTokens,
+    usedMicros,
+    reservedTokens,
+    reservedMicros,
+    limitTokens: token.budgetLimitTokens,
+    limitMicros: token.budgetLimitMicros,
+    activeReservations,
+    maxConcurrency: token.maxConcurrency,
+    remainingTokens:
+      token.budgetLimitTokens === null
+        ? null
+        : Math.max(0, token.budgetLimitTokens - usedTokens - reservedTokens),
+    remainingMicros:
+      token.budgetLimitMicros === null
+        ? null
+        : Math.max(0, token.budgetLimitMicros - usedMicros - reservedMicros)
+  };
+}
+
+const LLM_USAGE_COLUMNS =
+  "id, at, project_id, project_root, host_id, session_id, task_id, trace_id, pool_token_id, " +
+  "provider, model, base_input_tokens, cache_creation_tokens, cache_read_tokens, output_tokens, " +
+  "total_tokens, usage_source, estimated_tokens, reserved_micros, reservation_id, settled_at, " +
+  "cost_micros, currency, cost_micros_base, base_currency, fx_rate_to_base, price_book_id, " +
+  "price_version, source, request_id, status, error_class";
+
+function llmUsageInsertValues(record: LlmUsageRecord): unknown[] {
+  return [
+    record.id,
+    record.at,
+    record.projectId,
+    record.projectRoot,
+    record.hostId,
+    record.sessionId,
+    record.taskId,
+    record.traceId,
+    record.poolTokenId,
+    record.provider,
+    record.model,
+    record.baseInputTokens,
+    record.cacheCreationTokens,
+    record.cacheReadTokens,
+    record.outputTokens,
+    record.totalTokens,
+    record.usageSource,
+    record.estimatedTokens,
+    record.reservedMicros,
+    record.reservationId,
+    record.settledAt,
+    record.costMicros,
+    record.currency,
+    record.costMicrosBase,
+    record.baseCurrency,
+    record.fxRateToBase,
+    record.priceBookId,
+    record.priceVersion,
+    record.source,
+    record.requestId,
+    record.status,
+    record.errorClass
+  ];
+}
+
+async function insertLlmUsageRow(
+  run: (text: string, values?: unknown[]) => Promise<QueryResultLike>,
+  record: LlmUsageRecord
+): Promise<void> {
+  const values = llmUsageInsertValues(record);
+  const placeholders = values.map((_, index) => `$${index + 1}`).join(", ");
+  await run(`INSERT INTO llm_usage_events (${LLM_USAGE_COLUMNS}) VALUES (${placeholders})`, values);
 }
 
 class DeviceLeaseBusyError extends Error {

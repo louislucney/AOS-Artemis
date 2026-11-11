@@ -132,6 +132,261 @@ export class AmbiguousProjectError extends Error {
   }
 }
 
+export type LlmPoolStatus = "active" | "disabled" | "invalid" | "pending_token";
+export type LlmPoolMode = "pinned" | "auto";
+export type LlmBudgetPeriod = "daily" | "monthly" | "total" | "none";
+export type LlmUsageSource = "provider" | "estimated" | "partial";
+export type LlmUsageOrigin = "center_proxy" | "local_chat" | "web_job" | "imported";
+export type LlmUsageStatus = "ok" | "http_error" | "usage_unavailable" | "settled_estimated";
+
+export interface LlmPoolTokenRecord {
+  id: string;
+  name: string;
+  provider: string;
+  baseUrl: string;
+  apiKey: string | null;
+  keyEnv: string | null;
+  modelAllowlist: string[];
+  status: LlmPoolStatus;
+  priority: number;
+  budgetPeriod: LlmBudgetPeriod;
+  budgetLimitMicros: number | null;
+  budgetLimitTokens: number | null;
+  currency: string;
+  maxConcurrency: number;
+  supportsStreamUsage: boolean;
+  lastValidatedAt: string | null;
+  lastError: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LlmPriceRecord {
+  id: string;
+  version: number;
+  provider: string;
+  model: string;
+  currency: string;
+  fxRateToBase: number;
+  inputMicrosPerMtok: number;
+  outputMicrosPerMtok: number;
+  cacheReadMicrosPerMtok: number | null;
+  cacheWriteMicrosPerMtok: number | null;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  createdBy: string | null;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface LlmUsageRecord {
+  id: string;
+  at: string;
+  projectId: string | null;
+  projectRoot: string | null;
+  hostId: string | null;
+  sessionId: string | null;
+  taskId: string | null;
+  traceId: string | null;
+  poolTokenId: string | null;
+  provider: string;
+  model: string;
+  baseInputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  usageSource: LlmUsageSource;
+  estimatedTokens: number | null;
+  reservedMicros: number | null;
+  reservationId: string | null;
+  settledAt: string | null;
+  costMicros: number | null;
+  currency: string | null;
+  costMicrosBase: number | null;
+  baseCurrency: string;
+  fxRateToBase: number | null;
+  priceBookId: string | null;
+  priceVersion: number | null;
+  source: LlmUsageOrigin;
+  requestId: string | null;
+  status: LlmUsageStatus;
+  errorClass: string | null;
+}
+
+export interface LlmReservationRecord {
+  id: string;
+  poolTokenId: string;
+  periodKey: string;
+  projectId: string | null;
+  projectRoot: string;
+  provider: string;
+  model: string;
+  source: LlmUsageOrigin;
+  estimatedPromptTokens: number;
+  estimatedOutputTokens: number;
+  estimatedTokens: number;
+  reservedMicros: number;
+  status: "active" | "settled" | "released";
+  createdAt: string;
+  expiresAt: string;
+  settledAt: string | null;
+  hostId: string | null;
+  sessionId: string | null;
+  taskId: string | null;
+  traceId: string | null;
+  requestId: string | null;
+}
+
+export interface LlmBudgetSnapshot {
+  poolTokenId: string;
+  period: LlmBudgetPeriod;
+  periodKey: string;
+  usedTokens: number;
+  usedMicros: number;
+  reservedTokens: number;
+  reservedMicros: number;
+  limitTokens: number | null;
+  limitMicros: number | null;
+  activeReservations: number;
+  maxConcurrency: number;
+  remainingTokens: number | null;
+  remainingMicros: number | null;
+}
+
+export type ReserveLlmBudgetResult =
+  | { ok: true; reservation: LlmReservationRecord }
+  | {
+      ok: false;
+      reason: "token-not-found" | "token-inactive" | "budget-exhausted" | "concurrency-limit";
+      snapshot: LlmBudgetSnapshot | null;
+    };
+
+export interface NormalizedUsage {
+  baseInputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+export interface UpsertLlmPoolTokenInput {
+  id?: string;
+  name: string;
+  provider: string;
+  baseUrl: string;
+  /** Undefined keeps the stored key; null clears it. */
+  apiKey?: string | null;
+  keyEnv?: string | null;
+  modelAllowlist?: string[];
+  status?: LlmPoolStatus;
+  priority?: number;
+  budgetPeriod?: LlmBudgetPeriod;
+  budgetLimitMicros?: number | null;
+  budgetLimitTokens?: number | null;
+  currency?: string;
+  maxConcurrency?: number;
+  supportsStreamUsage?: boolean;
+  lastValidatedAt?: string | null;
+  lastError?: string | null;
+  createdBy?: string | null;
+  at?: string;
+}
+
+export interface UpsertLlmPriceInput {
+  id?: string;
+  provider: string;
+  model: string;
+  currency: string;
+  fxRateToBase?: number;
+  inputMicrosPerMtok: number;
+  outputMicrosPerMtok: number;
+  cacheReadMicrosPerMtok?: number | null;
+  cacheWriteMicrosPerMtok?: number | null;
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  createdBy?: string | null;
+  note?: string | null;
+}
+
+export interface ReserveLlmBudgetInput {
+  poolTokenId: string;
+  projectRoot: string;
+  provider: string;
+  model: string;
+  source: LlmUsageOrigin;
+  estimatedPromptTokens: number;
+  estimatedOutputTokens: number;
+  estimatedMicros: number;
+  at?: string;
+  ttlMs?: number;
+  hostId?: string | null;
+  sessionId?: string | null;
+  taskId?: string | null;
+  traceId?: string | null;
+  requestId?: string | null;
+}
+
+export interface SettleLlmReservationInput {
+  reservationId: string;
+  usage: NormalizedUsage;
+  usageSource: LlmUsageSource;
+  costMicros: number | null;
+  currency: string | null;
+  costMicrosBase: number | null;
+  baseCurrency: string;
+  fxRateToBase: number | null;
+  priceBookId: string | null;
+  priceVersion: number | null;
+  status: LlmUsageStatus;
+  errorClass?: string | null;
+  at?: string;
+}
+
+export interface RecordLlmUsageInput {
+  projectRoot: string | null;
+  projectId?: string | null;
+  hostId?: string | null;
+  sessionId?: string | null;
+  taskId?: string | null;
+  traceId?: string | null;
+  poolTokenId: string | null;
+  provider: string;
+  model: string;
+  usage: NormalizedUsage;
+  usageSource: LlmUsageSource;
+  estimatedTokens?: number | null;
+  reservedMicros?: number | null;
+  reservationId?: string | null;
+  settledAt?: string | null;
+  costMicros: number | null;
+  currency: string | null;
+  costMicrosBase: number | null;
+  baseCurrency: string;
+  fxRateToBase: number | null;
+  priceBookId: string | null;
+  priceVersion: number | null;
+  source: LlmUsageOrigin;
+  requestId?: string | null;
+  status: LlmUsageStatus;
+  errorClass?: string | null;
+  at?: string;
+}
+
+export interface LlmUsageQuery {
+  projectRoot?: string;
+  poolTokenId?: string;
+  provider?: string;
+  model?: string;
+  since?: string;
+  until?: string;
+  /** Default 5000, max 50000. */
+  limit?: number;
+  bucket?: "hour" | "day" | "month";
+  groupBy?: "project" | "model" | "token" | "none";
+}
+
 export interface ProjectLlmRecord {
   id: string;
   projectId: string;
@@ -143,6 +398,9 @@ export interface ProjectLlmRecord {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  poolTokenId: string | null;
+  poolMode: LlmPoolMode;
+  poolModel: string | null;
 }
 
 export interface TaskStatRecord {
@@ -351,6 +609,9 @@ export interface UpsertLlmInput {
   model: string;
   apiKey?: string | null;
   makeActive?: boolean;
+  poolTokenId?: string | null;
+  poolMode?: LlmPoolMode;
+  poolModel?: string | null;
 }
 
 export interface RecordTaskInput {
@@ -943,6 +1204,28 @@ export interface ProjectStore {
   listLlms(rootPath: string): Promise<ProjectLlmRecord[]>;
   upsertLlm(rootPath: string, input: UpsertLlmInput): Promise<ProjectLlmRecord>;
   setActiveLlm(rootPath: string, name: string): Promise<boolean>;
+  setLlmPoolBinding(input: {
+    rootPath: string;
+    name: string;
+    poolTokenId: string | null;
+    poolMode?: LlmPoolMode;
+    poolModel?: string | null;
+  }): Promise<boolean>;
+  listLlmPoolTokens(): Promise<LlmPoolTokenRecord[]>;
+  getLlmPoolToken(id: string): Promise<LlmPoolTokenRecord | null>;
+  upsertLlmPoolToken(input: UpsertLlmPoolTokenInput): Promise<LlmPoolTokenRecord>;
+  listLlmPrices(query?: { provider?: string; model?: string; at?: string }): Promise<LlmPriceRecord[]>;
+  upsertLlmPrice(input: UpsertLlmPriceInput): Promise<LlmPriceRecord>;
+  reserveLlmBudget(input: ReserveLlmBudgetInput): Promise<ReserveLlmBudgetResult>;
+  settleLlmReservation(input: SettleLlmReservationInput): Promise<LlmUsageRecord | null>;
+  releaseLlmReservation(input: { reservationId: string; at?: string }): Promise<boolean>;
+  reconcileLlmReservations(input?: {
+    at?: string;
+    limit?: number;
+  }): Promise<{ settled: number; released: number }>;
+  getLlmBudgetSnapshot(tokenId: string, at?: string): Promise<LlmBudgetSnapshot | null>;
+  recordLlmUsage(input: RecordLlmUsageInput): Promise<LlmUsageRecord>;
+  listLlmUsageEvents(query?: LlmUsageQuery): Promise<LlmUsageRecord[]>;
   getModelCache(rootPath: string, cacheKey: string): Promise<ModelCacheRecord | null>;
   putModelCache(rootPath: string, input: PutModelCacheInput): Promise<ModelCacheRecord>;
   recordTask(input: RecordTaskInput): Promise<void>;
