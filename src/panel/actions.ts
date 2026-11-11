@@ -1571,7 +1571,11 @@ async function checkDispatchPreviewFreshness(
     rootPath,
     params
   );
-  const expected = dispatchPreviewId(preview, dispatchFormSignature(params), rootPath);
+  const expected = dispatchPreviewId(
+    preview,
+    dispatchFormSignature(params, preview.appPackage),
+    rootPath
+  );
   if (expected !== previewId) {
     return json(409, {
       ok: false,

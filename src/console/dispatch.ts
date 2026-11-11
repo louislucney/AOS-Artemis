@@ -119,15 +119,21 @@ function dispatchPlatforms(params: URLSearchParams): ("ios" | "android")[] {
   return [...new Set(values)].sort();
 }
 
-/** 表单字段签名（与预览同源；客户端复算同式）。 */
-export function dispatchFormSignature(params: URLSearchParams): string {
+/** 表单字段签名（与预览同源；客户端复算同式）。`resolvedAppPackage` 用于把从 APK 自动识别的包名纳入签名，避免客户端读隐藏输入后永远判定过期。 */
+export function dispatchFormSignature(
+  params: URLSearchParams,
+  resolvedAppPackage?: string
+): string {
   const mode = (params.get("source") ?? "case-set").trim() === "keyword" ? "keyword" : "case-set";
   const refOrKeyword =
     mode === "keyword" ? (params.get("keyword") ?? "").trim() : (params.get("ref") ?? "").trim();
   const platforms = dispatchPlatforms(params).join(",");
   const baseline = (params.get("baseline") ?? "latest").trim() === "none" ? "none" : "latest";
   const appAssetId = (params.get("appAssetId") ?? "").trim();
-  const appPackage = (params.get("appPackage") ?? "").trim();
+  const appPackage =
+    resolvedAppPackage !== undefined
+      ? resolvedAppPackage.trim()
+      : (params.get("appPackage") ?? "").trim();
   return [mode, refOrKeyword, platforms, baseline, appAssetId, appPackage].join("|");
 }
 

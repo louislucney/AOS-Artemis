@@ -495,18 +495,25 @@ test("dispatch preview: 从安装包自动识别包名，不再显示手填输�
   try {
     const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
     assert.equal(preview.appPackage, "com.example.auto");
+    const formSignature = dispatchFormSignature(params, preview.appPackage);
+    assert.match(formSignature, /com\.example\.auto$/, "自动识别包名进入签名");
     const html = renderDispatchPage({
       rootPath: ROOT,
       rootLabel: "p",
       preview,
-      previewId: dispatchPreviewId(preview, dispatchFormSignature(params), ROOT),
-      formSignature: dispatchFormSignature(params),
+      previewId: dispatchPreviewId(preview, formSignature, ROOT),
+      formSignature,
       query: Object.fromEntries(params)
     });
     assert.match(html, /应用包名：<code>com\.example\.auto<\/code>/);
     assert.match(html, /从安装包自动识别/);
     assert.doesNotMatch(html, /aria-label="应用包名"/);
     assert.match(html, /name="appPackage" value="com\.example\.auto"/);
+    assert.match(
+      html,
+      /"formSignature":"[^"]*\|com\.example\.auto"/,
+      "页面签名与客户端隐藏输入一致，避免永远过期"
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

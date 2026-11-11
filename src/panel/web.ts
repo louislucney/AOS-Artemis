@@ -702,7 +702,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       "",
       url.searchParams
     );
-    const formSignature = dispatchFormSignature(url.searchParams);
+    const formSignature = dispatchFormSignature(url.searchParams, preview.appPackage);
     return {
       kind: "dispatch",
       rootPath: "",
@@ -779,7 +779,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     );
     const query: Record<string, string> = {};
     for (const [key, value] of url.searchParams) query[key] = value;
-    const formSignature = dispatchFormSignature(url.searchParams);
+    const formSignature = dispatchFormSignature(url.searchParams, preview.appPackage);
     const legacyRecord =
       resolved.hostId === null
         ? await deps.store.getProjectByPath(resolved.rootPath).catch(() => null)

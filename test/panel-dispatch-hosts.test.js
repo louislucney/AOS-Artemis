@@ -572,3 +572,38 @@ test("下发页渲染主机下拉与空态", async () => {
   );
   assert.match(String(empty.body), /单机模式/);
 });
+
+test("dispatch page: auto-detected app package participates in preview signature", async () => {
+  const { store, root } = await makeHarness();
+  await addHost(store, root, {
+    id: "h-win",
+    hostname: "WIN-01",
+    kind: "pc",
+    osPlatform: "win32",
+    capabilities: ["android"]
+  });
+  const set = await addSet(store, root, "h-win", "Windows 回归", "win-login", 2);
+  const pkg = await store.scopeHost("h-win").createWebAsset({
+    rootPath: root,
+    kind: "package",
+    filename: "app.apk",
+    sha256: "a".repeat(64),
+    size: 1234,
+    storagePath: path.join(root, "app.apk"),
+    metadata: { appId: "com.example.auto" }
+  });
+  const url = new URL(
+    `http://x/panel?project=${encodeURIComponent(root)}&section=create&type=suite&host=h-win&source=case-set&ref=${encodeURIComponent(
+      set.id
+    )}&platforms=android&baseline=latest&appAssetId=${encodeURIComponent(pkg.id)}`
+  );
+  const html = await handlePanelRequest(url, makeDeps(store));
+  assert.equal(html.status, 200);
+  const match = /<script type="application\/json" id="dispatch-preview-data">([\s\S]*?)<\/script>/.exec(
+    html.body
+  );
+  assert.ok(match, "预览数据岛存在");
+  const island = JSON.parse(match[1]);
+  assert.match(island.formSignature, /com\.example\.auto$/, "自动识别包名进入服务端签名");
+  assert.match(html.body, /name="appPackage" value="com\.example\.auto"/);
+});
