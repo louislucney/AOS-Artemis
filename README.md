@@ -392,7 +392,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.4-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.5-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"

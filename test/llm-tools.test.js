@@ -78,6 +78,11 @@ test("refreshCenterLlm: LLM base URL change restarts the live Artemis child", as
     await runtime.refreshCenterLlm();
     assert.equal(proxy.restartCalls, before + 1);
     assert.equal(proxy.running, false);
+    assert.equal(
+      runtime.activeEntryCached()?.baseUrl,
+      entry.baseUrl,
+      "refresh must keep the center entry for the next child spec"
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

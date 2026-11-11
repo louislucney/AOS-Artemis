@@ -507,7 +507,9 @@ export class Runtime {
       return;
     }
     this.transientEntry = center.entry;
-    this.activeCache = null;
+    // The child supervisor reads activeEntryCached() when spawning; clearing it
+    // here made the next child start with a bare spec (no OPENAI_BASE_URL/key).
+    this.activeCache = { name: center.entry.name, entry: center.entry };
     logWarn(
       `中心 LLM：${center.entry.name} · model=${center.entry.model} · baseUrl=${center.entry.baseUrl ?? "（未配置）"}`
     );
