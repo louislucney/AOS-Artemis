@@ -16,6 +16,7 @@ import { fireDueSchedules } from "../dist/runner/schedules.js";
 import { createAosHttpServer } from "../dist/http-server.js";
 import { buildRemoteSuiteRuntime } from "../dist/cli-runtime.js";
 import { SuiteStoreClient } from "../dist/runner/control/suite-client.js";
+import { rewriteDeepSeekStructuredOutput } from "../dist/runner/control/llm-proxy.js";
 import { createHybridSuiteStore } from "../dist/runner/control/suite-store.js";
 import { storeWebAsset } from "../dist/web/assets.js";
 import { baseConfig, makeTempProject } from "./helpers.js";
@@ -544,6 +545,34 @@ test("suite control: /llm 用中心默认项目返回代理，runner 不需要�
   );
 });
 
+test("rewriteDeepSeekStructuredOutput: json_schema -> json_object + schema prompt", () => {
+  const body = {
+    model: "deepseek-flash",
+    messages: [{ role: "user", content: "hi" }],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "x",
+        schema: { type: "object", properties: { ok: { type: "boolean" } } }
+      }
+    }
+  };
+  const result = rewriteDeepSeekStructuredOutput(body, {
+    model: "deepseek-flash",
+    baseUrl: "https://api.deepseek.com/v1"
+  });
+  assert.equal(result.rewritten, true);
+  const out = result.body;
+  assert.deepEqual(out.response_format, { type: "json_object" });
+  assert.match(out.messages[0].content, /JSON schema/);
+  assert.match(out.messages[0].content, /"ok"/);
+  const other = rewriteDeepSeekStructuredOutput(body, {
+    model: "gpt-4o",
+    baseUrl: "https://api.openai.com/v1"
+  });
+  assert.equal(other.rewritten, false);
+});
+
 test("suite control: LLM 代理转发到中心 provider，runner 不接触真实 key", async () => {
   const projectDir = makeTempProject({ config: baseConfig() });
   const central = await makeCentral(projectDir);
@@ -604,6 +633,30 @@ test("suite control: LLM 代理转发到中心 provider，runner 不接触真实
       assert.equal(providerRequests.length, 1);
       assert.equal(providerRequests[0].url, "/v1/chat/completions");
       assert.equal(providerRequests[0].authorization, "Bearer sk-upstream");
+
+      const schemaResponse = await fetch(proxyUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "x-aos-host-id": HOST,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "deepseek-flash",
+          messages: [{ role: "user", content: "return a value" }],
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "result",
+              schema: { type: "object", properties: { ok: { type: "boolean" } } }
+            }
+          }
+        })
+      });
+      assert.equal(schemaResponse.status, 200);
+      const forwarded = JSON.parse(providerRequests[1].body);
+      assert.deepEqual(forwarded.response_format, { type: "json_object" });
+      assert.match(forwarded.messages[0].content, /JSON schema/);
     } finally {
       await handle.close();
       await new Promise((resolve) => provider.close(resolve));
