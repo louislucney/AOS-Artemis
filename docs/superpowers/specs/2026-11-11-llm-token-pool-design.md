@@ -373,3 +373,22 @@
 
 这些属于 Phase 1 的集成测试与验收项，不改变 v1 设计；若集成时发现真实端点与 mock 行为不一致，按 §18 降级，不无条件下注。
 
+
+## 20. 实施状态（v1，2026-11-11）
+
+已落地并测试：
+
+- PG（`pg-mem` 覆盖）/ Memory / File 三套 store 的池 token、价格表、usage、预算计数器与预留；
+- 中心代理与 Node `chat.ts` 的估算→原子预留→真实/估算结算、流式能力门控、客户端断开/TTL 回收；
+- `pinned`/`auto` 解析、`pending_token`/`token-disabled`/`model-not-allowed` 显式错误、模型不静默降级；
+- `llm pool|price|usage` CLI、只读工具 `llm_pool_list`/`llm_usage`、面板运维卡片与 `/panel/api/llm/pool|usage`；
+- 归一 usage（base/cache-creation/cache-read/output）、惩罚价、FX 缺失与未定价计数、本位币聚合。
+
+v1 明确不做/未闭环：
+
+- 本地 Android Artemis 直连厂商的请求不计量（保留项目自有 key）；
+- 服务级审计历史 `llm.pool.create/update/disable` 未落审计表（token 行仅有 `createdBy`/`updatedAt`）；
+- FileStore/MemoryStore 的 token 级硬额度是单进程 best-effort，严格跨进程额度需要 PG；
+- Web LLM 历史 `tokenUsage` 不导入（`source=imported` 预留，未启用）。
+
+真实端点流式 400、Anthropic 真实账单、生产 SSE/reconciler 事件循环仍需 Phase 1 集成验收（见 §19 未覆盖项）。

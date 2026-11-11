@@ -281,7 +281,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
 | `audit` **审计** | 内部编排事件流（suite/import/schedule/panel/verify/issues），域/结果/关键词（动作/摘要/操作人/关联对象）筛选＋**时间预设（24h/7d/30d）＋分页** |
 | `events` **项目事件** | 执行事件流（run/case/artifact/log/feedback.request），类型/状态/消费筛选＋快捷「未消费/反馈请求」；消费态与 `aos_event_poll` 同源；`payload=1`/勾选「显示 payload」查看内容（最多 50 条），默认不回显 |
-| `ops` **运维与数据** | 项目配置（LLM name/model/baseUrl/apiKey、Figma token、Jira 站点/邮箱/token；仅 admin，密钥只写 `.env`/存储且不回显）、存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
+| `ops` **运维与数据** | 项目配置（LLM name/model/baseUrl/apiKey、Figma token、Jira 站点/邮箱/token；仅 admin，密钥只写 `.env`/存储且不回显）、**LLM 资源池与用量（只读卡片：绑定 token/预算/近 7 天用量；管理走 CLI）**、存储状态（PostgreSQL/文件台账/会话内存＋写失败信号）、保留指引、**导出三口径**（结果/过程/数据 × JSON/CSV） |
 
 **旧路由兼容**：`section=library`→`assets&tab=case-sets`、`section=assets&kind=<excel|package|materials|reference>`→`assets&tab=<tab>`、`section=dispatch`→`create&type=suite`、`section=jobs`（无 job）→`create&type=web`、`section=jobs&job=<id>`→`tasks&task=<id>`、无 section 的 `?task=<id>`→`tasks&task=<id>`、`view=review|stats`→`tasks&view=<view>`，均对 HTML `/panel` 302 且保留 `project`/`host` 等参数（`/panel.json` 保留旧 `view` 契约）。见 DESIGN §13.307。
 
@@ -844,6 +844,36 @@ node dist/cli.js doctor
 
 厂商模型会下线（如 DeepSeek 旧名 `deepseek-v4-flash` 已由 `deepseek-flash` 别名接管）：服务会按 `AOS_MODEL_REFRESH_HOURS`（默认 12h）定时刷新已配置厂商的 `/models` 列表，模型下线时自动修复为厂商稳定别名/同族等价模型（`AOS_LLM_AUTO_REPAIR=0` 关闭），并在 `mobile_run_task` 前拦截无法修复的失效模型，避免任务跑到一半才失败。
 
+### LLM 资源池与用量（v1）
+
+v1 只计量**中心 LLM 代理**与 Node `chat.ts`（设计/pen/iOS/验证等本地调用）；本地 Android Artemis 直连厂商的请求不纳入池/预算，继续用项目自有 key。
+
+```bash
+# 管理池 token（key 只在服务端；响应只回 masked 预览）
+node dist/cli.js llm pool add --name deepseek-main --provider custom \
+  --base-url https://api.deepseek.com --model deepseek-chat \
+  --api-key "$DEEPSEEK_API_KEY" --budget-period monthly --budget-micros 5000000
+node dist/cli.js llm pool list --json
+
+# 价格表（每百万 token 的货币单位；非本位币必须给 --fx）
+node dist/cli.js llm price set --provider custom --model deepseek-chat \
+  --currency CNY --input-mtok 2 --output-mtok 8
+
+# 项目绑定（--mode pinned|auto；auto 只换同模型 token，不换模型）
+node dist/cli.js llm pool bind --project /path/to/project --entry deepseek \
+  --token deepseek-main --model deepseek-chat --mode pinned
+
+# 用量报表（默认当前目录；--all 汇总全部已登记项目）
+node dist/cli.js llm usage --project /path/to/project --days 7 --bucket day \
+  --group-by model --json
+```
+
+- **预算**：默认周期 `monthly`、本位币 `CNY`（`AOS_LLM_COST_CURRENCY` 覆盖）；每个 token 有原子预留与并发上限；未定价模型按惩罚价预留，不会变成免费。金额统计只用 `cost_micros_base`，缺汇率单独计数。
+- **严格额度只在 PG**：`MOBILE_TESTING_DATABASE_URL` 下跨进程硬额度；FileStore/MemoryStore 的 token 级预算是单进程 best-effort（`aos_status.store.kind` 可确认）。
+- **密钥**：池 key 只存 PG/服务端文件（`~/.aos/ledger/llm-pool.json`，0600）；CLI、工具、面板、日志只出现 masked 预览，不返回原文。
+- **面板**：运维页「LLM 资源池与用量」只读展示绑定 token、预算和近 7 天用量；管理动作仍用 CLI（`llm pool ...`/`llm price ...`）。对应只读接口 `GET /panel/api/llm/pool|usage`。
+- **v1 缺口**：token 行记录 `createdBy`/`updatedAt`，但服务级 `llm.pool.*` 审计历史尚未落表，见 DESIGN §2.2.1。
+
 公司网络需代理出网时：Node 侧请求（模型目录刷新、Figma REST）需 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（Node ≥ 24；Node 的 fetch 默认不读代理变量）。`mobile-testing-mcp install` 会把当前 shell 的代理变量带入客户端配置。
 
 ## 工具
@@ -853,6 +883,8 @@ node dist/cli.js doctor
 | `llm_list` | 项目全部 LLM 条目（store/config/env 来源）+ active + masked key + `setupRequired` + 每条目 `models`（厂商列表缓存/是否下线/建议模型） |
 | `llm_switch` | 切换 active（PG 持久化）；模型下个任务生效；key/base_url 变更重启网关（任务守卫，`force: true` 跳过） |
 | `llm_models` | 厂商模型目录：`list` 看缓存，`refresh` 立即拉取 `GET {baseUrl}/models`（后台每 12h 自动刷新）；模型下线时自动修复并附 8 家国产厂商预设（`AOS_LLM_AUTO_REPAIR=0` 可关） |
+| `llm_pool_list` | 当前项目绑定的池 token（只读）：状态/模型/预算快照，key 只回 masked；不返回其他项目或未绑定 token |
+| `llm_usage` | 当前项目 LLM 用量（只读）：`since`/`until`/`bucket`/`groupBy`/`model`/`token`；金额只用本位币，未定价/缺汇率单独计数 |
 | `aos_configure` | 写入/更新 LLM（→ PG + 项目 `.env`）并激活；可只给 `vendor`（deepseek/qwen/zhipu/moonshot/siliconflow/stepfun/ark/hunyuan）自动选当前模型；可选同时写入 Jira 三件套（`jiraSite`/`jiraEmail`/`jiraApiToken` → 项目 `.env`）；setup 引导入口 |
 | `aos_status` | 项目注册信息、存储状态、active、子进程（pid/stderr 尾部）、Figma 与 Jira（masked）就绪性 |
 | `aos_tasks` | 任务/调用统计（case/trace/状态/模型），含完成态同步与错误终态记录 |

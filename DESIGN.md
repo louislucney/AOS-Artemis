@@ -64,6 +64,18 @@ mobile-testing-mcp（Node ≥20）
 - 非 Google provider 会自动重指 artemis 钉死的 `object_detector`/`hopper` 节点，并带精度警告。
 - 密钥只存项目 `.env` 或 PG；响应只回 masked；日志不落 key。
 
+### 2.2.1 LLM 资源池与用量记账（v1）
+
+- **范围**：v1 只计量**中心 LLM 代理**与 Node `chat.ts`（design/pen/iOS/验证等本地调用）；本地 Android Artemis 直连厂商的请求不在范围内，继续用项目自有 key。
+- **存储**：PG 新增 `llm_pool_tokens`、`llm_price_book`、`llm_usage_events`、`llm_budget_counters`、`llm_reservations`；`project_llms` 增加 `pool_token_id`/`pool_mode`(`pinned|auto`)/`pool_model`。FileStore 用 `~/.aos/ledger/llm-pool.json`（0600）存 token/价格/计数/预留，usage 写项目台账 JSONL（`AOS_LLM_POOL_FILE`/`AOS_LLM_USAGE_FILE` 可改）。没有原子预留就不宣称硬额度：PG 严格跨进程，FileStore/MemoryStore 仅单进程 best-effort。
+- **归一 usage**：`base_input_tokens` / `cache_creation_tokens` / `cache_read_tokens` / `output_tokens`；不做通用 `prompt - cache_read`。OpenAI 含缓存时 `base_input = prompt - cached`，Anthropic `input_tokens` 本身是未命中，DeepSeek 用 hit/miss 映射；adapter 只做厂商差异，不内置某家价格。
+- **预留与结算**：请求前用 `js-tiktoken` 估算 prompt+输出并原子预留；成功按真实 usage 多退少补，无 usage/超时/断流按估算或已收 chunk 强制入账；HTTP/JSON 错误释放，网络超时/连接重置按估算结算（provider 可能已处理）。未结算预留超过 `AOS_LLM_RESERVATION_TTL_MS`（默认 600000）由 reconciler 按估算结算（`status=settled_estimated`、`errorClass=reservation-ttl`）。**没有任何请求是免费的**。
+- **流式**：只有 pool token 的 `supports_stream_usage=true` 才注入 `stream_options.include_usage`；`false`/unknown 正常转发，用量按预扣+估算/部分结算；客户端中途断开按 partial 或预扣结算，绝不悬挂 reserved。
+- **预算**：默认周期 `monthly`，本位币 `CNY`（`AOS_LLM_COST_CURRENCY` 覆盖）；token 级 `max_concurrency` 默认 10；未定价模型按惩罚价 `AOS_LLM_UNPRICED_MICROS_PER_MTOK`（默认 20,000,000）预留，金额统计只用 `cost_micros_base`，缺 FX 单独计数、不混加。`pinned` 固定 token，`auto` 同模型按优先级/健康度换 token，不静默降级模型。
+- **环境变量**：`AOS_LLM_COST_CURRENCY`、`AOS_LLM_UNPRICED_MICROS_PER_MTOK`、`AOS_LLM_RESERVATION_TTL_MS`、`AOS_LLM_DEFAULT_MAX_OUTPUT_TOKENS`、`AOS_LLM_IMAGE_TOKEN_ESTIMATE`、`AOS_LLM_POOL_FILE`、`AOS_LLM_USAGE_FILE`、`AOS_LLM_USAGE_RETENTION_DAYS`（默认 365，0 关闭）。
+- **入口**：CLI `llm pool list|add|update|disable|bind`、`llm price list|set`、`llm usage`；只读工具 `llm_pool_list`/`llm_usage`（限当前项目）；面板运维页「LLM 资源池与用量」卡片与 `GET /panel/api/llm/pool|usage`（只读）。所有响应只回 masked key。
+- **v1 缺口（明确未实现）**：token 行记录 `createdBy`/`updatedAt`，但服务级审计历史 `llm.pool.create/update/disable` 尚未落审计表；不要把它当成已实现。
+
 ### 2.3 Figma / pen
 
 - Figma REST：`FIGMA_ACCESS_TOKEN`；插件桥端口固定 3055，CORS 仅允许插件 iframe + loopback。
@@ -84,7 +96,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 文件台账：`state.json` 原子快照 + `usage.jsonl`/`audit.jsonl`/`journal.jsonl`；读取前重读合并（同 id 磁盘胜）。
 - 快照剥离 `apiKey`/`figmaToken`；运行时按条目专属变量回填。
 - 保留：审计 90 天/5 万条；usage 默认 90 天/5 万条（`AOS_USAGE_RETENTION_DAYS` / `AOS_USAGE_MAX_EVENTS`）。
-- 主要表：`projects`、`project_llms`、`task_stats`、`usage_events`、`project_events`、`case_sets`/`case_set_features`、`suite_runs`/`suite_run_cases`、`regression_tasks`、`hosts`/`host_addresses`/`host_sessions`/`device_leases`、`runners`、`schedules`、`web_*`、`excel_*`、`llm_model_cache`。
+- 主要表：`projects`、`project_llms`、`task_stats`、`usage_events`、`project_events`、`case_sets`/`case_set_features`、`suite_runs`/`suite_run_cases`、`regression_tasks`、`hosts`/`host_addresses`/`host_sessions`/`device_leases`、`runners`、`schedules`、`web_*`、`excel_*`、`llm_model_cache`、LLM 池 `llm_pool_tokens`/`llm_price_book`/`llm_usage_events`/`llm_budget_counters`/`llm_reservations`。
 - 存量库迁移：`MIGRATIONS` best-effort；依赖新列的索引必须在补列之后创建（见历史 §13.262/§13.330）。
 
 ---
@@ -100,7 +112,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 | Excel/回归 | `design_assisted_import`（映射预览）、`run_regression`、`suite run/check/calibrate/loop/flake/report/feedback`、`suite task`、`suite runner`、`suite schedule` |
 | 真机 | `mobile_run_task`、`mobile_manage_task`、`mobile_get_device_state`、`mobile_inspect_trace`、`mobile_diagnose`、`aos_crashes` |
 | Jira | `jira_issue_get/search/comment/attach`、`jira_evidence_post`、`verify_jira_issue` |
-| 项目/LLM | `llm_list`/`llm_switch`、`aos_configure`、`aos_status`、`aos_usage`、`aos_event_*` |
+| 项目/LLM | `llm_list`/`llm_switch`、`llm_pool_list`/`llm_usage`（池/用量只读）、`aos_configure`、`aos_status`、`aos_usage`、`aos_event_*` |
 | 面板/运维 | `GET /panel`、`GET /panel.json`、`POST /panel/api/tasks|cancel|stop|release|rerun|queue/pause|queue/resume|hosts/register|verdicts|issues` |
 
 **iOS 路由**：`device_serial` 是 iOS 模拟器 UDID/真机 UDID 时由 AOS iOS 后端接管（截图/层级、任务执行、manage、trace），设备解析唯一入口 `Runtime.iosDevice(serial)`。
@@ -241,7 +253,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 设计辅助 Excel enrich：链路已闭环（needs-info/overrides/ambiguous/delta/索引审计）；Android 已接事后 OCR 脚本断言（`--fail-on-unresolved` 可选门禁），更底层的确定性执行层 Phase 1（结构化 actions 契约/生成/校验）已实现，Phase 2 原生 runner 已实现（共享 structured runner + adb 适配器，单测覆盖；Phase 0 真机 Spike/验收仍待设备）；设计草案见 `docs/superpowers/specs/2026-11-09-android-deterministic-executor-design.md`。
 - 面板设计增强导入：面板「导入用例库」仍是普通 Excel 导入，不检测 Wireframe、不提示设计索引/覆盖率，也不支持在线上传/解析 Figma/pen；设计增强只能走 MCP `design_assisted_import`。需先决定面板导入用「已有 flows/ui-contract」还是「在线上传/解析设计源」。
 - 确定性：LLM 规划的 5 次一致性/失败域校验尚未在真实批次上完成；`suite flake`/quarantine 已有工具。
-- Token/成本预算：按当前决定暂缓，不作为闭环门禁。
+- Token/成本预算：v1 已实现（token 池/价格表/原子预留/用量报表，见 §2.2.1）；剩余为服务级审计历史与跨进程 FileStore 严格额度。
 
 ---
 
@@ -261,3 +273,4 @@ MOBILE_TESTING_DATABASE_URL（PG）
 | 11-09 | Excel 导入检测设计上下文/内嵌图片；Section/Wireframe/Related TC；面板模板映射 | 归档 §13.332–333 |
 | 11-09 | 面板工作区发现：空台账不再算项目，修复同名重复行 | 归档 §13.334 |
 | 11-10 | runner 0.2.6：iOS structured runner 接入 suite；Phase 1 actions 契约；Android Phase 2 未实现 | 本文 §4.4/§8.3 |
+| 11-11 | LLM 资源池与用量记账 v1（原子预留/价格/流式计量/CLI/面板只读） | §2.2.1 |
