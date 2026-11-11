@@ -761,7 +761,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const projectSelect = [
     `<p><label>项目 <select name="project" aria-label="项目">${projectOptionsHtml}</select></label> <span class="muted">先选主机，再选该主机上的项目。</span></p>`,
     noProjects
-      ? `<p class="muted">该主机尚未登记项目：套件回归需要项目目录，请先在该主机接入项目。手机是否连接请查看 <a href="/panel?section=devices">设备页</a>。</p>`
+      ? `<p class="muted">该主机尚未登记项目：套件回归需要项目目录。请在目标机项目根运行 <code>node dist/cli.js suite runner</code>，按 <a href="/panel?section=devices#runner-guide">执行机接入说明</a> 下载/配置；手机是否连接见 <a href="/panel?section=devices">设备页</a>。</p>`
       : ""
   ]
     .filter((part) => part !== "")
@@ -862,7 +862,7 @@ export function renderDispatchPage(view: DispatchView): string {
           });
   const previewBody = [
     `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
-    `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：尚未引用任何用例集。请选择用例集或输入关键词后点「刷新预览」；还没有用例集可 <a href="${escapeHtml(libraryHref)}">先去用例库导入 Excel</a>。</p>`,
+    `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：所选来源尚未应用到预览。请点「刷新预览」；还没有用例集可 <a href="${escapeHtml(libraryHref)}">先去用例库导入 Excel</a>。</p>`,
     `<div class="c-stats-row">`,
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
@@ -1025,7 +1025,7 @@ go.addEventListener('click',function(){
           ? `<p class="note" role="status">当前无法派发：${escapeHtml(blockedReason)}。请按下方提示处理后刷新预览。</p>`
           : "",
         noProjects
-          ? `<p class="note">该主机尚未登记项目：套件回归需要项目目录；请先在该主机接入项目并刷新本页。设备连接状态见 <a href="/panel?section=devices">设备页</a>。</p>`
+          ? `<p class="note">该主机尚未登记项目：请在目标机项目根运行 <code>node dist/cli.js suite runner</code>（按 <a href="/panel?section=devices#runner-guide">执行机接入说明</a> 配置）后刷新本页。设备连接状态见 <a href="/panel?section=devices">设备页</a>。</p>`
           : projectMissing
             ? `<p class="note">请先选择该主机上的项目，再刷新预览。</p>`
             : needsHostPick && !legacyHostless
