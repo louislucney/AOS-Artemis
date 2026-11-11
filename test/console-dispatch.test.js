@@ -546,6 +546,11 @@ test("renderDispatchPage: 缺安装包/缺用例集/无执行机都保留可操�
   assert.match(html, /section=assets&amp;tab=packages&amp;kind=package/, "上传按钮带类型预选");
   assert.match(html, /去用例库导入 Excel/, "缺用例集警告给导入入口");
   assert.match(html, /id="dispatch-empty"[\s\S]{0,300}library-import/, "空预览横幅给导入入口");
+  assert.match(
+    html,
+    /id="dispatch-empty"[\s\S]{0,300}<button[^>]*type="submit"[^>]*>刷新预览<\/button>/,
+    "空预览横幅就地刷新"
+  );
   assert.match(html, /runner-download/, "无执行机时给接入入口");
   assert.match(html, /暂无注册执行机/, "无执行机候选显式说明");
   assert.match(html, /去用例库/, "引用明细空态给用例库入口");

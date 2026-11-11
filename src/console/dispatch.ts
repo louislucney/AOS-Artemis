@@ -690,6 +690,9 @@ export function renderDispatchPage(view: DispatchView): string {
     if (warning.includes("安装包不存在") || (warning.includes("安装包") && warning.includes("已删除"))) {
       return `<a class="c-button" href="${escapeHtml(packageHref)}">重新上传安装包</a>`;
     }
+    if (warning.includes("离线") || warning.includes("不在线")) {
+      return `<a class="c-button" href="${runnerHref}">查看执行机</a>`;
+    }
     return "";
   };
   const warnings = preview.warnings
@@ -861,8 +864,8 @@ export function renderDispatchPage(view: DispatchView): string {
             hint: eligibleDevices.map((device) => device.serial).join("、")
           });
   const previewBody = [
-    `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期。请点「刷新预览」后重新核对，再确认派发。</p>`,
-    `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：所选来源尚未应用到预览。请点「刷新预览」；还没有用例集可 <a href="${escapeHtml(libraryHref)}">先去用例库导入 Excel</a>。</p>`,
+    `<p id="dispatch-stale" role="status" class="c-banner c-banner-warn" hidden>表单已变更：预览已过期，请重新核对后再派发。 <button class="c-button" type="submit">刷新预览</button></p>`,
+    `<p id="dispatch-empty" role="status" class="c-banner c-banner-warn" hidden>预览为空：所选来源尚未应用到预览。 <button class="c-button" type="submit">刷新预览</button> 还没有用例集可 <a href="${escapeHtml(libraryHref)}">先去用例库导入 Excel</a>。</p>`,
     `<div class="c-stats-row">`,
     cStat({ label: "来源", value: preview.source.label || "—" }),
     cStat({ label: "用例数", value: String(preview.source.caseCount) }),
