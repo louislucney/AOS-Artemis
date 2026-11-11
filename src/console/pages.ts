@@ -883,12 +883,15 @@ export function renderDevicesPage(data: DevicesPageData): string {
           )}&section=create&type=suite&source=case-set&host=${encodeURIComponent(
             device.hostId
           )}&platforms=${encodeURIComponent(device.platform)}`;
+    const offline = device.state === "offline" || device.hostOnline !== true;
     const action =
       dispatchHref === null
         ? '<a class="c-button" href="/panel" title="先在顶部切换到项目，再回到本页下发">选择项目</a>'
-        : `<a class="c-button" href="${escapeHtml(
-            dispatchHref
-          )}" title="进入套件回归；设备由执行机自动选择">去下发</a>`;
+        : offline
+          ? '<button class="c-button" type="button" disabled title="执行机离线：先启动 runner / 恢复设备后再下发">去下发</button>'
+          : `<a class="c-button" href="${escapeHtml(
+              dispatchHref
+            )}" title="进入套件回归；设备由执行机自动选择">去下发</a>`;
     return [
       host,
       deviceLabel,

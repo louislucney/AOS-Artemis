@@ -270,6 +270,16 @@ test("devices page: global view asks to pick a project and switcher keeps device
   assert.match(html, /project=[^"&]+&amp;section=devices/, "切换项目后留在设备页");
 });
 
+test("devices page: offline device cannot dispatch", async (t) => {
+  const { store, rootPath, workspace } = await setup(t);
+  const html = await page(store, workspace, `&project=${encodeURIComponent(rootPath)}`);
+  const index = html.indexOf("R58M12345");
+  assert.ok(index >= 0);
+  const segment = html.slice(Math.max(0, index - 900), index + 500);
+  assert.match(segment, /disabled title="执行机离线/, "离线设备禁用去下发");
+  assert.doesNotMatch(segment, /section=create&amp;type=suite/, "离线设备不渲染可点下发链接");
+});
+
 test("devices page: preserves project context and offers dispatch action", async (t) => {
   const { store, rootPath, workspace } = await setup(t);
   const query = `&project=${encodeURIComponent(rootPath)}`;

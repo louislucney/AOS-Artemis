@@ -31,6 +31,7 @@ export function relativeTime(value: string | null | undefined, nowMs: number = D
   if (value === null || value === undefined || value === "") return "—";
   const ms = Date.parse(value);
   if (!Number.isFinite(ms)) return escapeHtml(value);
+  if (ms <= 0) return "—";
   return `<time datetime="${escapeHtml(value)}" title="${escapeHtml(absoluteLabel(ms))}">${escapeHtml(
     relativeLabel(ms, nowMs)
   )}</time>`;
@@ -44,5 +45,6 @@ export function relativeTimeText(
   if (value === null || value === undefined || value === "") return "—";
   const ms = Date.parse(value);
   if (!Number.isFinite(ms)) return value;
+  if (ms <= 0) return "—";
   return relativeLabel(ms, nowMs);
 }

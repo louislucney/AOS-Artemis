@@ -799,6 +799,20 @@ async function suiteRunTask(
       return 2;
     }
   }
+  const runnerModeEnv = { ...runtime.project.dotenvValues, ...(io.env ?? process.env) };
+  const runnerMode =
+    (runnerModeEnv.AOS_LLM_FROM_CENTER ?? "").trim() === "1" ||
+    (runnerModeEnv.MOBILE_TESTING_RUNNER_CONTROL_URL ?? "").trim() !== "";
+  const restartChildPerTask =
+    (runnerModeEnv.AOS_RUNNER_RESTART_CHILD_PER_TASK ?? "1").trim() !== "0";
+  if (restartChildPerTask && runnerMode) {
+    try {
+      await runtime.proxy.markForRestart();
+      say("任务开始前已重启 Artemis 子进程（清理陈旧设备锁/孤儿队列）");
+    } catch (error) {
+      io.errorLog(`任务开始前重启 Artemis 子进程失败：${errorMessage(error)}`);
+    }
+  }
   await progress.report("app_started", 10, { message: "启动被测应用" });
   const taskApp =
     flags.get("app-path") !== null
@@ -821,6 +835,8 @@ async function suiteRunTask(
   );
   baseOptions.onCaseEvent = async (event) => {
     if (event.phase === "start") {
+      currentCaseId = event.caseId;
+      lastCaseEventAt = Date.now();
       await progress.report(
         "acting",
         15 + Math.floor((75 * completedCases) / expectedCases),
@@ -832,6 +848,8 @@ async function suiteRunTask(
       return;
     }
     completedCases += 1;
+    currentCaseId = null;
+    lastCaseEventAt = Date.now();
     lastCaseId = event.caseId;
     lastTraceId = event.traceId;
     const passed = event.status === "passed";
@@ -948,6 +966,9 @@ async function suiteRunTask(
   let leaseHeld = false;
   const manualLeaseId = `manual:${task.id}`;
   let leaseTimer: ReturnType<typeof setInterval> | null = null;
+  let progressTimer: ReturnType<typeof setInterval> | null = null;
+  let currentCaseId: string | null = null;
+  let lastCaseEventAt = Date.now();
   let clearLeaseTimer: ((handle: ReturnType<typeof setInterval>) => void) | null = null;
   if (io.leasesHeld !== true && localHostId !== null && devices.length > 0) {
     const hostId = localHostId;
@@ -1049,6 +1070,24 @@ async function suiteRunTask(
         say(`注意: 任务状态为 ${fresh?.status ?? "未知"}，未改写为执行中`);
       }
     }
+
+    progressTimer = setInterval(async () => {
+      const idleMs = Date.now() - lastCaseEventAt;
+      const stalled = idleMs >= 5 * 60_000;
+      const percent = 15 + Math.floor((75 * completedCases) / expectedCases);
+      try {
+        await progress.report(stalled ? "stalled" : "acting", percent, {
+          caseId: currentCaseId,
+          traceId: lastTraceId,
+          message: stalled
+            ? `执行停滞：${currentCaseId ?? "当前用例"} 已 ${Math.round(idleMs / 60_000)} 分钟无新事件`
+            : `执行中：${currentCaseId ?? "等待用例"} · ${Math.round(idleMs / 1000)}s 无新事件`
+        });
+      } catch {
+        /* 进度上报失败不阻断设备执行 */
+      }
+    }, 30_000);
+    (progressTimer as { unref?: () => void }).unref?.();
 
     const subRuns: Array<{
       device: string;
@@ -1304,6 +1343,7 @@ async function suiteRunTask(
     }
     return exitCode;
   } finally {
+    if (progressTimer !== null) clearInterval(progressTimer);
     if (leaseTimer !== null && clearLeaseTimer !== null) clearLeaseTimer(leaseTimer);
     if (leaseHeld && localHostId !== null) {
       try {

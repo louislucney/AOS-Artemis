@@ -26,6 +26,7 @@ test("relativeTime: 空值 — ／非法值原样转义", () => {
   assert.equal(relativeTime(null, NOW), "—");
   assert.equal(relativeTime(undefined, NOW), "—");
   assert.equal(relativeTime("", NOW), "—");
+  assert.equal(relativeTime("1970-01-01T00:00:00.000Z", NOW), "—");
   assert.equal(relativeTime("not-a-date", NOW), "not-a-date");
   assert.equal(relativeTime('<script>x</script>', NOW), "&lt;script&gt;x&lt;/script&gt;");
 });
