@@ -9,7 +9,7 @@ import { newDb } from "pg-mem";
 import { PostgresStore } from "../dist/db/postgres.js";
 import { artifactUrl } from "../dist/panel/overview.js";
 import { startRunnerArtifactServer } from "../dist/runner/artifact-server.js";
-import { runSuiteCommand } from "../dist/suite-command.js";
+import { runnerArtifactEnv, runSuiteCommand } from "../dist/suite-command.js";
 import { baseConfig, loadTestRuntime, makeTempDir, makeTempProject } from "./helpers.js";
 
 const TOKEN = "artifact-token-7d6c";
@@ -51,6 +51,18 @@ async function withServer(run) {
     await server.close();
   }
 }
+
+test("runner artifact env: project .env defaults, process env wins", () => {
+  const merged = runnerArtifactEnv(
+    { AOS_RUNNER_ARTIFACT_PORT: "8771" },
+    {
+      AOS_RUNNER_ARTIFACT_PORT: "8770",
+      AOS_RUNNER_ADVERTISE_URL: "http://192.168.1.2:8770"
+    }
+  );
+  assert.equal(merged.AOS_RUNNER_ARTIFACT_PORT, "8771");
+  assert.equal(merged.AOS_RUNNER_ADVERTISE_URL, "http://192.168.1.2:8770");
+});
 
 test("artifact server: healthz 200 + project 名", async () => {
   await withServer(async (base, projectDir) => {

@@ -3607,6 +3607,14 @@ function parsePositiveInt(value: string): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+/** 产物服务配置的 env 合并：project .env 默认值，进程 env 覆盖。 */
+export function runnerArtifactEnv(
+  processEnv: NodeJS.ProcessEnv,
+  projectEnv: Record<string, string | undefined>
+): NodeJS.ProcessEnv {
+  return { ...projectEnv, ...processEnv };
+}
+
 async function suiteRunnerCommand(
   runtime: Runtime,
   flags: ParsedFlags,
@@ -3640,8 +3648,10 @@ async function suiteRunnerCommand(
   const resolvedPollMs = pollMs ?? undefined;
   const resolvedHeartbeatMs = heartbeatMs ?? undefined;
 
+  // 产物服务配置：project .env 提供默认值，进程 env 覆盖（与 buildRemoteSuiteRuntime 同序）。
+  const artifactEnv = runnerArtifactEnv(env, projectEnv);
   let artifactPort = 8_770;
-  const envPort = Number((env.AOS_RUNNER_ARTIFACT_PORT ?? "").trim());
+  const envPort = Number((artifactEnv.AOS_RUNNER_ARTIFACT_PORT ?? "").trim());
   if (Number.isInteger(envPort) && envPort >= 0) artifactPort = envPort;
   const portRaw = flags.get("artifact-port");
   if (portRaw !== null) {
@@ -3653,7 +3663,9 @@ async function suiteRunnerCommand(
     artifactPort = parsed;
   }
   const artifactHost =
-    flags.get("artifact-host")?.trim() || env.AOS_RUNNER_ARTIFACT_HOST?.trim() || "0.0.0.0";
+    flags.get("artifact-host")?.trim() ||
+    artifactEnv.AOS_RUNNER_ARTIFACT_HOST?.trim() ||
+    "0.0.0.0";
 
   let artifactServer: RunnerArtifactServer | null = null;
   let artifactBaseUrl: string | null = null;
@@ -3666,7 +3678,7 @@ async function suiteRunnerCommand(
         env
       });
       artifactBaseUrl =
-        env.AOS_RUNNER_ADVERTISE_URL?.trim() ||
+        artifactEnv.AOS_RUNNER_ADVERTISE_URL?.trim() ||
         `http://${localIpv4Address() ?? os.hostname()}:${artifactServer.port}`;
       if (artifactHost === "0.0.0.0" || artifactHost === "::") {
         io.log(
