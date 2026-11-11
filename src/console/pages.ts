@@ -26,6 +26,7 @@ import {
 } from "./vocab.js";
 import { renderConsoleShell, renderGroupTabs, type ConsoleCapabilities, type ConsoleShellInput } from "./shell.js";
 import { CANONICAL_FIELD_LABELS, CANONICAL_FIELDS } from "../web/excel-columns.js";
+import type { LlmUsageReport } from "../llm/pool/aggregate.js";
 
 export interface LibraryPageData {
   rootPath: string;
@@ -1648,6 +1649,36 @@ export function renderSearchPage(data: SearchPageData): string {
   });
 }
 
+export interface OpsLlmPoolTokenView {
+  id: string;
+  name: string;
+  provider: string;
+  models: string[];
+  status: string;
+  priority: number;
+  budget: {
+    period: string;
+    limitMicros: number | null;
+    limitTokens: number | null;
+    currency: string;
+    maxConcurrency: number;
+  };
+  maskedKey: string | null;
+  snapshot: {
+    usedTokens: number;
+    usedMicros: number;
+    reservedTokens: number;
+    reservedMicros: number;
+    activeReservations: number;
+    remainingTokens: number | null;
+    remainingMicros: number | null;
+  } | null;
+}
+
+export interface OpsLlmPoolView {
+  tokens: OpsLlmPoolTokenView[];
+}
+
 export interface OpsPageData {
   rootPath: string;
   rootLabel: string;
@@ -1658,6 +1689,8 @@ export interface OpsPageData {
   writeError: string | null;
   artifacts: number;
   llm?: { name: string; model: string; baseUrl: string | null; maskedKey: string } | null;
+  llmPool?: OpsLlmPoolView | null;
+  llmUsage?: LlmUsageReport | null;
   capabilities?: ConsoleCapabilities;
   storeHealth?: ConsoleShellInput["storeHealth"];
 }
@@ -1734,6 +1767,58 @@ export function renderOpsPage(data: OpsPageData): string {
             data.rootPath
           )}&amp;section=assets">测试资产</a></p>`
         ].join("\n")
+      }),
+      cCard({
+        title: "LLM 资源池与用量",
+        subtitle: "只读；管理用 CLI `llm pool ...` / `llm price ...`",
+        body: (() => {
+          const tokens = data.llmPool?.tokens ?? [];
+          const usage = data.llmUsage ?? null;
+          const parts: string[] = [];
+          if (tokens.length === 0) {
+            parts.push('<p class="muted">当前使用项目自有 key，不纳入池预算。</p>');
+          } else {
+            parts.push(
+              cTable({
+                columns: ["名称", "provider", "模型", "状态", "预算", "key"],
+                rows: tokens.map((token) => {
+                  const budget = token.snapshot
+                    ? `${token.budget.period} · 已用 ${token.snapshot.usedMicros}µ / ${token.budget.limitMicros ?? "∞"}µ · 预留 ${token.snapshot.activeReservations}`
+                    : `${token.budget.period} · 限额 ${token.budget.limitMicros ?? "∞"}µ`;
+                  return [
+                    escapeHtml(token.name),
+                    escapeHtml(token.provider),
+                    escapeHtml(token.models.join(", ") || "*"),
+                    escapeHtml(token.status),
+                    escapeHtml(budget),
+                    escapeHtml(token.maskedKey ?? "—")
+                  ];
+                }),
+                empty: "无绑定 token"
+              })
+            );
+          }
+          if (usage !== null) {
+            parts.push(
+              `<p class="muted">近 7 天用量（${escapeHtml(usage.baseCurrency)}）</p>`,
+              cTable({
+                columns: ["分组", "请求", "tokens", "金额(µ)", "未定价"],
+                rows: usage.rows.slice(0, 20).map((row) => [
+                  escapeHtml(row.key),
+                  String(row.requests),
+                  String(row.totalTokens),
+                  String(row.costMicrosBase),
+                  String(row.unpricedRequests)
+                ]),
+                empty: "近 7 天无用量"
+              })
+            );
+          }
+          parts.push(
+            '<p class="muted">CLI：<code>node dist/cli.js llm pool list</code> · <code>node dist/cli.js llm usage</code></p>'
+          );
+          return parts.join("\n");
+        })()
       }),
       cCard({
         title: "存储",

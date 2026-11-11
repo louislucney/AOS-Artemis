@@ -5,8 +5,10 @@ import {
   llmModels,
   llmPoolList,
   llmSwitch,
+  llmUsage,
   type LlmModelsArgs,
-  type LlmSwitchArgs
+  type LlmSwitchArgs,
+  type LlmUsageArgs
 } from "../llm.js";
 
 /** LLM 域原生工具（DESIGN §13.89）。 */
@@ -17,6 +19,23 @@ export const LLM_NATIVE_TOOLS: NativeToolDefinition[] = [
       "查看当前项目绑定的 LLM 资源池 token（只读）：状态/模型/预算/token 快照，key 只返回 masked 预览；不返回其他项目或未绑定 token。管理（增改/绑定/价格）用 CLI `llm pool ...`。",
     schema: z.object({}),
     handler: (runtime) => llmPoolList(runtime)
+  },
+  {
+    name: "llm_usage",
+    description:
+      "查看当前项目的 LLM 用量报表（只读）：按项目/模型/token/时间聚合 tokens 与金额；金额只用本位币 cost 字段，未定价/缺汇率单独计数；不返回 key。",
+    schema: z.object({
+      since: z.string().optional().describe("起始 ISO 时间（含）"),
+      until: z.string().optional().describe("结束 ISO 时间（含）"),
+      bucket: z.enum(["hour", "day", "month"]).optional().describe("按 UTC 时间分桶"),
+      groupBy: z
+        .enum(["project", "model", "token", "none"])
+        .optional()
+        .describe("分组维度，默认 none"),
+      model: z.string().optional().describe("只统计指定模型"),
+      token: z.string().optional().describe("只统计指定池 token id")
+    }),
+    handler: (runtime, args) => llmUsage(runtime, args as LlmUsageArgs)
   },
   {
     name: "llm_list",

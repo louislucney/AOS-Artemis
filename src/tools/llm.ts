@@ -9,6 +9,8 @@ import { scanVisionHealth } from "../ios/vision-health.js";
 import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.js";
 import { entryIssues } from "../llm/registry.js";
 import { resolvePoolTokenKey } from "../llm/pool/resolve.js";
+import { aggregateLlmUsage } from "../llm/pool/aggregate.js";
+import type { LlmUsageQuery } from "../db/types.js";
 import type { LlmPoolTokenRecord } from "../db/types.js";
 import type { Runtime } from "../runtime.js";
 import { clientTtlFrom, isClientOnline } from "../host/online.js";
@@ -22,6 +24,15 @@ export interface LlmSwitchArgs {
 export interface LlmModelsArgs {
   action: "list" | "refresh";
   entry?: string;
+}
+
+export interface LlmUsageArgs {
+  since?: string;
+  until?: string;
+  bucket?: "hour" | "day" | "month";
+  groupBy?: "project" | "model" | "token" | "none";
+  model?: string;
+  token?: string;
 }
 
 export interface AosTasksArgs {
@@ -181,6 +192,28 @@ export async function llmPoolList(runtime: Runtime): Promise<CallToolResult> {
       });
     }
     return jsonResult({ ok: true, tokens });
+  } catch (error) {
+    return jsonResult({ ok: false, error: errorMessage(error) }, true);
+  }
+}
+
+/** 当前项目的 LLM 用量报表（只读）；不返回其他项目，不返回 key。 */
+export async function llmUsage(
+  runtime: Runtime,
+  args: LlmUsageArgs = {}
+): Promise<CallToolResult> {
+  try {
+    const query: LlmUsageQuery = {
+      projectRoot: runtime.project.rootDir,
+      ...(args.since === undefined ? {} : { since: args.since }),
+      ...(args.until === undefined ? {} : { until: args.until }),
+      ...(args.bucket === undefined ? {} : { bucket: args.bucket }),
+      ...(args.groupBy === undefined ? {} : { groupBy: args.groupBy }),
+      ...(args.model === undefined ? {} : { model: args.model }),
+      ...(args.token === undefined ? {} : { poolTokenId: args.token })
+    };
+    const events = await runtime.store.listLlmUsageEvents(query);
+    return jsonResult({ ok: true, report: aggregateLlmUsage(events, query) });
   } catch (error) {
     return jsonResult({ ok: false, error: errorMessage(error) }, true);
   }

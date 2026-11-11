@@ -12,6 +12,7 @@ import type {
   UpsertLlmPriceInput
 } from "../db/types.js";
 import { errorMessage, maskSecret } from "../util.js";
+import { aggregateLlmUsage, type LlmUsageBucket } from "./pool/aggregate.js";
 import { baseCurrencyFrom } from "./pool/pricing.js";
 
 export interface LlmCommandDeps {
@@ -60,7 +61,9 @@ Usage:
   mobile-testing-mcp llm price set --provider <p> --model <m> --currency <c>
       --input-mtok <n> --output-mtok <n> [--cache-read-mtok <n>] [--cache-write-mtok <n>]
       [--fx <n>] [--effective-from <iso>] [--note <text>] [--json]
-  mobile-testing-mcp llm usage [options]   （用量报表见后续版本）
+  mobile-testing-mcp llm usage [--project <dir>|--all] [--model <m>] [--token <id>]
+      [--since <iso>] [--until <iso>] [--bucket hour|day|month]
+      [--group-by project|model|token|none] [--json]
 
 key 只显示 masked 预览；价格 *-mtok 为每百万 token 的货币单位。
 
@@ -649,6 +652,69 @@ async function priceCommand(
   }
 }
 
+function usageLine(row: LlmUsageBucket): string {
+  const flags = [
+    `请求 ${row.requests}`,
+    `tokens ${row.totalTokens}`,
+    `金额 ${row.costMicrosBase}µ`,
+    ...(row.unpricedRequests > 0 ? [`未定价 ${row.unpricedRequests}`] : []),
+    ...(row.fxMissingRequests > 0 ? [`缺汇率 ${row.fxMissingRequests}`] : [])
+  ];
+  return `${row.key} · ${flags.join(" · ")}`;
+}
+
+async function usageCommand(flags: ParsedFlags, ctx: CommandContext): Promise<number> {
+  const all = flags.bool("all");
+  const projectFlag = flags.get("project");
+  if (all && projectFlag !== null) {
+    throw new UsageError("--all 与 --project 不能同时使用");
+  }
+  const bucket = flags.get("bucket");
+  if (bucket !== null && !["hour", "day", "month"].includes(bucket)) {
+    throw new UsageError("--bucket 需要 hour|day|month");
+  }
+  const groupBy = flags.get("group-by") ?? "none";
+  if (!["project", "model", "token", "none"].includes(groupBy)) {
+    throw new UsageError("--group-by 需要 project|model|token|none");
+  }
+  const since = flags.get("since");
+  const until = flags.get("until");
+  for (const [name, value] of [
+    ["since", since],
+    ["until", until]
+  ] as const) {
+    if (value !== null && Number.isNaN(Date.parse(value))) {
+      throw new UsageError(`--${name} 需要 ISO 时间`);
+    }
+  }
+  const projectRoot = all
+    ? undefined
+    : projectFlag !== null
+      ? path.resolve(ctx.cwd, projectFlag)
+      : resolveProject({ env: ctx.env, cwd: ctx.cwd }).rootDir;
+  const store = await resolveStore(ctx);
+  const query = {
+    ...(projectRoot === undefined ? {} : { projectRoot }),
+    ...(flags.get("model") === null ? {} : { model: flags.get("model")! }),
+    ...(flags.get("token") === null ? {} : { poolTokenId: flags.get("token")! }),
+    ...(since === null ? {} : { since }),
+    ...(until === null ? {} : { until }),
+    ...(bucket === null ? {} : { bucket: bucket as "hour" | "day" | "month" }),
+    groupBy: groupBy as "project" | "model" | "token" | "none",
+    limit: all ? 50000 : 5000
+  };
+  const events = await store.listLlmUsageEvents(query);
+  const report = aggregateLlmUsage(events, query);
+  if (flags.bool("json")) {
+    ctx.log(JSON.stringify({ ok: true, report }, null, 2));
+    return 0;
+  }
+  if (report.rows.length === 0) ctx.log("（无用量数据）");
+  for (const row of report.rows) ctx.log(usageLine(row));
+  ctx.log(usageLine({ ...report.totals, key: "合计" }));
+  return 0;
+}
+
 export async function runLlmCommand(
   rest: string[],
   deps: LlmCommandDeps = {}
@@ -685,8 +751,7 @@ export async function runLlmCommand(
     if (area === "pool") return await poolCommand(action, flags, ctx);
     if (area === "price") return await priceCommand(action, flags, ctx);
     if (area === "usage") {
-      errorLog("llm usage 尚未实现（用量报表在后续版本提供）");
-      return 2;
+      return await usageCommand(flags, ctx);
     }
     throw new UsageError(`未知子命令 "${area ?? ""}"`);
   } catch (error) {

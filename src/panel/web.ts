@@ -39,6 +39,7 @@ import {
   renderWebAssetsPage,
   type DeviceListEntry,
   type LibraryPageData,
+  type OpsLlmPoolView,
   type SearchPageData
 } from "../console/pages.js";
 import { listArtifacts, type ArtifactRecord } from "../artifacts/index.js";
@@ -57,6 +58,8 @@ import { storeKindLabel } from "../db/labels.js";
 import { listWebAssets } from "../web/assets.js";
 import { listExcelMappings } from "../web/excel-mapping.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
+import { aggregateLlmUsage, type LlmUsageReport } from "../llm/pool/aggregate.js";
+import { resolvePoolTokenKey } from "../llm/pool/resolve.js";
 import type { WarningSummary } from "../design/warnings.js";
 import {
   buildPanelBatchDetail,
@@ -307,6 +310,8 @@ type PanelView =
       writeError: string | null;
       artifacts: number;
       llm: { name: string; model: string; baseUrl: string | null; maskedKey: string } | null;
+      llmPool: OpsLlmPoolView | null;
+      llmUsage: LlmUsageReport | null;
     }
   | {
       kind: "events";
@@ -1061,6 +1066,17 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     const artifacts = (await listArtifacts(resolved.rootPath, { limit: 500 })).length;
     const llms = await projectStore.listLlms(resolved.rootPath).catch(() => []);
     const activeLlm = llms.find((entry) => entry.isActive) ?? llms[0] ?? null;
+    const llmPool = await buildLlmPoolView(
+      projectStore,
+      resolved.rootPath,
+      deps.env ?? process.env
+    ).catch(() => null);
+    const llmUsage = await buildLlmUsageReport(projectStore, resolved.rootPath, {
+      days: 7,
+      bucket: "day",
+      groupBy: "model",
+      now: deps.now?.()
+    }).catch(() => null);
     return {
       kind: "ops",
       rootPath: resolved.rootPath,
@@ -1081,7 +1097,9 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
               model: activeLlm.model,
               baseUrl: activeLlm.baseUrl,
               maskedKey: activeLlm.apiKey === null ? "未保存" : maskSecret(activeLlm.apiKey)
-            }
+            },
+      llmPool,
+      llmUsage
     };
   }
 
@@ -1359,6 +1377,131 @@ function legacyPanelRedirect(url: URL): PanelWebResponse | null {
   };
 }
 
+function jsonResponse(status: number, payload: unknown): PanelWebResponse {
+  return {
+    status,
+    contentType: JSON_CONTENT_TYPE,
+    body: JSON.stringify(payload, null, 2)
+  };
+}
+
+async function buildLlmPoolView(
+  store: ProjectStore,
+  rootPath: string,
+  env: NodeJS.ProcessEnv
+): Promise<OpsLlmPoolView> {
+  const entries = await store.listLlms(rootPath).catch(() => []);
+  const ids = [
+    ...new Set(entries.map((entry) => entry.poolTokenId).filter((id): id is string => id !== null))
+  ];
+  const tokens: OpsLlmPoolView["tokens"] = [];
+  for (const id of ids) {
+    const token = await store.getLlmPoolToken(id).catch(() => null);
+    if (token === null) continue;
+    const key = resolvePoolTokenKey(token, env);
+    const snapshot = await store.getLlmBudgetSnapshot(id).catch(() => null);
+    tokens.push({
+      id: token.id,
+      name: token.name,
+      provider: token.provider,
+      models: [...token.modelAllowlist],
+      status: token.status,
+      priority: token.priority,
+      budget: {
+        period: token.budgetPeriod,
+        limitMicros: token.budgetLimitMicros,
+        limitTokens: token.budgetLimitTokens,
+        currency: token.currency,
+        maxConcurrency: token.maxConcurrency
+      },
+      maskedKey: key === null ? null : maskSecret(key),
+      snapshot:
+        snapshot === null
+          ? null
+          : {
+              usedTokens: snapshot.usedTokens,
+              usedMicros: snapshot.usedMicros,
+              reservedTokens: snapshot.reservedTokens,
+              reservedMicros: snapshot.reservedMicros,
+              activeReservations: snapshot.activeReservations,
+              remainingTokens: snapshot.remainingTokens,
+              remainingMicros: snapshot.remainingMicros
+            }
+    });
+  }
+  return { tokens };
+}
+
+async function buildLlmUsageReport(
+  store: ProjectStore,
+  rootPath: string,
+  options: {
+    days: number;
+    bucket: "hour" | "day" | "month";
+    groupBy: "project" | "model" | "token" | "none";
+    now?: number;
+  }
+): Promise<LlmUsageReport> {
+  const now = options.now ?? Date.now();
+  const since = new Date(now - Math.max(0, options.days) * 86_400_000).toISOString();
+  const query = {
+    projectRoot: rootPath,
+    since,
+    bucket: options.bucket,
+    groupBy: options.groupBy,
+    limit: 50000
+  };
+  const events = await store.listLlmUsageEvents(query).catch(() => []);
+  return aggregateLlmUsage(events, query);
+}
+
+async function resolvePanelApiProject(
+  url: URL,
+  deps: PanelWebDeps
+): Promise<{
+  rootPath: string;
+  store: ProjectStore;
+} | null> {
+  const projectKey = trimmed(url.searchParams.get("project"));
+  if (projectKey === null) return null;
+  const hostParam = trimmed(url.searchParams.get("host"));
+  const resolved = await resolveProjectKey(deps, projectKey, hostParam ?? undefined);
+  if (resolved === null) return null;
+  const store =
+    resolved.hostId !== null ? (deps.storeForHost?.(resolved.hostId) ?? deps.store) : deps.store;
+  return { rootPath: resolved.rootPath, store };
+}
+
+async function handleLlmPoolApi(url: URL, deps: PanelWebDeps): Promise<PanelWebResponse> {
+  const project = await resolvePanelApiProject(url, deps);
+  if (project === null) return jsonResponse(404, { ok: false, error: "未知项目" });
+  const env = deps.env ?? process.env;
+  const view = await buildLlmPoolView(project.store, project.rootPath, env);
+  return jsonResponse(200, { ok: true, tokens: view.tokens });
+}
+
+async function handleLlmUsageApi(url: URL, deps: PanelWebDeps): Promise<PanelWebResponse> {
+  const project = await resolvePanelApiProject(url, deps);
+  if (project === null) return jsonResponse(404, { ok: false, error: "未知项目" });
+  const daysRaw = Number(url.searchParams.get("days") ?? "7");
+  const days = Number.isFinite(daysRaw) && daysRaw >= 0 ? Math.floor(daysRaw) : 7;
+  const bucketRaw = trimmed(url.searchParams.get("bucket")) ?? "day";
+  if (!["hour", "day", "month"].includes(bucketRaw)) {
+    return jsonResponse(400, { ok: false, error: "bucket 需要 hour|day|month" });
+  }
+  const groupRaw = trimmed(url.searchParams.get("groupBy")) ?? "model";
+  if (!["project", "model", "token", "none"].includes(groupRaw)) {
+    return jsonResponse(400, { ok: false, error: "groupBy 需要 project|model|token|none" });
+  }
+  const report = await buildLlmUsageReport(project.store, project.rootPath, {
+    days,
+    bucket: bucketRaw as "hour" | "day" | "month",
+    groupBy: groupRaw as "project" | "model" | "token" | "none",
+    now: deps.now?.()
+  });
+  return jsonResponse(200, { ok: true, report });
+}
+
 export async function handlePanelRequest(
   url: URL,
   deps: PanelWebDeps,
@@ -1369,6 +1512,8 @@ export async function handlePanelRequest(
     return url.pathname === "/panel/api/hosts" ? notFound("not found", true) : notFound();
   }
   if (url.pathname === "/panel/api/hosts") return handlePanelHostsRequest(deps);
+  if (url.pathname === "/panel/api/llm/pool") return handleLlmPoolApi(url, deps);
+  if (url.pathname === "/panel/api/llm/usage") return handleLlmUsageApi(url, deps);
   if (url.pathname !== "/panel" && url.pathname !== "/panel.json") return notFound();
   // 只重定向 HTML 页面；`/panel.json` 保留旧 view，避免脚本/集成方因 302 改变契约。
   if (options?.legacyRedirect === true && url.pathname === "/panel") {
@@ -4330,6 +4475,8 @@ function renderPanelHtml(
       writeError: view.writeError,
       artifacts: view.artifacts,
       llm: view.llm,
+      llmPool: view.llmPool,
+      llmUsage: view.llmUsage,
       capabilities: deps.capabilities,
       storeHealth: currentShell.storeHealth
     });
