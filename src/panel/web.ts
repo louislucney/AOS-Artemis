@@ -1415,12 +1415,19 @@ export async function handlePanelRequest(
 // HTML rendering
 
 
-function renderTable(headers: string[], rows: string[][], emptyText: string, caption?: string): string {
-  if (rows.length === 0) return `<p class="empty">${escapeHtml(emptyText)}</p>`;
+function renderTable(
+  headers: string[],
+  rows: string[][],
+  emptyText: string,
+  caption?: string,
+  emptyHtml?: string
+): string {
+  if (rows.length === 0) return `<p class="empty">${emptyHtml ?? escapeHtml(emptyText)}</p>`;
   return cTable({
     columns: headers,
     rows,
     empty: emptyText,
+    ...(emptyHtml === undefined ? {} : { emptyHtml }),
     ...(caption === undefined ? {} : { caption })
   });
 }
@@ -3350,7 +3357,9 @@ function renderStatsPage(view: { rootPath: string; hostId: string | null; detail
       renderTable(
         ["功能", "名称", "运行", "通过率", "趋势", "失败域", "归因构成"],
         featureRows,
-        '暂无用例集来源运行（先创建回归任务并执行）'
+        '暂无用例集来源运行（先创建回归任务并执行）',
+        undefined,
+        `暂无用例集来源运行，<a href="${escapeHtml(dispatchHref(view.rootPath, view.hostId))}">去创建回归任务</a>`
       ),
       "</section>",
       '<section id="cases">',
@@ -3358,7 +3367,9 @@ function renderStatsPage(view: { rootPath: string; hostId: string | null; detail
       renderTable(
         ["用例", "名称", "功能", "运行", "失败", "连败", "flaky", "最近状态", "最近失败域", "裁决"],
         caseRows,
-        "暂无用例数据"
+        "暂无用例数据",
+        undefined,
+        `暂无用例数据，<a href="${escapeHtml(dispatchHref(view.rootPath, view.hostId))}">去创建回归任务</a>`
       ),
       "</section>",
       '<section id="cross">',

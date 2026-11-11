@@ -1378,6 +1378,17 @@ test("panel web: stats HTML（功能表/最不稳用例/跨端/三清单/指引�
   assert.match(projectHtml.body, /view=stats/, "项目页有统计入口");
 });
 
+test("panel web: stats 空表给创建任务入口", async () => {
+  const { deps, projectDir } = await makeHarness();
+  const html = await handlePanelRequest(
+    new URL(`http://x/panel?project=${encodeURIComponent(projectDir)}&view=stats`),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /去创建回归任务/, "空态给下一步动作");
+  assert.match(html.body, /section=create/, "入口指向下发向导");
+});
+
 test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标）+ 含表单页不整页刷新", async () => {
   const { deps, projectDir, store } = await makeHarness();
   await store.upsertRunner({
