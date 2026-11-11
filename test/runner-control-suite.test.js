@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
-import { runSuiteCommand } from "../dist/suite-command.js";
+import { materializeTaskApp, runSuiteCommand } from "../dist/suite-command.js";
 import { fireDueSchedules } from "../dist/runner/schedules.js";
 import { createAosHttpServer } from "../dist/http-server.js";
 import { buildRemoteSuiteRuntime } from "../dist/cli-runtime.js";
@@ -922,6 +922,32 @@ test("suite runner: control URL from project .env is used (bundle scenario)", as
       }
     })
   );
+});
+
+test("materializeTaskApp: 控制面下载按任务 id，不拿资产 id 当任务 id", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-app-materialize-"));
+  const calls = [];
+  const runtime = {
+    project: { rootDir: dir },
+    store: {
+      downloadTaskApp: async (rootPath, taskId) => {
+        calls.push({ rootPath, taskId });
+        return { filename: "app.apk", sha256: "", size: 3, buffer: Buffer.from("apk") };
+      }
+    }
+  };
+  try {
+    const result = await materializeTaskApp(
+      runtime,
+      { id: "task-1", appAssetId: "asset-1" },
+      { appAsset: { id: "asset-1", filename: "app.apk", sha256: "", size: 3 } }
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, [{ rootPath: dir, taskId: "task-1" }]);
+    assert.match(result.path, /\.artemis[\\/]cache[\\/]apps[\\/].+\.apk$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("SuiteStoreClient: 网络失败包含中心地址与排查提示", async () => {

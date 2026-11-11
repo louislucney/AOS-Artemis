@@ -535,9 +535,9 @@ function taskCaseIdsForProgress(task: { caseIds: string[] }): boolean {
   return task.caseIds.length > 0;
 }
 
-async function materializeTaskApp(
+export async function materializeTaskApp(
   runtime: Runtime,
-  task: { appAssetId: string | null },
+  task: { id: string; appAssetId: string | null },
   bundle: Awaited<ReturnType<NonNullable<ProjectStore["getTaskBundle"]>>> | null
 ): Promise<{ ok: true; path: string | null } | { ok: false; error: string }> {
   if (task.appAssetId === null) return { ok: true, path: null };
@@ -552,7 +552,7 @@ async function materializeTaskApp(
     try {
       const downloaded = await runtime.store.downloadTaskApp(
         runtime.project.rootDir,
-        appAsset.id
+        task.id
       );
       if (downloaded === null) return { ok: false, error: "控制面返回的安装包为空" };
       const actual = createHash("sha256").update(downloaded.buffer).digest("hex");
