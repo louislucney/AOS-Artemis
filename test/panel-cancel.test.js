@@ -298,3 +298,22 @@ test("suite run --task：cancelled 拒绝执行（exit 2）", async () => {
   const after = await store.getRegressionTask(rootPath, task.id);
   assert.equal(after.status, "cancelled", "被拒绝的运行不改任务状态");
 });
+
+test("suite run --task：Web 任务拒绝执行（exit 2）", async () => {
+  const { store, runtime, rootPath } = await setupLocal();
+  const task = await store.createRegressionTask({
+    ...taskInput(rootPath),
+    jobSpec: { kind: "web-test" }
+  });
+  const errors = [];
+  const code = await runSuiteCommand(["run", "--task", task.id, "--device", "emulator-5554"], {
+    buildRuntime: async () => ({ runtime, dispose: async () => {} }),
+    log: () => {},
+    errorLog: (line) => errors.push(line)
+  });
+  assert.equal(code, 2);
+  assert.ok(
+    errors.some((line) => line.includes("Web 任务") && line.includes("Web 执行机")),
+    "明确说明项目机 runner 不执行 Web 任务"
+  );
+});

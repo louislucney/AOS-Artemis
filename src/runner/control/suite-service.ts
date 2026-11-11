@@ -236,7 +236,14 @@ export class SuiteControlService {
     if (!/^[A-Za-z0-9._-]+$/.test(input.traceId)) {
       throw new RunnerControlError("invalid-state", "traceId 含非法字符");
     }
-    const allowed = new Set(["status.json", "stderr.log", "stdout.log", "error.txt"]);
+    const allowed = new Set([
+      "status.json",
+      "stderr.log",
+      "stdout.log",
+      "error.txt",
+      "native-ios.json",
+      "native-android.json"
+    ]);
     const dir = path.join(input.rootPath, ".artemis", "remote-evidence", input.taskId, input.traceId);
     fs.mkdirSync(dir, { recursive: true });
     const saved: string[] = [];

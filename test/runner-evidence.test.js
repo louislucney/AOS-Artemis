@@ -91,6 +91,46 @@ test("runner evidence: uploads allowed status/stderr files", async () => {
   }
 });
 
+test("runner evidence: accepts native structured evidence", async () => {
+  const { rootPath, task, handle, restore } = await makeServer();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${handle.port}/panel/api/runners/suite/tasks/${task.id}/evidence`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "x-aos-host-id": HOST,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          rootPath,
+          taskId: task.id,
+          caseId: "case-1",
+          traceId: "trace-native",
+          files: [
+            {
+              name: "native-ios.json",
+              contentBase64: Buffer.from('{"actions":[]}', "utf8").toString("base64")
+            },
+            {
+              name: "native-android.json",
+              contentBase64: Buffer.from('{"steps":[]}', "utf8").toString("base64")
+            }
+          ]
+        })
+      }
+    );
+    assert.equal(response.status, 200, await response.text());
+    const dir = path.join(rootPath, ".artemis", "remote-evidence", task.id, "trace-native");
+    assert.equal(fs.readFileSync(path.join(dir, "native-ios.json"), "utf8"), '{"actions":[]}');
+    assert.equal(fs.readFileSync(path.join(dir, "native-android.json"), "utf8"), '{"steps":[]}');
+  } finally {
+    await handle.close();
+    restore();
+  }
+});
+
 test("runner evidence: rejects disallowed names", async () => {
   const { rootPath, task, handle, restore } = await makeServer();
   try {

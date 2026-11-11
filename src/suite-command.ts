@@ -602,6 +602,12 @@ async function suiteRunTask(
     io.errorLog(`未找到回归任务 ${taskId}`);
     return 2;
   }
+  if (task.jobSpec !== null) {
+    io.errorLog(
+      `任务 ${taskId} 是 Web 任务（jobSpec 非空）：项目机 runner 不执行，请在 Web 执行机运行`
+    );
+    return 2;
+  }
   const localHostId = runtime.hostIdentity?.id ?? null;
   if (hostStrictFrom(io.env ?? process.env) && localHostId === null) {
     io.errorLog(
