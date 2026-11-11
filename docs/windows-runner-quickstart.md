@@ -47,6 +47,14 @@ New-NetFirewallRule -DisplayName "mobile-testing runner artifacts" -Direction In
 - 端口被占用：设 `AOS_RUNNER_ARTIFACT_PORT=8771` 并同步 `AOS_RUNNER_ADVERTISE_URL` 与防火墙；设 `0` 关闭。
 - 详细步骤与令牌见面板「设备 → 执行机接入说明 → 产物服务」。
 
+### 安装策略（已安装同包）
+
+任务带安装包时，runner 会先查设备是否已安装同名包；已安装则默认**跳过安装并直接启动**，避免部分设备（vivo 等）在重复安装时只给“重新打开”而中止安装。需要强制更新时在 `project\.env` 设：
+
+```dotenv
+AOS_APP_INSTALL_POLICY=always
+```
+
 ### 首次安装依赖失败（PyPI 超时 / Python 3.12）
 
 启动脚本已固定 `UV_PYTHON=3.12`、`UV_SYSTEM_CERTS=1`。如果 `uv` 仍选 3.13，先 `uv python find 3.12`。如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler）：

@@ -6,7 +6,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
-import { materializeTaskApp, runSuiteCommand } from "../dist/suite-command.js";
+import {
+  androidPackageInstalled,
+  materializeTaskApp,
+  runSuiteCommand
+} from "../dist/suite-command.js";
 import { fireDueSchedules } from "../dist/runner/schedules.js";
 import { createAosHttpServer } from "../dist/http-server.js";
 import { buildRemoteSuiteRuntime } from "../dist/cli-runtime.js";
@@ -922,6 +926,33 @@ test("suite runner: control URL from project .env is used (bundle scenario)", as
       }
     })
   );
+});
+
+test("androidPackageInstalled: exact package match", async () => {
+  const calls = [];
+  const exec = async (command, args) => {
+    calls.push({ command, args });
+    return { code: 0, stdout: "package:com.example.app\n", stderr: "" };
+  };
+  assert.equal(
+    await androidPackageInstalled(
+      { AOS_ADB_PATH: "/fake/adb" },
+      "serial-1",
+      "com.example.app",
+      exec
+    ),
+    true
+  );
+  assert.equal(
+    await androidPackageInstalled(
+      { AOS_ADB_PATH: "/fake/adb" },
+      "serial-1",
+      "com.example.app2",
+      exec
+    ),
+    false
+  );
+  assert.deepEqual(calls[0].args.slice(0, 4), ["-s", "serial-1", "shell", "pm"]);
 });
 
 test("materializeTaskApp: 控制面下载按任务 id，不拿资产 id 当任务 id", async () => {

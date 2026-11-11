@@ -20,6 +20,7 @@ import { isMigrationIncompleteError } from "./db/index.js";
 import { hostStrictFrom } from "./host/strict.js";
 import { isHostOnline, precheckTask } from "./console/dispatch.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
+import { defaultExec, resolveAdbPath } from "./device/adb.js";
 import { classifyIosSerial } from "./device/ios.js";
 import { latestFeatureRefs, type ResolvedTaskRef } from "./tasks/feature-refs.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
@@ -535,6 +536,23 @@ function taskCaseIdsForProgress(task: { caseIds: string[] }): boolean {
   return task.caseIds.length > 0;
 }
 
+/** Android 包是否已安装；用于跳过同包重复安装，避免设备只弹“重新打开”导致安装中止。 */
+export async function androidPackageInstalled(
+  env: NodeJS.ProcessEnv,
+  serial: string,
+  packageName: string,
+  exec: typeof defaultExec = defaultExec
+): Promise<boolean> {
+  const adb = resolveAdbPath(env, process.platform);
+  if (adb.path === null) return false;
+  const result = await exec(
+    adb.path,
+    ["-s", serial, "shell", "pm", "list", "packages", packageName],
+    { timeoutMs: 10_000, env }
+  );
+  return result.code === 0 && result.stdout.split(/\r?\n/).includes(`package:${packageName}`);
+}
+
 export async function materializeTaskApp(
   runtime: Runtime,
   task: { id: string; appAssetId: string | null },
@@ -777,11 +795,37 @@ async function suiteRunTask(
       }
     );
   };
-  if (taskApp.path !== null) {
-    baseOptions.appPath = taskApp.path;
-    say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);
-  }
   const taskAppPackage = (task.appPackage ?? "").trim();
+  const runnerEnv = { ...runtime.project.dotenvValues, ...(io.env ?? process.env) };
+  const appInstallPolicy = (
+    runnerEnv.AOS_APP_INSTALL_POLICY ?? "skip-if-present"
+  ).trim();
+  let skipTaskAppInstall = false;
+  if (
+    taskApp.path !== null &&
+    taskAppPackage !== "" &&
+    appInstallPolicy !== "always" &&
+    devices.length > 0 &&
+    devices.every((serial) => classifyIosSerial(serial) === null)
+  ) {
+    const installed = await Promise.all(
+      devices.map((serial) => androidPackageInstalled(runnerEnv, serial, taskAppPackage))
+    );
+    if (installed.every(Boolean)) {
+      skipTaskAppInstall = true;
+      say(
+        `应用 ${taskAppPackage} 已在设备安装：跳过重复安装（AOS_APP_INSTALL_POLICY=always 可强制）`
+      );
+    }
+  }
+  if (taskApp.path !== null) {
+    if (skipTaskAppInstall) {
+      say(`任务安装包：${path.basename(taskApp.path)}（已安装，跳过本次安装）`);
+    } else {
+      baseOptions.appPath = taskApp.path;
+      say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);
+    }
+  }
   if (baseOptions.lockedAppPackage === undefined && taskAppPackage !== "") {
     baseOptions.lockedAppPackage = taskAppPackage;
     say(`任务应用包名：${taskAppPackage}（执行前锁定并启动）`);
