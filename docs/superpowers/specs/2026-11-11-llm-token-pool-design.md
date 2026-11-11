@@ -349,3 +349,27 @@
 
 **原则：失败、断开、协议不支持都必须有确定的账务结果；不能以“记 usage_unavailable”作为免单。**
 
+## 19. Phase 0 Spike 结果（2026-11-11，已执行）
+
+**方法**：一次性脚本放在临时目录（不入仓），使用本地 mock HTTP provider（对 `stream_options` 返回 400）＋ 本地 PostgreSQL 17.10（`aos`/`mobile-testing`）。未改动任何产品代码。复现：`node spike.mjs`（脚本路径见本次会话临时目录 `llm-pool-spike/spike.mjs`）。
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| 不支持 `stream_options` 的端点 | PASS | 不注入＝200；无条件注入＝400（`Unknown parameter: stream_options`）；按能力标记不注入＝200 |
+| Anthropic cache 归一计费 | PASS | `input=1000, cache_creation=200, cache_read=3000, output=500`，单价 3.0/3.75/0.3/15.0 USD/Mtok → 正确金额 `0.01215`；用 `prompt−cache_read` 的通用减法只得 `0.0105`，少算约 15.7% |
+| 原子预留（50 并发 × 10，额度 100） | PASS | 仅 10 个请求成功；`used=0, reserved=100, limit=100`，无超卖 |
+| 非原子负对照（预期失败） | 失败（符合预期） | 读-检查-写 50 个并发全部放行；`reserved=500`，超发 5 倍——证明必须原子预留 |
+| 预留 TTL 回收 | PASS | 预留 30、TTL 500ms 后 reconciler 结算为 `used=30, reserved=0`，无僵尸额度 |
+| 未定价模型惩罚价 | PASS | 仅金额额度、无价格时，按惩罚价预扣被正确拦截 |
+
+**结论**：§17 的 5 项通过标准全部满足（负对照按设计失败），`required_failed=none`，满足进入 Phase 1 的门禁。
+
+**本次未覆盖（必须在实现阶段补）**：
+
+- 真实端点（Ollama/vLLM/Azure 旧版）的 400 行为仅用 mock 模拟，未跑真实进程；
+- 客户端 `kill -9` 的真实 SSE 断开链路未跑，仅验证了 TTL 结算语义；
+- Anthropic 计费用的是官方字段 fixture，未对真实账单；
+- tokenizer 估算误差、生产代理的 SSE 解析与 reconciler 事件循环未验证。
+
+这些属于 Phase 1 的集成测试与验收项，不改变 v1 设计；若集成时发现真实端点与 mock 行为不一致，按 §18 降级，不无条件下注。
+
