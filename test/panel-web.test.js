@@ -1476,7 +1476,8 @@ test("panel web: runner 未广播产物基址 → 通用示例与配置入口（
   );
   assert.match(html.body, /未广播产物基址/);
   assert.match(html.body, /AOS_RUNNER_ADVERTISE_URL/);
-  assert.match(html.body, /&lt;执行机IP&gt;/, "示例用占位符");
+  assert.match(html.body, /&lt;主机名&gt;/, "示例优先主机名");
+  assert.match(html.body, /固定 IP 仅兜底/, "不鼓励写死 IP");
   assert.match(html.body, /放行防火墙 8770/, "点名防火墙这一步");
   assert.match(html.body, /section=devices#runner-artifacts/, "给产物服务配置入口");
   assert.doesNotMatch(html.body, /192\.168\.3\.21/, "不写死具体 IP");

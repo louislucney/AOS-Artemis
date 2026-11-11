@@ -2414,7 +2414,7 @@ function renderRunners(detail: PanelProjectDetail, rootPath: string, hostId: str
   const artifactNote =
     missingArtifact === 0
       ? ""
-      : `<p class="note">${missingArtifact} 台执行机未广播产物基址：远端任务的批次/trace 无法在中心打开。若 runner 已是 0.2.0+：检查本机 8770 是否被占用、<code>AOS_RUNNER_ARTIFACT_PORT</code> 是否被设为 0，并设置 <code>AOS_RUNNER_ADVERTISE_URL</code>（如 <code>http://&lt;执行机IP&gt;:8770</code>）、放行防火墙 8770 后重启；中心需能访问该地址。 <a href="/panel?section=devices#runner-artifacts">配置说明</a></p>`;
+      : `<p class="note">${missingArtifact} 台执行机未广播产物基址：远端任务的批次/trace 无法在中心打开。若 runner 已是 0.2.0+：检查本机 8770 是否被占用、<code>AOS_RUNNER_ARTIFACT_PORT</code> 是否被设为 0，并设置 <code>AOS_RUNNER_ADVERTISE_URL</code>（优先中心可解析的主机名，如 <code>http://&lt;主机名&gt;:8770</code>；固定 IP 仅兜底）、放行防火墙 8770 后重启；中心需能访问该地址。 <a href="/panel?section=devices#runner-artifacts">配置说明</a></p>`;
   const rows = detail.runners.map((runner) => [
     `${cBadge({ label: runner.online ? "在线" : "失联", tone: runner.online ? "success" : "warning" })} <code>${escapeHtml(runner.name)}</code>`,
     escapeHtml(runner.hostname),
@@ -2864,7 +2864,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
           run.manifestPath !== null &&
           (/^[A-Za-z]:[\\/]/.test(run.manifestPath) || run.manifestPath.startsWith("\\\\"))
       )
-        ? '<p class="note">本次产物在远端 runner 本地，中心无法打开本地清单/trace。配置 runner 的 <code>AOS_RUNNER_ADVERTISE_URL</code>（如 <code>http://&lt;执行机IP&gt;:8770</code>）、放行防火墙 8770 并重启后，批次与证据链接才可用。 <a href="/panel?section=devices#runner-artifacts">配置说明</a></p>'
+        ? '<p class="note">本次产物在远端 runner 本地，中心无法打开本地清单/trace。配置 runner 的 <code>AOS_RUNNER_ADVERTISE_URL</code>（优先中心可解析的主机名，如 <code>http://&lt;主机名&gt;:8770</code>；固定 IP 仅兜底）、放行防火墙 8770 并重启后，批次与证据链接才可用。 <a href="/panel?section=devices#runner-artifacts">配置说明</a></p>'
         : "",
       `<script>(function(){document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-copy]'):null;if(!b)return;var text=b.getAttribute('data-copy')||'';var done=function(){b.textContent='已复制';setTimeout(function(){b.textContent='复制命令';},1500);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(function(){b.textContent='复制失败';});}else{b.textContent='复制失败';}});})();</script>`,
       "</section>",

@@ -975,7 +975,7 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
       <p class="c-card-subtitle">runner 默认在 <code>0.0.0.0:8770</code> 提供只读产物服务；中心要能访问它才能打开批次清单、trace 与截图。面板显示「未广播产物基址」时按下面检查。</p>
       <ol class="c-card-subtitle">
         <li>Windows 管理员 PowerShell 放行 8770（建议只允许中心 IP）：<br><code>New-NetFirewallRule -DisplayName "mobile-testing runner artifacts" -Direction Inbound -Protocol TCP -LocalPort 8770 -RemoteAddress &lt;中心IP&gt; -Action Allow</code></li>
-        <li>多网卡/NAT/VPN 时，在 <code>project\\.env</code> 固定中心可达地址：<br><code>AOS_RUNNER_ADVERTISE_URL=http://&lt;执行机IP&gt;:8770</code></li>
+        <li>多网卡/NAT/VPN 时，优先用中心可解析的主机名/DNS 名（不要长期写死 IP）：<br><code>AOS_RUNNER_ADVERTISE_URL=http://&lt;中心可解析的主机名&gt;:8770</code></li>
         <li>port 被占用时改 <code>AOS_RUNNER_ARTIFACT_PORT=8771</code> 并同步 <code>AOS_RUNNER_ADVERTISE_URL</code> 与防火墙端口；设 <code>0</code> 则关闭产物服务。</li>
         <li>改完重启 <code>runner.cmd</code>，中心执行机列表的「产物基址」应显示 URL。</li>
       </ol>

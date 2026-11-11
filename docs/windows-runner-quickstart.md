@@ -33,6 +33,20 @@ runner 默认单用例等待 10 分钟（`AOS_SUITE_CASE_TIMEOUT_MS=600000`）�
 
 runner 在 Windows 本机用 USB adb 执行；中心只下发任务并接收结果，不需要中心访问 5037。跨机回归时中心下发 tests.json/flows，runner 自动落本地 `case-sets`，不需要复制项目。iOS 不支持 Windows，iPhone 必须连接 Mac（用 macOS MCP runner）。
 
+### 产物服务（中心打开批次/证据）
+
+runner 默认在 `0.0.0.0:8770` 启动只读产物服务；中心要能访问 `http://<执行机地址>:8770` 才能打开批次清单、trace 与截图。
+
+```powershell
+# 管理员 PowerShell：只放行中心 IP
+New-NetFirewallRule -DisplayName "mobile-testing runner artifacts" -Direction Inbound -Protocol TCP -LocalPort 8770 -RemoteAddress <中心IP> -Action Allow
+```
+
+- 地址优先用**中心能解析的主机名/DNS 名**（如 `http://runner-name:8770`）；不要长期写死 IP。
+- 多网卡/NAT 自动地址不可达时，才用 `AOS_RUNNER_ADVERTISE_URL` 覆盖；新包支持写入 `project\.env`，旧包用 `runner.cmd` 或 Windows 环境变量（进程 env 优先）。
+- 端口被占用：设 `AOS_RUNNER_ARTIFACT_PORT=8771` 并同步 `AOS_RUNNER_ADVERTISE_URL` 与防火墙；设 `0` 关闭。
+- 详细步骤与令牌见面板「设备 → 执行机接入说明 → 产物服务」。
+
 ### 首次安装依赖失败（PyPI 超时 / Python 3.12）
 
 启动脚本已固定 `UV_PYTHON=3.12`、`UV_SYSTEM_CERTS=1`。如果 `uv` 仍选 3.13，先 `uv python find 3.12`。如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler）：
