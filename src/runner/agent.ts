@@ -485,6 +485,13 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         task = running;
         active = { taskId: task.id, serials: devices };
         leaseLost = false;
+        if (devices.length === 1) {
+          await store
+            .updateRegressionTask(rootPath, task.id, { deviceSerial: devices[0] })
+            .catch((error) => {
+              io.errorLog(`[runner] 回写任务设备失败：${errorMessage(error)}`);
+            });
+        }
 
         const argv = [
           "run",

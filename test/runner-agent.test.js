@@ -264,6 +264,8 @@ test("once：任务显式 deviceSerial 时只使用该设备", async () => {
   });
   await runRunnerAgent(options);
   assert.deepEqual(calls[0].slice(-2), ["--device", "SIM-IOS-1"]);
+  const stored = await store.getRegressionTask(runtime.project.rootDir, task.id);
+  assert.equal(stored.deviceSerial, "SIM-IOS-1", "单设备任务回写选中设备");
 });
 
 test("once：无 pending → 不调用 executeSuite，返回 0", async () => {
