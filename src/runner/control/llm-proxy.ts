@@ -144,7 +144,11 @@ export async function handleLlmProxyRequest(input: LlmProxyInput): Promise<void>
   log(
     `中心 LLM 代理请求：${input.req.method} ${input.url.pathname}（host=${typeof hostHeader === "string" ? hostHeader : "-"}）`
   );
-  const auth = authenticateRunner(input.req.headers, env);
+  const auth = authenticateRunner(input.req.headers, env, {
+    // Artemis/OpenAI 客户端只带 Authorization；共享 LLM 模式下允许无 host，
+    // 仍由全局 runner token 鉴权（项目 host 校验由 assertLlmProject 负责）。
+    allowHostless: (env.AOS_RUNNER_SHARED_LLM ?? "").trim() === "1"
+  });
   if (!auth.ok) {
     logWarn(`中心 LLM 代理鉴权失败：HTTP ${auth.status} ${auth.code} · ${auth.error}`);
     json(input.res, auth.status, { ok: false, code: auth.code, error: auth.error });

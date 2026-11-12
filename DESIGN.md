@@ -200,6 +200,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - `suite runner`：心跳 → 原子领取 → 复用 `suite run --task` → 回写；中心 PG 或 `MOBILE_TESTING_RUNNER_CONTROL_URL` HTTP 控制面 + 本地 FileStore。
 - 跨机：中心默认项目 + tests/flows 下发；runner **不持有** provider key、中心项目路径；LLM 走中心代理（`AOS_LLM_FROM_CENTER=1`）。跨机 runner 复用中心项目登记，不在 runner host 重复建项目行；面板「去下发」与 `suite task create --host` 按该 runner 注册识别跨机项目。
 - 鉴权：`AOS_RUNNER_HOST_TOKENS`/文件优先；全局 `MOBILE_TESTING_RUNNER_JOB_TOKEN` + `X-AOS-Host-Id` 兼容；中心侧 `AOS_RUNNER_SHARED_LLM=1` + `AOS_RUNNER_DEFAULT_PROJECT`。
+- 共享 token：全局 token 下 Host ID 仍每机唯一；仅 `/panel/api/runners/suite/llm/proxy/*` 允许不带 `X-AOS-Host-Id`（Artemis/OpenAI 客户端只带 Authorization；项目 host 校验由 `assertLlmProject` 负责），其他控制面仍强制 host。
 - 队列/租约：host 级 `queue_paused`；`claim→毒丸→devices→acquireDeviceLeases→beginExecution`；30s 续租/心跳；失联回收（超龄+离线双条件）。runner 启动脚本默认 `AOS_SUITE_CASE_TIMEOUT_MS=600000`（单用例 10 分钟，可覆盖）；超时失败提示可用该变量延长，并调用 `mobile_manage_task(action="stop")` 停止 Artemis 子任务，避免孤儿进程占用设备。
 - 失败证据：runner 上传到 `.artemis/remote-evidence/<taskId>/<traceId>/`（status/stderr/stdout）；`suite evidence` 在本地 traces 缺失时回退读取，不再误报 trace 缺失。
 - **测试资料占位符**：套件回归任务可挂 **secret materials**（面板「② 参数 → 测试资料」或 `suite task create --materials <id>`）；runner 通过控制面 `/tasks/:id/materials` 下载并用 `alias=value`/JSON 解析，用例 `taskDesc` 的 `<secret:alias>` 提交前替换；台账/审计保留模板、不落明文；缺 alias 按 `data-environment` 失败且不提交 Artemis。非 secret 资料不可挂。

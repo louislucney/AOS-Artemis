@@ -18,6 +18,11 @@ export interface RunnerAuthSuccess {
 
 export type RunnerAuthResult = RunnerAuthFailure | RunnerAuthSuccess;
 
+export interface RunnerAuthOptions {
+  /** 全局 token 模式下允许无 X-AOS-Host-Id（仅用于共享 LLM 代理路由）。 */
+  allowHostless?: boolean;
+}
+
 function headerValue(
   headers: Record<string, string | string[] | undefined>,
   name: string
@@ -127,7 +132,8 @@ export function runnerHostTokenFor(
  */
 export function authenticateRunner(
   headers: Record<string, string | string[] | undefined>,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  options: RunnerAuthOptions = {}
 ): RunnerAuthResult {
   const hostHeader = headerValue(headers, "x-aos-host-id");
   const filePath = (env.AOS_RUNNER_HOST_TOKENS_FILE ?? "").trim();
@@ -188,6 +194,9 @@ export function authenticateRunner(
     return { ok: false, status: 401, code: "unauthorized", error: "缺少或无效的 runner token" };
   }
   if (hostHeader === "") {
+    if (options.allowHostless === true) {
+      return { ok: true, hostId: "", source: "global-token" };
+    }
     return {
       ok: false,
       status: 403,
