@@ -76,6 +76,89 @@ test("suite runner: Android 提交前剔除 iOS 脚本断言块，iOS 保留", a
   assert.ok(!taskDescForTarget(taskDesc, null).includes("【AOS-EXPECT】"), "无设备缺省按 Android 剔除");
 });
 
+test("suite runner: Android app_path 只在套件开始安装一次，用例不再携带 app_path", async () => {
+  const installs = [];
+  const { proxy, run } = await setup({
+    cases: [caseEntry(1), caseEntry(2)],
+    statuses: {
+      "trace-1": { status: "completed" },
+      "trace-2": { status: "completed" }
+    }
+  });
+
+  const report = await run({
+    deviceSerial: "emulator-5554",
+    appPath: "/tmp/app-under-test.apk",
+    installAndroidApp: async (env, serial, apkPath) => {
+      installs.push({ serial, apkPath });
+      return { ok: true, output: "Success" };
+    }
+  });
+
+  assert.equal(report.ok, true);
+  assert.equal(report.passed, 2);
+  assert.deepEqual(installs, [{ serial: "emulator-5554", apkPath: "/tmp/app-under-test.apk" }]);
+  const submissions = proxy.calls.filter((call) => call.name === "mobile_run_task");
+  assert.equal(submissions.length, 2);
+  assert.ok(
+    submissions.every((call) => !("app_path" in call.args)),
+    "用例内绝不能再把 app_path 交给 Artemis（其安装冲突会卸载清数据）"
+  );
+});
+
+test("suite runner: Android 安装失败立即中止，绝不卸载/清数据", async () => {
+  const { proxy, run } = await setup({ cases: [caseEntry(1)] });
+
+  const report = await run({
+    deviceSerial: "emulator-5554",
+    appPath: "/tmp/app-under-test.apk",
+    installAndroidApp: async () => ({
+      ok: false,
+      error: "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]"
+    })
+  });
+
+  assert.equal(report.ok, false);
+  assert.match(report.error, /不会卸载\/清空应用数据/);
+  assert.equal(report.executed, 0);
+  assert.equal(proxy.calls.filter((call) => call.name === "mobile_run_task").length, 0);
+});
+
+test("suite runner: secret 占位符提交前替换，台账保留模板", async () => {
+  const { runtime, store, proxy, run } = await setup({
+    cases: [caseEntry(1, { taskDesc: "注册邮箱 <secret:reg_email>，密码 <secret:reg_password>" })],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+
+  const report = await run({
+    secrets: [
+      { alias: "reg_email", value: "qa@example.com", kind: "account" },
+      { alias: "reg_password", value: "Secret@123", kind: "password" }
+    ]
+  });
+
+  assert.equal(report.ok, true);
+  const submission = proxy.calls.find((call) => call.name === "mobile_run_task");
+  assert.equal(submission.args.task_desc, "注册邮箱 qa@example.com，密码 Secret@123");
+  const tasks = await store.listTasks(runtime.project.rootDir, 10);
+  assert.match(tasks[0].taskDesc, /<secret:reg_email>/, "台账保留模板，不落明文");
+  assert.doesNotMatch(tasks[0].taskDesc, /qa@example\.com/);
+});
+
+test("suite runner: 缺少 secret 字段直接失败（data-environment），不提交 Artemis", async () => {
+  const { proxy, run } = await setup({
+    cases: [caseEntry(1, { taskDesc: "手机号 <secret:reg_phone>" })],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+
+  const report = await run({ secrets: [] });
+  assert.equal(report.executed, 1);
+  assert.equal(report.failed, 1);
+  assert.match(report.cases[0].error, /测试资料缺少字段：reg_phone/);
+  assert.equal(report.cases[0].failure.domain, "data-environment");
+  assert.equal(proxy.calls.filter((call) => call.name === "mobile_run_task").length, 0);
+});
+
 test("suite runner: repeated chat retries fail fast with a proxy hint", async () => {
   const { runtime, run } = await setup({
     cases: [caseEntry(1)],

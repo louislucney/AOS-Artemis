@@ -152,12 +152,28 @@ export class SuiteStoreClient {
     rootPath: string,
     taskId: string
   ): Promise<{ filename: string; sha256: string; size: number; buffer: Buffer } | null> {
+    return await this.downloadTaskAsset(rootPath, taskId, "app");
+  }
+
+  async downloadTaskMaterials(
+    rootPath: string,
+    taskId: string
+  ): Promise<{ filename: string; sha256: string; size: number; buffer: Buffer } | null> {
+    return await this.downloadTaskAsset(rootPath, taskId, "materials");
+  }
+
+  private async downloadTaskAsset(
+    rootPath: string,
+    taskId: string,
+    kind: "app" | "materials"
+  ): Promise<{ filename: string; sha256: string; size: number; buffer: Buffer } | null> {
+    const label = kind === "materials" ? "测试资料" : "安装包";
     let response: Awaited<ReturnType<typeof fetch>>;
     try {
       response = await this.fetchImpl(
         `${this.baseUrl}/panel/api/runners/suite/tasks/${encodeURIComponent(
           taskId
-        )}/app?rootPath=${encodeURIComponent(this.root(rootPath))}`,
+        )}/${kind}?rootPath=${encodeURIComponent(this.root(rootPath))}`,
         {
           method: "GET",
           headers: {
@@ -172,26 +188,26 @@ export class SuiteStoreClient {
       throw new SuiteStoreHttpError(
         0,
         "network-error",
-        `安装包下载失败：${error instanceof Error ? error.message : String(error)}`
+        `${label}下载失败：${error instanceof Error ? error.message : String(error)}`
       );
     }
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      let message = `安装包下载失败（HTTP ${response.status}）`;
+      let message = `${label}下载失败（HTTP ${response.status}）`;
       try {
         const parsed = JSON.parse(text) as { error?: unknown };
         if (typeof parsed.error === "string") message = parsed.error;
       } catch {
         /* keep default */
       }
-      throw new SuiteStoreHttpError(response.status, "app-download-failed", message);
+      throw new SuiteStoreHttpError(response.status, `${kind}-download-failed`, message);
     }
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.length === 0) return null;
     const disposition = response.headers.get("content-disposition") ?? "";
     const match = /filename="([^"]+)"/.exec(disposition);
     return {
-      filename: match?.[1] ?? "app.apk",
+      filename: match?.[1] ?? (kind === "materials" ? "materials.txt" : "app.apk"),
       sha256: response.headers.get("x-aos-sha256") ?? "",
       size: buffer.length,
       buffer

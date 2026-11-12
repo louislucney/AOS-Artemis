@@ -44,6 +44,9 @@ export function resolveSuiteResource(
     if (parts[0] === "tasks" && parts.length === 3 && parts[2] === "app" && root) {
       return { op: "getTaskApp", args: { rootPath: root, taskId: parts[1] } };
     }
+    if (parts[0] === "tasks" && parts.length === 3 && parts[2] === "materials" && root) {
+      return { op: "getTaskMaterials", args: { rootPath: root, taskId: parts[1] } };
+    }
     if (parts[0] === "tasks" && parts.length === 2 && parts[1] !== "stopping" && root) {
       return { op: "getTask", args: { rootPath: root, taskId: parts[1] } };
     }

@@ -167,13 +167,35 @@ export class SuiteControlService {
         };
       }
     }
+    let materialsAsset: {
+      id: string;
+      filename: string;
+      sha256: string;
+      size: number;
+      secret: boolean;
+    } | null = null;
+    if (task.materialsAssetId !== null) {
+      const asset = await this.store
+        .getWebAsset(rootPath, task.materialsAssetId)
+        .catch(() => null);
+      if (asset !== null && asset.kind === "materials") {
+        materialsAsset = {
+          id: asset.id,
+          filename: asset.filename,
+          sha256: asset.sha256,
+          size: asset.size,
+          secret: asset.metadata?.secret === true
+        };
+      }
+    }
     return {
       task,
       project,
       caseSets: selected,
       documents,
       flows,
-      appAsset
+      appAsset,
+      materialsAsset
     };
   }
 
@@ -191,17 +213,40 @@ export class SuiteControlService {
     size: number;
     filePath: string;
   }> {
+    return await this.taskAssetFile(args, "package");
+  }
+
+  async getTaskMaterials(args: Record<string, unknown>): Promise<{
+    filename: string;
+    sha256: string;
+    size: number;
+    filePath: string;
+  }> {
+    return await this.taskAssetFile(args, "materials");
+  }
+
+  private async taskAssetFile(
+    args: Record<string, unknown>,
+    kind: "package" | "materials"
+  ): Promise<{ filename: string; sha256: string; size: number; filePath: string }> {
     const rootPath = requireString(args, "rootPath");
     const taskId = requireString(args, "taskId");
     await this.assertRunnerProject(rootPath, this.hostId);
     await assertTaskVisible(this.store, rootPath, taskId, this.hostId);
     const task = await this.store.getRegressionTask(rootPath, taskId);
-    if (task === null || task.appAssetId === null) {
-      throw new RunnerControlError("not-found", `任务 ${taskId} 未选择安装包`);
+    const assetId = kind === "package" ? task?.appAssetId : task?.materialsAssetId;
+    if (task === null || assetId === null || assetId === undefined) {
+      throw new RunnerControlError(
+        "not-found",
+        `任务 ${taskId} 未选择${kind === "package" ? "安装包" : "测试资料"}`
+      );
     }
-    const asset = await this.store.getWebAsset(rootPath, task.appAssetId);
-    if (asset === null || asset.kind !== "package") {
-      throw new RunnerControlError("not-found", `安装包资产 ${task.appAssetId} 不可用`);
+    const asset = await this.store.getWebAsset(rootPath, assetId);
+    if (asset === null || asset.kind !== kind) {
+      throw new RunnerControlError(
+        "not-found",
+        `${kind === "package" ? "安装包" : "测试资料"}资产 ${assetId} 不可用`
+      );
     }
     const assetsRoot = path.join(path.resolve(rootPath), ".artemis", "web", "assets");
     let realRoot: string;
@@ -210,10 +255,10 @@ export class SuiteControlService {
       realRoot = fs.realpathSync(assetsRoot);
       realFile = fs.realpathSync(path.resolve(asset.storagePath));
     } catch {
-      throw new RunnerControlError("not-found", `安装包文件不可用：${asset.filename}`);
+      throw new RunnerControlError("not-found", `资产文件不可用：${asset.filename}`);
     }
     if (realFile !== realRoot && !realFile.startsWith(realRoot + path.sep)) {
-      throw new RunnerControlError("forbidden", `安装包路径越界：${asset.filename}`);
+      throw new RunnerControlError("forbidden", `资产路径越界：${asset.filename}`);
     }
     const stat = fs.statSync(realFile);
     return { filename: asset.filename, sha256: asset.sha256, size: stat.size, filePath: realFile };
@@ -548,6 +593,8 @@ export class SuiteControlService {
         return await this.getTask(args);
       case "getTaskApp":
         return await this.getTaskApp(args);
+      case "getTaskMaterials":
+        return await this.getTaskMaterials(args);
       case "updateTask":
         return await this.updateTask(args);
       case "uploadEvidence":

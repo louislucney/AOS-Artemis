@@ -33,7 +33,7 @@ import {
   runStructuredCase,
   type StructuredIosRunResult
 } from "../ios/structured-runner.js";
-import { loadWebSecrets } from "../web/llm/secrets.js";
+import { loadWebSecrets, resolvePlaceholders, type SecretEntry } from "../web/llm/secrets.js";
 import type { LogcatWindowResult } from "../device/logcat.js";
 import type { AppResetOutcome } from "../device/reset.js";
 import type { Runtime } from "../runtime.js";
@@ -116,6 +116,52 @@ function emptyEvidence(): SuiteCaseResult["evidence"] {
   return { notesDir: null, stderrLog: null, stdoutLog: null };
 }
 
+const SECRET_PLACEHOLDER = /<secret:([^>]+)>/g;
+
+/** 返回仍未解析的 `<secret:alias>` 别名（去重）。 */
+function unresolvedSecretAliases(text: string): string[] {
+  const aliases = new Set<string>();
+  for (const match of text.matchAll(SECRET_PLACEHOLDER)) {
+    const alias = (match[1] ?? "").trim();
+    if (alias !== "") aliases.add(alias);
+  }
+  return [...aliases];
+}
+
+function missingSecretsOutcome(
+  testCase: GeneratedCase,
+  context: CaseRunContext,
+  reset: AppResetOutcome | null,
+  aliases: string[]
+): CaseRunOutcome {
+  return {
+    submitted: false,
+    submitError: null,
+    terminal: true,
+    result: {
+      caseId: testCase.id,
+      name: testCase.name,
+      status: "failed",
+      ...(context.quarantined ? { quarantined: true } : {}),
+      traceId: null,
+      engine: "proxy",
+      error: `测试资料缺少字段：${aliases.join("、")}`,
+      testSummary: null,
+      scriptProvenance: testCase.scriptProvenance,
+      failure: {
+        domain: "data-environment",
+        confidence: "high",
+        reason: "测试资料占位符无法解析（缺少 alias 或资料未标记 secret）",
+        evidence: aliases.map((alias) => `secret:${alias}`)
+      },
+      apiErrors: [],
+      apiErrorsDegraded: null,
+      evidence: emptyEvidence(),
+      reset
+    }
+  };
+}
+
 export interface CaseRunContext {
   runtime: Runtime;
   model: string | null;
@@ -123,6 +169,8 @@ export interface CaseRunContext {
   lockedAppPackage: string | null;
   /** 可选 APK/IPA 路径或 URL；透传 mobile_run_task.app_path（由 Artemis 安装）。 */
   appPath?: string | null;
+  /** 任务选择的 secret 测试资料（alias→value）；缺省由本地 secret materials 兜底（旧行为）。 */
+  secrets?: SecretEntry[];
   /** 回归任务 id；用于失败证据上传，手动 suite run 可为空。 */
   regressionTaskId?: string | null;
   quarantined: boolean;
@@ -323,19 +371,34 @@ async function executeNativeCase(
   const traceDir = context.runtime.traceDir(traceId);
   fs.mkdirSync(traceDir, { recursive: true });
   const startedAt = context.now();
-  const secrets = await loadWebSecrets({
+  const secrets = context.secrets ?? await loadWebSecrets({
     store: context.runtime.store,
     rootPath: context.runtime.project.rootDir,
     env: process.env
   }).catch(() => []);
   const resolveSecret = (ref: string): string | null =>
     secrets.find((entry) => entry.alias.toLowerCase() === ref.toLowerCase())?.value ?? null;
+  const resolveSecretField = (ref: string) => {
+    const entry = secrets.find((item) => item.alias.toLowerCase() === ref.toLowerCase());
+    if (entry === undefined) return null;
+    return {
+      value: entry.value,
+      kind: entry.kind,
+      ...(entry.target === undefined ? {} : { target: entry.target }),
+      ...(entry.fallbackTargets === undefined
+        ? {}
+        : { fallbackTargets: entry.fallbackTargets }),
+      ...(entry.screen === undefined ? {} : { screen: entry.screen }),
+      ...(entry.label === undefined ? {} : { label: entry.label })
+    };
+  };
   let run: StructuredIosRunResult;
   try {
     run = await runStructuredCase({
       device,
       actions: testCase.actions,
       resolveSecret,
+      resolveSecretField,
       ...(context.pollTimeoutMs > 0 ? { stepTimeoutMs: context.pollTimeoutMs } : {})
     });
   } catch (error) {
@@ -449,7 +512,7 @@ export async function executeCase(
     }
   }
 
-  const taskDesc = taskDescForTarget(testCase.taskDesc, context.deviceSerial);
+  const templatedTaskDesc = taskDescForTarget(testCase.taskDesc, context.deviceSerial);
   const nativeTargetKind =
     context.deviceSerial === null ? null : classifyIosSerial(context.deviceSerial);
   const wantsNative =
@@ -467,6 +530,20 @@ export async function executeCase(
     }
     return await executeNativeAndroidCase(testCase, context, reset);
   }
+  const taskDesc = resolvePlaceholders(templatedTaskDesc, context.secrets ?? []);
+  const adherenceTaskDesc = resolvePlaceholders(testCase.taskDesc, context.secrets ?? []);
+  const missingAliases = unresolvedSecretAliases(taskDesc);
+  if (missingAliases.length > 0) {
+    await runtime.recordTaskSubmission({
+      traceId: null,
+      model: context.model,
+      status: "failed",
+      taskDesc: templatedTaskDesc,
+      caseId: testCase.id,
+      lockedAppPackage: context.lockedAppPackage
+    });
+    return missingSecretsOutcome(testCase, context, reset, missingAliases);
+  }
   const submitArgs: Record<string, unknown> = { task_desc: taskDesc };
   if (context.model) submitArgs.model = context.model;
   if (context.deviceSerial) submitArgs.device_serial = context.deviceSerial;
@@ -482,7 +559,7 @@ export async function executeCase(
       traceId: null,
       model: context.model,
       status: "failed",
-      taskDesc,
+      taskDesc: templatedTaskDesc,
       caseId: testCase.id,
       lockedAppPackage: context.lockedAppPackage
     });
@@ -524,7 +601,7 @@ export async function executeCase(
       traceId: null,
       model: context.model,
       status: "failed",
-      taskDesc,
+      taskDesc: templatedTaskDesc,
       caseId: testCase.id,
       lockedAppPackage: context.lockedAppPackage
     });
@@ -559,7 +636,7 @@ export async function executeCase(
     await runtime.recordTaskSubmission({
       traceId,
       model: context.model,
-      taskDesc,
+      taskDesc: templatedTaskDesc,
       caseId: testCase.id,
       lockedAppPackage: context.lockedAppPackage
     });
@@ -706,7 +783,7 @@ export async function executeCase(
     const adherence = await computeAndroidScriptAdherence({
       dbPath: path.join(path.dirname(runtime.traceDir(traceId)), "data_engine.db"),
       traceId,
-      taskDesc: testCase.taskDesc
+      taskDesc: adherenceTaskDesc
     });
     if (adherence !== null) {
       const summary: TaskScriptAdherenceSummary = {

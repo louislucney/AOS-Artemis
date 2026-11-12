@@ -7,8 +7,10 @@ function node(id, label, value, x, y, type = "android.widget.Button") {
   return { id, label, value, type, rect: { x, y, width: 120, height: 48 } };
 }
 
-function fakeDevice(nodes, calls = []) {
+function fakeDevice(nodes, calls = [], options = {}) {
   let current = nodes;
+  const updateId = options.updateId ?? "search";
+  const mask = options.mask === true;
   return {
     serial: "android-1",
     platform: "android",
@@ -26,8 +28,17 @@ function fakeDevice(nodes, calls = []) {
     async inputText(text) {
       calls.push({ action: "type", text });
       current = current.map((entry) =>
-        entry.id === "search" ? { ...entry, value: text } : entry
+        entry.id === updateId ? { ...entry, value: mask ? "•••" : text } : entry
       );
+    },
+    async clearText(length) {
+      calls.push({ action: "clear", length });
+      current = current.map((entry) =>
+        entry.id === updateId ? { ...entry, value: "" } : entry
+      );
+    },
+    async hideKeyboard() {
+      calls.push({ action: "hide-keyboard" });
     },
     async swipe() {},
     async launch() {},
@@ -131,6 +142,180 @@ test("android structured runner: secretRef 执行期解析并脱敏", async () =
   });
   assert.equal(missing.status, "error");
   assert.match(missing.error, /secret-unresolved:pw/);
+});
+
+test("field map: secretRef 无 target → 按 alias 定位并回读校验", async () => {
+  const calls = [];
+  const device = fakeDevice(
+    [
+      node("title", "注册", "", 0, 0, "android.widget.TextView"),
+      node("email", "", "", 20, 100, "android.widget.EditText")
+    ],
+    calls,
+    { updateId: "email" }
+  );
+  const result = await runStructuredCase({
+    device,
+    sleep: async () => {},
+    resolveSecretField: (ref) =>
+      ref === "reg_email"
+        ? {
+            value: "qa@example.com",
+            kind: "account",
+            target: { kind: "resource-id", value: "email" },
+            screen: "注册"
+          }
+        : null,
+    actions: [
+      { stepIndex: 0, action: "type", input: { kind: "secretRef", ref: "reg_email" } }
+    ]
+  });
+  assert.equal(result.status, "passed", JSON.stringify(result));
+  assert.equal(result.steps[0].verified, "ok");
+  assert.ok(calls.some((entry) => entry.action === "type" && entry.text === "qa@example.com"));
+});
+
+test("field map: 输入框值不一致 → field-mismatch；屏幕不符 → field-screen-mismatch", async () => {
+  const mismatch = await runStructuredCase({
+    device: fakeDevice(
+      [
+        node("title", "注册", "", 0, 0, "android.widget.TextView"),
+        node("email", "", "", 20, 100, "android.widget.EditText")
+      ],
+      [],
+      { updateId: "none" }
+    ),
+    sleep: async () => {},
+    resolveSecretField: () => ({
+      value: "qa@example.com",
+      kind: "account",
+      target: { kind: "resource-id", value: "email" }
+    }),
+    actions: [
+      {
+        stepIndex: 0,
+        action: "type",
+        timeoutMs: 50,
+        input: { kind: "secretRef", ref: "reg_email" }
+      }
+    ]
+  });
+  assert.equal(mismatch.status, "failed", JSON.stringify(mismatch));
+  assert.match(mismatch.error, /field-mismatch:reg_email/);
+  assert.equal(mismatch.steps[0].verified, "mismatch");
+
+  const screenMismatch = await runStructuredCase({
+    device: fakeDevice([node("email", "", "", 20, 100, "android.widget.EditText")], [], {
+      updateId: "email"
+    }),
+    sleep: async () => {},
+    resolveSecretField: () => ({
+      value: "qa@example.com",
+      kind: "account",
+      target: { kind: "resource-id", value: "email" },
+      screen: "注册"
+    }),
+    actions: [
+      { stepIndex: 0, action: "type", input: { kind: "secretRef", ref: "reg_email" } }
+    ]
+  });
+  assert.equal(screenMismatch.status, "failed");
+  assert.match(screenMismatch.error, /field-screen-mismatch:注册/);
+});
+
+test("field map: 密码字段跳过回读；缺映射 target → target-not-found", async () => {
+  const password = await runStructuredCase({
+    device: fakeDevice([node("pw", "", "", 20, 100, "android.widget.EditText")], [], {
+      updateId: "pw",
+      mask: true
+    }),
+    sleep: async () => {},
+    resolveSecretField: () => ({
+      value: "Secret@123",
+      kind: "password",
+      target: { kind: "resource-id", value: "pw" }
+    }),
+    actions: [{ stepIndex: 0, action: "type", input: { kind: "secretRef", ref: "reg_password" } }]
+  });
+  assert.equal(password.status, "passed", JSON.stringify(password));
+  assert.equal(password.steps[0].verified, "skipped");
+
+  const missing = await runStructuredCase({
+    device: fakeDevice([node("email", "", "", 20, 100, "android.widget.EditText")]),
+    sleep: async () => {},
+    resolveSecretField: () => ({ value: "qa@example.com", kind: "account" }),
+    actions: [{ stepIndex: 0, action: "type", input: { kind: "secretRef", ref: "reg_email" } }]
+  });
+  assert.equal(missing.status, "failed");
+  assert.match(missing.error, /target-not-found/);
+});
+
+test("keyboard: secretRef 默认先清空并收键盘；text 默认不清空；可显式关闭", async () => {
+  const calls = [];
+  const device = fakeDevice(
+    [node("email", "", "old@example.com", 20, 100, "android.widget.EditText")],
+    calls,
+    { updateId: "email" }
+  );
+  const result = await runStructuredCase({
+    device,
+    sleep: async () => {},
+    resolveSecret: () => "new@example.com",
+    actions: [
+      {
+        stepIndex: 0,
+        action: "type",
+        target: { kind: "resource-id", value: "email" },
+        input: { kind: "secretRef", ref: "email" }
+      }
+    ]
+  });
+  assert.equal(result.status, "passed", JSON.stringify(result));
+  assert.equal(
+    calls.filter((entry) => entry.action === "tap").length,
+    1,
+    "不再重复点击输入框"
+  );
+  assert.ok(
+    calls.some((entry) => entry.action === "clear" && entry.length === "old@example.com".length),
+    "secretRef 默认按现有值长度清空"
+  );
+  assert.ok(calls.some((entry) => entry.action === "hide-keyboard"), "输入后收键盘");
+
+  const textCalls = [];
+  await runStructuredCase({
+    device: fakeDevice([node("email", "", "", 20, 100, "android.widget.EditText")], textCalls, {
+      updateId: "email"
+    }),
+    sleep: async () => {},
+    actions: [
+      {
+        stepIndex: 0,
+        action: "type",
+        target: { kind: "resource-id", value: "email" },
+        input: { kind: "text", text: "plain" }
+      }
+    ]
+  });
+  assert.equal(textCalls.some((entry) => entry.action === "clear"), false, "text 默认不清空");
+
+  const noHideCalls = [];
+  await runStructuredCase({
+    device: fakeDevice([node("email", "", "", 20, 100, "android.widget.EditText")], noHideCalls, {
+      updateId: "email"
+    }),
+    sleep: async () => {},
+    actions: [
+      {
+        stepIndex: 0,
+        action: "type",
+        target: { kind: "resource-id", value: "email" },
+        input: { kind: "text", text: "plain" },
+        hideKeyboard: false
+      }
+    ]
+  });
+  assert.equal(noHideCalls.some((entry) => entry.action === "hide-keyboard"), false);
 });
 
 test("android structured runner: uiautomator XML 解析 resource-id/class/bounds", async () => {

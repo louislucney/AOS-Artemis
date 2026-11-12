@@ -74,6 +74,7 @@ mobile-testing-mcp（Node ≥20）
 - **预算**：默认周期 `monthly`，本位币 `CNY`（`AOS_LLM_COST_CURRENCY` 覆盖）；token 级 `max_concurrency` 默认 10；未定价模型按惩罚价 `AOS_LLM_UNPRICED_MICROS_PER_MTOK`（默认 20,000,000）预留，金额统计只用 `cost_micros_base`，缺 FX 单独计数、不混加。`pinned` 固定 token，`auto` 同模型按优先级/健康度换 token，不静默降级模型。
 - **环境变量**：`AOS_LLM_COST_CURRENCY`、`AOS_LLM_UNPRICED_MICROS_PER_MTOK`、`AOS_LLM_RESERVATION_TTL_MS`、`AOS_LLM_DEFAULT_MAX_OUTPUT_TOKENS`、`AOS_LLM_IMAGE_TOKEN_ESTIMATE`、`AOS_LLM_POOL_FILE`、`AOS_LLM_USAGE_FILE`、`AOS_LLM_USAGE_RETENTION_DAYS`（默认 365，0 关闭）。
 - **入口**：CLI `llm pool list|add|update|disable|bind|unbind`、`llm price list|set`、`llm usage`；只读工具 `llm_pool_list`/`llm_usage`（限当前项目）；面板运维页「LLM 资源池与用量」卡片与 `GET /panel/api/llm/pool|usage`（只读）。所有响应只回 masked key。
+- **旧台账兼容**：LLM 池上线（`pool_token_id` 之前）写入的项目条目在加载台账时归一化为 `poolTokenId: null` / `poolMode: "pinned"` / `poolModel: null`；否则 `poolTokenId !== null` 会把 `undefined` 误判为"已绑定池 token"，中心 `/panel/api/runners/suite/llm` 返回 `found:false`，runner 预检报「中心未配置 active LLM」。`resolveCenterLlmCandidates` 同样按空值安全判断。
 - **v1 缺口（明确未实现）**：token 行记录 `createdBy`/`updatedAt`，但服务级审计历史 `llm.pool.create/update/disable` 尚未落审计表；不要把它当成已实现。预留释放/TTL 回收也没有独立审计事件。`supports_stream_usage=unknown` 在 v1 按 false 处理（可用 `llm pool add --probe-stream` 写入 true），不做自动探测。项目绑定池 token 只覆盖中心代理与 Node `chat.ts`；Android Artemis 直连厂商仍需项目自有 key，缺失时会显式失败。
 
 ### 2.3 Figma / pen
@@ -183,6 +184,8 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 执行栈：Excel → taskDesc → `mobile_run_task`/suite → Artemis；不生成 Maestro YAML，不需要 JDK/Maestro。
 - 任务轨迹/截图/notes/stdout/stderr/data_engine.db 默认写 `<项目>/.artemis/traces/`。
 - 设备接入：本机 USB、远程 adb（`ADB_SERVER_SOCKET`/`deviceHosts.android.adbHost`）、adb-host 小包；Windows 宿主只需 adb。
+- **安装与数据安全**：任务安装包只做 `adb install -r -t`（保留应用数据），每任务至多一次；`AOS_ANDROID_INSTALL_MODE=artemis` 已停用（设置后仅告警并回退 adb）。`suite run --app-path`/MCP 的 Android `app_path` 也在套件开始前安装一次，用例内不再透传；安装冲突/降级直接失败，**绝不卸载或执行 `pm clear`**（Artemis/adbutils 的卸载兜底会清空 app 数据）。
+- **键盘输入（native）**：`type` 不再重复点击输入框；`secretRef` 默认先清空（按现有值长度，最多 200）、输入后自动收键盘；`clear`/`hideKeyboard` 可显式覆盖。Android 用 `KEYCODE_MOVE_END + KEYCODE_DEL...`（一次 shell）清空、`dumpsys input_method` 确认键盘显示后 BACK；iOS Appium 用 W3C Backspace 与 `hide_keyboard`（idb 模拟器路径为可选不实现）。taskDesc/Excel 路径仍由 Artemis 的 input_text（clipboard paste/FastInputIME）驱动，不走此逻辑。
 
 ### 5.2 iOS
 
@@ -190,6 +193,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 签名：`AOS_IOS_XCODE_ORG_ID` 必填；iOS 18+ 真机需保持 Remote XPC 隧道（`appium driver run xcuitest tunnel-creation`，AOS 只给指引）。
 - 观察统一 `src/ios/observation.ts`；busy 降级含帧龄/陈旧标注；执行器为门面 + 分模块。
 - 真机崩溃：`devicectl systemCrashLogs`；设备日志：`idevicesyslog` 实时尾采样（窗口近似 + `clockWarning`）。
+- 安装：真机 `.ipa` 经 Appium `mobile: installApp`（本地路径）或 `appium:app`（URL/远程宿主下载）安装；企业证书（In-House）IPA 可直接安装，需设备先信任企业开发者证书；模拟器不支持 `app_path`，需 `simctl install` 预装后用 `locked_app_package`。
 
 ### 5.3 runner / 多主机
 
@@ -198,6 +202,8 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 鉴权：`AOS_RUNNER_HOST_TOKENS`/文件优先；全局 `MOBILE_TESTING_RUNNER_JOB_TOKEN` + `X-AOS-Host-Id` 兼容；中心侧 `AOS_RUNNER_SHARED_LLM=1` + `AOS_RUNNER_DEFAULT_PROJECT`。
 - 队列/租约：host 级 `queue_paused`；`claim→毒丸→devices→acquireDeviceLeases→beginExecution`；30s 续租/心跳；失联回收（超龄+离线双条件）。runner 启动脚本默认 `AOS_SUITE_CASE_TIMEOUT_MS=600000`（单用例 10 分钟，可覆盖）；超时失败提示可用该变量延长，并调用 `mobile_manage_task(action="stop")` 停止 Artemis 子任务，避免孤儿进程占用设备。
 - 失败证据：runner 上传到 `.artemis/remote-evidence/<taskId>/<traceId>/`（status/stderr/stdout）；`suite evidence` 在本地 traces 缺失时回退读取，不再误报 trace 缺失。
+- **测试资料占位符**：套件回归任务可挂 **secret materials**（面板「② 参数 → 测试资料」或 `suite task create --materials <id>`）；runner 通过控制面 `/tasks/:id/materials` 下载并用 `alias=value`/JSON 解析，用例 `taskDesc` 的 `<secret:alias>` 提交前替换；台账/审计保留模板、不落明文；缺 alias 按 `data-environment` 失败且不提交 Artemis。非 secret 资料不可挂。
+- **字段映射（native 确定性填写）**：secret JSON 可为每个 alias 附 `target`/`fallbackTargets`/`screen`；native `type` + `secretRef` 省略 target 时按映射定位，填写后回读 AX value/label 比对（密码跳过；不一致 `field-mismatch`，屏幕不符 `field-screen-mismatch`）。`suite field-map probe --device <serial>` 只读列出可编辑控件（不输出输入值）。taskDesc/Excel 路径仍只有文本替换，不承诺多字段位置确定性。
 - 任务进度：`progress`（seq/phase/percent/caseId/traceId/message/errorCode）；失败证据上传（白名单/大小限制/面板链接）；失败即停。Web/LLM 任务执行前把 Excel 生成的 `taskDesc` 落盘 `.artemis/web/jobs/<taskId>/case-plan.json`，便于追溯脚本依据。
 - 失败域（确定性）：`app-defect`/`environment`/`api-error`/`data-environment`/`behavior-or-design`/`design-inference`/`case-defect`/`unclassified`；只有经裁决的 `app-defect` 自动建 Jira。
 - **runner 包**：0.3.0 双端；offline 包的 `runner.cmd` 会检测 `deps/win32-site-packages.zip` 并走 `setup-offline.cmd`；包契约 `npm run check:runner-bundle`。
@@ -210,6 +216,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 项目发现：默认 `AOS_PANEL_PROJECT_DISCOVERY=marker`——只认 `aos.config.jsonc`、`.artemis/design/tests.json`、`.artemis/design/flows.json`，或台账 `state.projects` 中确实登记该 root；**空 `.artemis/ledger/state.json` 不算项目**（避免误跑目录变重复项目）。
 - 主机/执行机：`hosts`、`runners`、`device_leases`、`host_addresses`/`host_sessions`；面板设备/执行机区块。
 - 任务：任务台账、实时进度、取消/释放/重跑、队列暂停；产物只读服务（`.artemis` 范围，可选令牌）。
+- 资产：Excel/安装包/测试资料/参考图版本化；支持「归档」（`archivedAt`，默认隐藏、不可再选，历史任务仍可读，可恢复）与「彻底删除」（仅未被任务/映射引用；共享 `storagePath` 保留文件，secret 资料 unlink 明文；被引用返回 409 + 清单）。
 - 测试资产：Excel/安装包/资料/参考图统一版本化；**本地注册项目（非网页创建）也可上传/保存映射**，归档项目拒绝写入；按 kind 校验扩展名/大小，secret materials 落盘 0600。Excel「导入用例库」先做设计预检：检测 Wireframe 与 `flows.json`/`ui-contract`，有索引时可选「设计增强导入 / 普通导入」，显示 exact/ambiguous/unmapped 覆盖；无索引或点「更换设计来源」时进入统一设计来源选择——**Figma URL 与 `.pen` 文件是等价适配器**，都经提取产出同一 `flows.json`，再回到同一映射预览；也可选择无设计稿普通导入。Figma/pen 提取走后台 job（`202 + jobId` 轮询，面板显示已用时长），不阻塞 HTTP 请求。
 - 统计：`aos_usage` / `usage` CLI / `/usage`+`/usage.json`；调用量/耗时是成本代理，不是计费。
 - 事件：`project_events`（run/case/artifact/log/feedback.request）；`aos_event_report/aos_events/aos_event_poll`；面板事件页只读。

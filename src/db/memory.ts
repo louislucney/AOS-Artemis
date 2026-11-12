@@ -476,6 +476,7 @@ export class MemoryStore implements ProjectStore {
       deviceLeaseId: input.deviceLeaseId ?? null,
       appAssetId: input.appAssetId ?? null,
       appPackage: input.appPackage ?? null,
+      materialsAssetId: input.materialsAssetId ?? null,
       caseIds: [...(input.caseIds ?? [])],
       progress: input.progress ?? null
     };
@@ -1975,6 +1976,7 @@ export class MemoryStore implements ProjectStore {
       storagePath: input.storagePath,
       uploadedBy: input.uploadedBy ?? null,
       createdAt: new Date().toISOString(),
+      archivedAt: null,
       metadata: input.metadata ? cloneMetadata(input.metadata) : {}
     };
     this.webAssets.push(record);
@@ -1982,10 +1984,17 @@ export class MemoryStore implements ProjectStore {
     return cloneWebAsset(record);
   }
 
-  async listWebAssets(rootPath: string, kind?: WebAssetKind): Promise<WebAssetRecord[]> {
+  async listWebAssets(
+    rootPath: string,
+    kind?: WebAssetKind,
+    options: { includeArchived?: boolean } = {}
+  ): Promise<WebAssetRecord[]> {
     return this.webAssets
       .filter(
-        (asset) => asset.rootPath === rootPath && (kind === undefined || asset.kind === kind)
+        (asset) =>
+          asset.rootPath === rootPath &&
+          (kind === undefined || asset.kind === kind) &&
+          (options.includeArchived === true || (asset.archivedAt ?? null) === null)
       )
       .sort((left, right) => right.version - left.version || right.id.localeCompare(left.id))
       .map(cloneWebAsset);
@@ -1996,6 +2005,27 @@ export class MemoryStore implements ProjectStore {
       (asset) => asset.rootPath === rootPath && asset.id === id
     );
     return found ? cloneWebAsset(found) : null;
+  }
+
+  async setWebAssetArchived(rootPath: string, id: string, archived: boolean): Promise<boolean> {
+    const found = this.webAssets.find(
+      (asset) => asset.rootPath === rootPath && asset.id === id
+    );
+    if (found === undefined) return false;
+    found.archivedAt = archived ? (found.archivedAt ?? new Date().toISOString()) : null;
+    return true;
+  }
+
+  async deleteWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null> {
+    const index = this.webAssets.findIndex(
+      (asset) => asset.rootPath === rootPath && asset.id === id
+    );
+    if (index < 0) return null;
+    const [removed] = this.webAssets.splice(index, 1);
+    for (const [key, value] of this.webAssetDedupe) {
+      if (value === id) this.webAssetDedupe.delete(key);
+    }
+    return removed === undefined ? null : cloneWebAsset(removed);
   }
 
   async saveExcelMapping(input: SaveExcelMappingInput): Promise<ExcelMappingRecord> {
@@ -2205,7 +2235,7 @@ export class MemoryStore implements ProjectStore {
     }
     if (data.llms) {
       this.llms = new Map(
-        data.llms.map((bucket) => [bucket.rootPath, bucket.entries.map((entry) => ({ ...entry }))])
+        data.llms.map((bucket) => [bucket.rootPath, bucket.entries.map(cloneProjectLlm)])
       );
     }
     if (data.modelCaches) {
@@ -2794,6 +2824,15 @@ function cloneSuiteRun(run: SuiteRunRecord): SuiteRunRecord {
   };
 }
 
+function cloneProjectLlm(record: ProjectLlmRecord): ProjectLlmRecord {
+  return {
+    ...record,
+    poolTokenId: record.poolTokenId ?? null,
+    poolMode: record.poolMode ?? "pinned",
+    poolModel: record.poolModel ?? null
+  };
+}
+
 function cloneRunner(record: RunnerRecord): RunnerRecord {
   return {
     ...record,
@@ -2844,7 +2883,11 @@ function cloneWebProject(record: WebProjectRecord): WebProjectRecord {
 }
 
 function cloneWebAsset(record: WebAssetRecord): WebAssetRecord {
-  return { ...record, metadata: cloneMetadata(record.metadata) };
+  return {
+    ...record,
+    archivedAt: record.archivedAt ?? null,
+    metadata: cloneMetadata(record.metadata)
+  };
 }
 
 function cloneExcelMapping(record: ExcelMappingRecord): ExcelMappingRecord {

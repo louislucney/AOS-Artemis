@@ -124,6 +124,17 @@ export function makeWdaDevice(options: WdaDeviceOptions): IosDevice {
       });
     },
 
+    async clearText(length) {
+      const count = Math.min(Math.max(1, Math.trunc(length)), 200);
+      await withLease((sessionId) =>
+        client.typeText(sessionId, "\uE003".repeat(count))
+      );
+    },
+
+    async hideKeyboard() {
+      await withLease((sessionId) => client.hideKeyboard(sessionId));
+    },
+
     async launch(bundleId) {
       await withLease((sessionId) => client.activateApp(sessionId, bundleId));
     },

@@ -6,10 +6,30 @@ import { writeFileAtomic } from "../../util.js";
 
 export type SecretKind = "account" | "password" | "token" | "otp" | "other";
 
+export type SecretTargetKind =
+  | "resource-id"
+  | "view-tag"
+  | "content-desc"
+  | "semantics-label"
+  | "text"
+  | "point";
+
+export interface SecretFieldTarget {
+  kind: SecretTargetKind;
+  value: string;
+}
+
 export interface SecretEntry {
   alias: string;
   value: string;
   kind: SecretKind;
+  /** 可选：确定性填写目标（native type + secretRef 未显式给 target 时使用）。 */
+  target?: SecretFieldTarget;
+  fallbackTargets?: SecretFieldTarget[];
+  /** 可选：填写前要求当前屏幕/页面出现该文本（设计/IA 校对）。 */
+  screen?: string;
+  /** 可选：字段的人类标签（仅展示/审计，不参与定位）。 */
+  label?: string;
 }
 
 export interface RedactResult {
@@ -33,19 +53,91 @@ function kindOf(alias: string): SecretKind {
   return "other";
 }
 
+export function parseSecretContent(content: string, fallbackAlias: string): SecretEntry[] {
+  return parseSecretFile(content, fallbackAlias);
+}
+
+const SECRET_TARGET_KINDS = new Set<SecretTargetKind>([
+  "resource-id",
+  "view-tag",
+  "content-desc",
+  "semantics-label",
+  "text",
+  "point"
+]);
+
+function secretTargetOf(value: unknown): SecretFieldTarget | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as { kind?: unknown; value?: unknown };
+  if (typeof record.kind !== "string" || !SECRET_TARGET_KINDS.has(record.kind as SecretTargetKind)) {
+    return undefined;
+  }
+  if (typeof record.value !== "string" || record.value.trim() === "") return undefined;
+  return { kind: record.kind as SecretTargetKind, value: record.value.trim() };
+}
+
+function secretKindOf(value: unknown, alias: string): SecretKind {
+  if (
+    value === "account" ||
+    value === "password" ||
+    value === "token" ||
+    value === "otp" ||
+    value === "other"
+  ) {
+    return value;
+  }
+  return kindOf(alias);
+}
+
+function parseSecretEntry(alias: string, raw: unknown): SecretEntry | null {
+  if (typeof raw === "string") {
+    if (raw.trim() === "") return null;
+    return { alias, value: raw, kind: kindOf(alias) };
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as {
+    value?: unknown;
+    kind?: unknown;
+    target?: unknown;
+    fallbackTargets?: unknown;
+    screen?: unknown;
+    label?: unknown;
+  };
+  if (typeof record.value !== "string" || record.value.trim() === "") return null;
+  const entry: SecretEntry = {
+    alias,
+    value: record.value,
+    kind: secretKindOf(record.kind, alias)
+  };
+  const target = secretTargetOf(record.target);
+  if (target !== undefined) entry.target = target;
+  if (Array.isArray(record.fallbackTargets)) {
+    const fallbackTargets = record.fallbackTargets
+      .map(secretTargetOf)
+      .filter((value): value is SecretFieldTarget => value !== undefined);
+    if (fallbackTargets.length > 0) entry.fallbackTargets = fallbackTargets;
+  }
+  if (typeof record.screen === "string" && record.screen.trim() !== "") {
+    entry.screen = record.screen.trim();
+  }
+  if (typeof record.label === "string" && record.label.trim() !== "") {
+    entry.label = record.label.trim();
+  }
+  return entry;
+}
+
 function parseSecretFile(content: string, fallbackAlias: string): SecretEntry[] {
   const trimmed = content.trim();
   if (trimmed === "") return [];
   try {
     const parsed: unknown = JSON.parse(trimmed);
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return Object.entries(parsed as Record<string, unknown>)
-        .filter(([, value]) => typeof value === "string" && value.trim() !== "")
-        .map(([alias, value]) => ({
-          alias,
-          value: String(value),
-          kind: kindOf(alias)
-        }));
+      const entries: SecretEntry[] = [];
+      for (const [alias, raw] of Object.entries(parsed as Record<string, unknown>)) {
+        const entry = parseSecretEntry(alias, raw);
+        if (entry !== null) entries.push(entry);
+      }
+      if (entries.length > 0) return entries;
     }
   } catch {
     /* fall through to key=value */

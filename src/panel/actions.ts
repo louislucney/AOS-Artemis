@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -526,6 +526,12 @@ export async function handlePanelActionRequest(
   if (request.url.pathname === "/panel/api/projects/assets/figma") {
     return await uploadFigmaReferenceAction(deps, payload, actor);
   }
+  if (request.url.pathname === "/panel/api/projects/assets/archive") {
+    return await archiveAssetAction(deps, payload, actor);
+  }
+  if (request.url.pathname === "/panel/api/projects/assets/delete") {
+    return await deleteAssetAction(deps, payload, actor);
+  }
   if (request.url.pathname === "/panel/api/projects/assets") {
     return await uploadAssetAction(deps, request, actor);
   }
@@ -1036,6 +1042,170 @@ async function uploadFigmaReferenceAction(
     }
     throw error;
   }
+}
+
+async function assetReferences(
+  store: ProjectStore,
+  rootPath: string,
+  assetId: string
+): Promise<string[]> {
+  const refs: string[] = [];
+  const tasks = await store.listRegressionTasks(rootPath, 1000).catch(() => []);
+  for (const task of tasks) {
+    if (task.appAssetId === assetId) refs.push(`任务 ${task.id}（安装包）`);
+    if (task.materialsAssetId === assetId) refs.push(`任务 ${task.id}（测试资料）`);
+    const spec =
+      task.jobSpec !== null && typeof task.jobSpec === "object"
+        ? (task.jobSpec as Record<string, unknown>)
+        : null;
+    if (spec === null) continue;
+    for (const key of [
+      "excelAssetId",
+      "packageAssetId",
+      "materialsAssetId",
+      "referenceAssetId"
+    ] as const) {
+      if (spec[key] === assetId) refs.push(`Web 任务 ${task.id}（${key}）`);
+    }
+    const snapshot = Array.isArray(spec.assetSnapshot) ? spec.assetSnapshot : [];
+    if (
+      snapshot.some(
+        (entry) =>
+          entry !== null &&
+          typeof entry === "object" &&
+          (entry as { id?: unknown }).id === assetId
+      )
+    ) {
+      refs.push(`Web 任务 ${task.id}（资产快照）`);
+    }
+  }
+  const mappings = await store.listExcelMappings(rootPath, assetId).catch(() => []);
+  if (mappings.length > 0) refs.push(`Excel 列映射 ${mappings.length} 条`);
+  return refs;
+}
+
+async function assetProjectContext(
+  deps: PanelWebDeps,
+  payload: Record<string, unknown>
+): Promise<
+  | { ok: true; rootPath: string; store: ProjectStore }
+  | { ok: false; response: PanelWebResponse }
+> {
+  const projectKey = panelTextField(payload, "project");
+  if (projectKey === "") {
+    return { ok: false, response: json(400, { error: "缺少 project" }) };
+  }
+  const host = panelTextField(payload, "host");
+  let resolved: Awaited<ReturnType<typeof resolveProjectKey>> = null;
+  try {
+    resolved = await resolveProjectKey(deps, projectKey, host === "" ? undefined : host);
+  } catch (error) {
+    if (error instanceof AmbiguousProjectError) {
+      return {
+        ok: false,
+        response: json(409, {
+          error: error.message,
+          candidates: error.candidates.map((candidate) => ({
+            hostId: candidate.hostId,
+            rootPath: candidate.rootPath,
+            name: candidate.name
+          }))
+        })
+      };
+    }
+    throw error;
+  }
+  if (resolved === null) {
+    return { ok: false, response: json(404, { error: `未知项目 "${projectKey}"` }) };
+  }
+  const store =
+    resolved.hostId === null
+      ? deps.store
+      : (deps.storeForHost?.(resolved.hostId) ?? deps.store);
+  return { ok: true, rootPath: resolved.rootPath, store };
+}
+
+async function archiveAssetAction(
+  deps: PanelWebDeps,
+  payload: Record<string, unknown>,
+  actor: string
+): Promise<PanelWebResponse> {
+  const assetId = panelTextField(payload, "assetId");
+  if (assetId === "") return json(400, { error: "缺少 assetId" });
+  const context = await assetProjectContext(deps, payload);
+  if (!context.ok) return context.response;
+  try {
+    await assertProjectActive(context.store, context.rootPath);
+  } catch (error) {
+    return json(400, { error: errorMessage(error) });
+  }
+  const asset = await context.store.getWebAsset(context.rootPath, assetId);
+  if (asset === null) return json(404, { error: `未知资产 "${assetId}"` });
+  const archived = payload.archived !== false;
+  const changed = await context.store.setWebAssetArchived(
+    context.rootPath,
+    assetId,
+    archived
+  );
+  const response = changed
+    ? json(200, {
+        ok: true,
+        assetId,
+        archived,
+        asset: await context.store.getWebAsset(context.rootPath, assetId)
+      })
+    : json(404, { error: `未知资产 "${assetId}"` });
+  await auditPanel(deps, context.rootPath, "action.assets.archive", response, {
+    assetId,
+    archived: archived ? "true" : "false"
+  }, { actor });
+  if (response.status === 200) deps.cache?.clear();
+  return response;
+}
+
+async function deleteAssetAction(
+  deps: PanelWebDeps,
+  payload: Record<string, unknown>,
+  actor: string
+): Promise<PanelWebResponse> {
+  const assetId = panelTextField(payload, "assetId");
+  if (assetId === "") return json(400, { error: "缺少 assetId" });
+  const context = await assetProjectContext(deps, payload);
+  if (!context.ok) return context.response;
+  try {
+    await assertProjectActive(context.store, context.rootPath);
+  } catch (error) {
+    return json(400, { error: errorMessage(error) });
+  }
+  const asset = await context.store.getWebAsset(context.rootPath, assetId);
+  if (asset === null) return json(404, { error: `未知资产 "${assetId}"` });
+  const refs = await assetReferences(context.store, context.rootPath, assetId);
+  if (refs.length > 0) {
+    return json(409, {
+      ok: false,
+      error: "资产仍被引用：先归档或删除引用它的任务/映射",
+      references: refs.slice(0, 20)
+    });
+  }
+  const removed = await context.store.deleteWebAsset(context.rootPath, assetId);
+  if (removed === null) return json(404, { error: `未知资产 "${assetId}"` });
+  const remaining = await context.store
+    .listWebAssets(context.rootPath, undefined, { includeArchived: true })
+    .catch(() => []);
+  if (!remaining.some((entry) => entry.storagePath === removed.storagePath)) {
+    await unlink(removed.storagePath).catch(() => undefined);
+  }
+  deps.cache?.clear();
+  const response = json(200, {
+    ok: true,
+    assetId,
+    filename: removed.filename,
+    fileRetained: remaining.some((entry) => entry.storagePath === removed.storagePath)
+  });
+  await auditPanel(deps, context.rootPath, "action.assets.delete", response, { assetId }, {
+    actor
+  });
+  return response;
 }
 
 async function uploadAssetAction(
@@ -1557,6 +1727,9 @@ async function checkDispatchPreviewFreshness(
   if (typeof payload.appAssetId === "string" && payload.appAssetId.trim() !== "") {
     params.set("appAssetId", payload.appAssetId.trim());
   }
+  if (typeof payload.materialsAssetId === "string" && payload.materialsAssetId.trim() !== "") {
+    params.set("materialsAssetId", payload.materialsAssetId.trim());
+  }
   if (typeof payload.appPackage === "string" && payload.appPackage.trim() !== "") {
     params.set("appPackage", payload.appPackage.trim());
   }
@@ -1737,7 +1910,7 @@ async function createTask(
   let appAssetId: string | null = null;
   if (rawAppAssetId !== "") {
     const asset = await taskStore.getWebAsset(rootPath, rawAppAssetId).catch(() => null);
-    if (asset === null || asset.kind !== "package") {
+    if (asset === null || asset.kind !== "package" || asset.archivedAt) {
       return json(400, { error: `未知安装包资产 "${rawAppAssetId}"（请刷新预览后重选）` });
     }
     const lower = asset.filename.toLowerCase();
@@ -1757,6 +1930,21 @@ async function createTask(
       /* 读不到安装包时保留手填值/空；执行机会沿用设备当前应用 */
     }
     appAssetId = rawAppAssetId;
+  }
+  const rawMaterialsAssetId =
+    typeof payload.materialsAssetId === "string" ? payload.materialsAssetId.trim() : "";
+  let materialsAssetId: string | null = null;
+  if (rawMaterialsAssetId !== "") {
+    const asset = await taskStore.getWebAsset(rootPath, rawMaterialsAssetId).catch(() => null);
+    if (asset === null || asset.kind !== "materials" || asset.archivedAt) {
+      return json(400, { error: `未知测试资料资产 "${rawMaterialsAssetId}"（请刷新预览后重选）` });
+    }
+    if (asset.metadata?.secret !== true) {
+      return json(400, {
+        error: `测试资料 "${asset.filename}" 未标记 secret：套件回归只支持 secret 资料占位符，请勾选 secret 后重新上传`
+      });
+    }
+    materialsAssetId = rawMaterialsAssetId;
   }
 
   let warnings: string[] = [];
@@ -1796,6 +1984,7 @@ async function createTask(
     priority,
     appAssetId,
     appPackage,
+    materialsAssetId,
     caseIds
   });
   return json(200, { ok: true, task, ...(warnings.length > 0 ? { warnings } : {}) });
@@ -2605,6 +2794,7 @@ async function rerunTask(
     priority: task.priority,
     appAssetId: task.appAssetId,
     appPackage: task.appPackage,
+    materialsAssetId: task.materialsAssetId,
     caseIds
   });
   deps.cache?.clear();

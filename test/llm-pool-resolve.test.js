@@ -204,6 +204,41 @@ test("model not in the allowlist is rejected", async () => {
   assert.equal(resolution.candidates.length, 0);
 });
 
+test("legacy entry without pool fields resolves as a project entry", async () => {
+  const store = new MemoryStore();
+  store.importState({
+    projects: [
+      { id: "p", rootPath: ROOT, name: "p", figmaToken: null, createdAt: "x", lastSeenAt: "x" }
+    ],
+    llms: [
+      {
+        rootPath: ROOT,
+        entries: [
+          {
+            id: "legacy",
+            projectId: "p",
+            name: "entry",
+            provider: "custom",
+            baseUrl: "https://legacy.example.com",
+            model: "m",
+            apiKey: "sk-legacy",
+            isActive: true,
+            createdAt: "x",
+            updatedAt: "x"
+          }
+        ]
+      }
+    ]
+  });
+
+  const resolution = await resolveCenterLlmCandidates(store, {}, ROOT);
+  assert.equal(resolution.mode, "project");
+  assert.equal(resolution.error, null);
+  assert.equal(resolution.candidates.length, 1);
+  assert.equal(resolution.candidates[0].apiKey, "sk-legacy");
+  assert.equal(resolution.candidates[0].poolTokenId, null);
+});
+
 test("project-owned entry keeps its own key and no poolTokenId", async () => {
   const store = await setup();
   const resolution = await resolveCenterLlmCandidates(store, {}, ROOT);

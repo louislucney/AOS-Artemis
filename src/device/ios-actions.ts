@@ -52,6 +52,10 @@ export interface IosDevice {
   tap(x: number, y: number): Promise<void>;
   swipe(x1: number, y1: number, x2: number, y2: number, ms: number): Promise<void>;
   inputText(text: string, at?: IosPoint): Promise<IosInputResult>;
+  /** 清空当前聚焦输入框（模拟器 idb 路径可不实现）。 */
+  clearText?(length: number): Promise<void>;
+  /** 输入后收起键盘（模拟器 idb 路径可不实现）。 */
+  hideKeyboard?(): Promise<void>;
   launch(bundleId: string): Promise<void>;
   terminate(bundleId: string): Promise<boolean>;
   openUrl(url: string): Promise<void>;

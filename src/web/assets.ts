@@ -5,7 +5,7 @@ import path from "node:path";
 import type { ProjectStore, WebAssetKind, WebAssetRecord } from "../db/types.js";
 import { writeFileAtomic } from "../util.js";
 import { CsvError, decodeCsv } from "./csv.js";
-import { inferAppIdFromPackage } from "./package-inspect.js";
+import { inferAppIdFromPackage, inspectAndroidPackage, inspectIosPackage } from "./package-inspect.js";
 
 export type { WebAssetKind };
 
@@ -137,6 +137,20 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
   if (input.kind === "package") {
     const appId = await inferAppIdFromPackage(input.buffer, filename).catch(() => null);
     if (appId !== null) metadata.appId = appId;
+    try {
+      const lower = filename.toLowerCase();
+      if (lower.endsWith(".apk")) {
+        const info = await inspectAndroidPackage(input.buffer);
+        if (info !== null && info.versionName) metadata.appVersion = info.versionName;
+        if (info !== null && info.versionCode !== null) metadata.versionCode = info.versionCode;
+      } else if (lower.endsWith(".ipa")) {
+        const info = await inspectIosPackage(input.buffer);
+        if (info?.version) metadata.appVersion = info.version;
+        if (info?.build) metadata.build = info.build;
+      }
+    } catch {
+      /* 版本号采集失败不阻断上传 */
+    }
   }
   if (input.kind === "excel" && extension === ".csv") {
     // CSV 原件保持原字节只读；编码检测结论写进元数据，后续生成工作副本时可直接复用。
@@ -198,7 +212,8 @@ export async function storeWebAsset(input: StoreWebAssetInput): Promise<WebAsset
 export async function listWebAssets(
   store: ProjectStore,
   rootPath: string,
-  kind?: WebAssetKind
+  kind?: WebAssetKind,
+  options: { includeArchived?: boolean } = {}
 ): Promise<WebAssetRecord[]> {
-  return store.listWebAssets(path.resolve(rootPath), kind);
+  return store.listWebAssets(path.resolve(rootPath), kind, options);
 }

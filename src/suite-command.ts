@@ -21,6 +21,11 @@ import { hostStrictFrom } from "./host/strict.js";
 import { isHostOnline, precheckTask } from "./console/dispatch.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "./device/logcat.js";
 import { defaultExec, resolveAdbPath } from "./device/adb.js";
+import { parseSecretContent, type SecretEntry } from "./web/llm/secrets.js";
+import { adbInstallAndroidApk } from "./device/install.js";
+export { adbInstallAndroidApk };
+import { createAdbAndroidDevice } from "./device/android-actions.js";
+import { proposeFieldTargets } from "./structured/field-map.js";
 import { classifyIosSerial } from "./device/ios.js";
 import { latestFeatureRefs, type ResolvedTaskRef } from "./tasks/feature-refs.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
@@ -386,6 +391,8 @@ Usage:
   mobile-testing-mcp suite loop [options]       测试闭环：静态检查→执行(可选)→反馈→差分校准(可选)，产出闭环报告与下一步
   mobile-testing-mcp suite flake [options]      重复采样量化确定性：通过率/翻转矩阵/flaky 率（--cases × --runs）
   mobile-testing-mcp suite retention [options]  审计产物保留期只读报告（不删除；--days 默认 90、--limit 默认 20）
+  mobile-testing-mcp suite field-map probe --device <serial> [--json]
+                                     探测当前屏幕可编辑控件（id/label/type/bounds；不读取/输出输入值），用于生成 secret 字段映射
   mobile-testing-mcp suite evidence <traceId> [options]
                                      聚合某 trace 的失败证据包（失败项/崩溃/锚点截图/设计差异）
   mobile-testing-mcp suite api-errors <traceId> [options]
@@ -573,33 +580,6 @@ export async function androidInstalledApkMatches(
   return false;
 }
 
-/** 用 streamed `adb install -r -t` 安装任务 APK（runner 侧一次安装，避免 Artemis 的
- * push + pm install 路径在部分设备上触发“已安装/重新打开”而中止）。 */
-export async function adbInstallAndroidApk(
-  env: NodeJS.ProcessEnv,
-  serial: string,
-  apkPath: string,
-  exec: typeof defaultExec = defaultExec
-): Promise<{ ok: true; output: string } | { ok: false; error: string }> {
-  const adb = resolveAdbPath(env, process.platform);
-  if (adb.path === null) return { ok: false, error: "adb-not-found" };
-  await exec(adb.path, ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"], {
-    timeoutMs: 5_000,
-    env
-  }).catch(() => undefined);
-  await exec(adb.path, ["-s", serial, "shell", "wm", "dismiss-keyguard"], {
-    timeoutMs: 5_000,
-    env
-  }).catch(() => undefined);
-  const result = await exec(adb.path, ["-s", serial, "install", "-r", "-t", apkPath], {
-    timeoutMs: 600_000,
-    env
-  });
-  const output = `${result.stdout}\n${result.stderr}`.trim();
-  if (result.code === 0 && /Success/i.test(result.stdout)) return { ok: true, output };
-  return { ok: false, error: output === "" ? "adb install 失败（无输出）" : output };
-}
-
 export async function materializeTaskApp(
   runtime: Runtime,
   task: { id: string; appAssetId: string | null },
@@ -647,6 +627,109 @@ export async function materializeTaskApp(
       ? createHash("sha256").update(fs.readFileSync(resolved)).digest("hex")
       : asset.sha256.trim();
   return { ok: true, path: resolved, sha256 };
+}
+
+/** 任务选择的测试资料：优先本地资产，跨机 runner 走控制面下载；仅 secret=true 参与占位符。 */
+async function materializeTaskMaterials(
+  runtime: Runtime,
+  task: { id: string; materialsAssetId: string | null },
+  bundle: Awaited<ReturnType<NonNullable<ProjectStore["getTaskBundle"]>>> | null
+): Promise<{ ok: true; secrets: SecretEntry[]; filename: string } | { ok: false; error: string }> {
+  if (task.materialsAssetId === null) return { ok: true, secrets: [], filename: "" };
+  const meta = bundle?.materialsAsset ?? null;
+  let text: string | null = null;
+  let filename = meta?.filename ?? "materials.txt";
+  const local = await runtime.store
+    .getWebAsset(runtime.project.rootDir, task.materialsAssetId)
+    .catch(() => null);
+  const secret = meta?.secret === true || (meta === null && local?.metadata?.secret === true);
+  if (!secret) {
+    return {
+      ok: false,
+      error: `测试资料 ${meta?.filename ?? local?.filename ?? task.materialsAssetId} 未标记 secret：不能用于 <secret:alias> 占位符`
+    };
+  }
+  if (local !== null && local.kind === "materials") {
+    try {
+      text = fs.readFileSync(local.storagePath, "utf8");
+      filename = local.filename;
+    } catch {
+      text = null;
+    }
+  }
+  if (text === null && typeof runtime.store.downloadTaskMaterials === "function") {
+    try {
+      const downloaded = await runtime.store.downloadTaskMaterials(
+        runtime.project.rootDir,
+        task.id
+      );
+      if (downloaded !== null) {
+        filename = downloaded.filename;
+        text = downloaded.buffer.toString("utf8");
+      }
+    } catch (error) {
+      return { ok: false, error: `测试资料下载失败：${errorMessage(error)}` };
+    }
+  }
+  if (text === null) {
+    return { ok: false, error: "测试资料不可用（资产不存在或无法读取）" };
+  }
+  const alias = path.basename(filename, path.extname(filename));
+  const secrets = parseSecretContent(text, alias);
+  if (secrets.length === 0) {
+    return { ok: false, error: `测试资料 ${filename} 解析为空（需要 alias=value 或 JSON）` };
+  }
+  return { ok: true, secrets, filename };
+}
+
+async function suiteFieldMap(
+  runtime: Runtime,
+  flags: ParsedFlags,
+  io: { log: (line: string) => void; errorLog: (line: string) => void }
+): Promise<number> {
+  const action = flags.positional[1] ?? "probe";
+  if (action !== "probe") {
+    io.errorLog("用法: suite field-map probe --device <serial> [--json]");
+    return 2;
+  }
+  const serial = (flags.get("device") ?? "").trim();
+  if (serial === "") {
+    io.errorLog("用法: suite field-map probe --device <serial> [--json]");
+    return 2;
+  }
+  try {
+    const device =
+      classifyIosSerial(serial) === null
+        ? createAdbAndroidDevice(serial)
+        : await runtime.iosDevice(serial);
+    if (device === null) {
+      io.errorLog(`无法解析设备：${serial}`);
+      return 2;
+    }
+    const fields = proposeFieldTargets(await device.nodes());
+    if (flags.bool("json")) {
+      io.log(JSON.stringify({ device: serial, fields }, null, 2));
+      return 0;
+    }
+    if (fields.length === 0) {
+      io.log(`未发现可编辑控件（${serial}）：页面可能未就绪或控件未暴露 id/label`);
+      return 0;
+    }
+    io.log(`可编辑控件 ${fields.length} 个（${serial}，不输出输入值）：`);
+    for (const field of fields) {
+      const target =
+        field.target === null
+          ? "(无 id/label，只能坐标)"
+          : `${field.target.kind}:${field.target.value}`;
+      io.log(
+        `- ${target} · label=${field.label ?? "-"} · type=${field.type} · bounds=${field.bounds.x},${field.bounds.y} ${field.bounds.width}x${field.bounds.height}`
+      );
+    }
+    return 0;
+  } catch (error) {
+    io.errorLog(`字段探测失败：${errorMessage(error)}`);
+    return 2;
+  }
 }
 
 async function suiteRunTask(
@@ -822,8 +905,26 @@ async function suiteRunTask(
     io.errorLog(taskApp.error);
     return 2;
   }
+  const taskMaterials = await materializeTaskMaterials(runtime, task, bundle);
+  if (!taskMaterials.ok) {
+    io.errorLog(taskMaterials.error);
+    await progress
+      .report("failed", 8, { message: taskMaterials.error, errorCode: "materials-unavailable" })
+      .catch(() => undefined);
+    await runtime.store
+      .updateRegressionTask(runtime.project.rootDir, task.id, {
+        status: "failed",
+        expectStatuses: ["pending", "claimed", "running"]
+      })
+      .catch(() => false);
+    return 2;
+  }
   const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
   baseOptions.regressionTaskId = task.id;
+  if (taskMaterials.secrets.length > 0) {
+    baseOptions.secrets = taskMaterials.secrets;
+    say(`测试资料：${taskMaterials.filename}（secret，${taskMaterials.secrets.length} 个字段）`);
+  }
   let completedCases = 0;
   let lastCaseId: string | null = null;
   let lastTraceId: string | null = null;
@@ -871,12 +972,14 @@ async function suiteRunTask(
   const appInstallPolicy = (
     runnerEnv.AOS_APP_INSTALL_POLICY ?? "skip-if-present"
   ).trim();
-  let skipTaskAppInstall = false;
-  let installedByRunner = false;
   const expectedAppSha = (taskApp.sha256 ?? "").trim();
   const androidOnly =
     devices.length > 0 && devices.every((serial) => classifyIosSerial(serial) === null);
-  const androidInstallMode = (runnerEnv.AOS_ANDROID_INSTALL_MODE ?? "adb").trim();
+  if ((runnerEnv.AOS_ANDROID_INSTALL_MODE ?? "").trim() === "artemis") {
+    io.errorLog(
+      "AOS_ANDROID_INSTALL_MODE=artemis 已停用：Android 安装统一走 runner 单次 adb install -r -t（Artemis 安装冲突时会卸载应用，等同清空 app 数据）"
+    );
+  }
   const installedShaMatches = async (): Promise<boolean[]> =>
     await Promise.all(
       devices.map((serial) =>
@@ -896,16 +999,13 @@ async function suiteRunTask(
       .catch(() => false);
     return 2;
   };
-  if (
-    taskApp.path !== null &&
-    taskAppPackage !== "" &&
-    expectedAppSha !== "" &&
-    androidOnly &&
-    androidInstallMode !== "artemis"
-  ) {
-    const matched = await installedShaMatches();
-    if (matched.every(Boolean) && appInstallPolicy !== "always") {
-      skipTaskAppInstall = true;
+  if (taskApp.path !== null && androidOnly) {
+    const alreadyInstalled =
+      appInstallPolicy !== "always" &&
+      expectedAppSha !== "" &&
+      taskAppPackage !== "" &&
+      (await installedShaMatches()).every(Boolean);
+    if (alreadyInstalled) {
       say(
         `应用 ${taskAppPackage} 已安装且 APK SHA 一致（${expectedAppSha.slice(0, 12)}）：跳过重复安装（AOS_APP_INSTALL_POLICY=always 可强制）`
       );
@@ -916,24 +1016,25 @@ async function suiteRunTask(
           return await failAppInstall(`安装包安装失败（${serial}）：${installed.error}`);
         }
       }
-      if (!(await installedShaMatches()).every(Boolean)) {
+      if (
+        expectedAppSha !== "" &&
+        taskAppPackage !== "" &&
+        !(await installedShaMatches()).every(Boolean)
+      ) {
         return await failAppInstall(
           `安装后 APK SHA 校验失败：期望 ${expectedAppSha.slice(0, 12)}，设备上的安装包与下发包不一致`
         );
       }
-      installedByRunner = true;
-      say(`任务安装包：${path.basename(taskApp.path)}（adb install 成功，APK SHA 校验通过）`);
+      say(
+        `任务安装包：${path.basename(taskApp.path)}（adb install -r 成功${expectedAppSha === "" ? "" : "，APK SHA 校验通过"}）`
+      );
     }
-  }
-  if (taskApp.path !== null) {
-    if (skipTaskAppInstall) {
-      say(`任务安装包：${path.basename(taskApp.path)}（SHA 一致，跳过本次安装）`);
-    } else if (installedByRunner) {
-      say(`任务安装包：${path.basename(taskApp.path)}（已由 runner 安装，跳过 Artemis 安装）`);
-    } else {
-      baseOptions.appPath = taskApp.path;
-      say(`任务安装包：${path.basename(taskApp.path)}（执行前安装）`);
-    }
+    // 硬保险：Android 任务包绝不再交给 Artemis 安装——其 adbutils 在版本/签名冲突时
+    // 会先 pm uninstall 再重装，等于清空 app 数据。
+    baseOptions.appPath = undefined;
+  } else if (taskApp.path !== null) {
+    baseOptions.appPath = taskApp.path;
+    say(`任务安装包：${path.basename(taskApp.path)}（非 Android：执行前安装）`);
   }
   if (baseOptions.lockedAppPackage === undefined && taskAppPackage !== "") {
     baseOptions.lockedAppPackage = taskAppPackage;
@@ -1109,12 +1210,18 @@ async function suiteRunTask(
     let anyExecuted = false;
     let anyUiFailure = false;
     let anyUiWeightFailure = false;
+    let aborted = false;
 
-    for (const device of devices) {
+    outer: for (const device of devices) {
       const platform = platformOf(device);
       const seen = seenByDevice.get(device) ?? new Set<string>();
       seenByDevice.set(device, seen);
       for (const ref of resolvedRefs) {
+        if (shouldAbort?.() === true) {
+          aborted = true;
+          say("任务已取消：停止后续用例集（保留已执行结果）");
+          break outer;
+        }
         const archive = readTestsDocument(runtime.configDirAbs, { testsPath: ref.jsonPath });
         if (!archive) {
           io.errorLog(`份不可读（跳过）：${ref.jsonPath}`);
@@ -1146,7 +1253,13 @@ async function suiteRunTask(
           caseIds,
           ...(shouldAbort === undefined ? {} : { shouldAbort })
         });
-        anyExecuted = true;
+        const abortedDuringRun = shouldAbort?.() === true;
+        if (abortedDuringRun && report.executed === 0) {
+          aborted = true;
+          say("任务已取消：跳过未执行的用例集（不登记空批次）");
+          break outer;
+        }
+        anyExecuted = anyExecuted || report.executed > 0;
         readinessFailures.push(...integrationFailuresOfSuite(report.cases));
         const quarantinedFailures = report.cases.filter(
           (entry) => entry.quarantined === true && entry.status !== "passed"
@@ -1251,8 +1364,14 @@ async function suiteRunTask(
             (comparison.baseline === "established" ? "（基准建立）" : "") +
             (runId ? ` · run ${runId}` : " · 未登记")
         );
+        if (abortedDuringRun) {
+          aborted = true;
+          say("任务已取消：停止后续用例集（保留已执行结果）");
+          break outer;
+        }
       }
     }
+    if (aborted) anyExecError = true;
 
     const finalStatus: "completed" | "partial" | "failed" = !anyExecuted
       ? "failed"
@@ -2874,7 +2993,7 @@ async function suiteTaskCreate(
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>]"
+      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--materials <id>]"
     );
     return 2;
   }
@@ -2883,12 +3002,24 @@ async function suiteTaskCreate(
     const asset = await runtime.store
       .getWebAsset(runtime.project.rootDir, appAssetId)
       .catch(() => null);
-    if (asset === null || asset.kind !== "package") {
+    if (asset === null || asset.kind !== "package" || asset.archivedAt) {
       io.errorLog(`未知安装包资产 "${appAssetId}"（需先上传 package 资产）`);
       return 2;
     }
   }
   const appPackage = (flags.get("app") ?? "").trim() || null;
+  const materialsAssetId = (flags.get("materials") ?? "").trim() || null;
+  if (materialsAssetId !== null) {
+    const asset = await runtime.store
+      .getWebAsset(runtime.project.rootDir, materialsAssetId)
+      .catch(() => null);
+    if (asset === null || asset.kind !== "materials" || asset.metadata?.secret !== true || asset.archivedAt) {
+      io.errorLog(
+        `未知/非 secret 测试资料资产 "${materialsAssetId}"（需 materials 且上传时勾选 secret）`
+      );
+      return 2;
+    }
+  }
   const resolved = resolveTaskRefsFromSets(
     await runtime.store.listCaseSets(runtime.project.rootDir),
     refs,
@@ -2912,7 +3043,8 @@ async function suiteTaskCreate(
     createdHostId: localHostId,
     priority,
     appAssetId,
-    appPackage
+    appPackage,
+    materialsAssetId
   });
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
@@ -3268,14 +3400,14 @@ async function suiteTaskCreateOnHost(
   const rootPath = rawProject === null ? null : normalizeRootPath(rawProject);
   if (rootPath === null || rootPath === "") {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--materials <id>]"
     );
     return 2;
   }
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--materials <id>]"
     );
     return 2;
   }
@@ -3308,12 +3440,22 @@ async function suiteTaskCreateOnHost(
   const appAssetId = (flags.get("app-asset") ?? "").trim() || null;
   if (appAssetId !== null) {
     const asset = await taskStore.getWebAsset(rootPath, appAssetId).catch(() => null);
-    if (asset === null || asset.kind !== "package") {
+    if (asset === null || asset.kind !== "package" || asset.archivedAt) {
       io.errorLog(`未知安装包资产 "${appAssetId}"（需先在目标项目上传 package 资产）`);
       return 2;
     }
   }
   const appPackage = (flags.get("app") ?? "").trim() || null;
+  const materialsAssetId = (flags.get("materials") ?? "").trim() || null;
+  if (materialsAssetId !== null) {
+    const asset = await taskStore.getWebAsset(rootPath, materialsAssetId).catch(() => null);
+    if (asset === null || asset.kind !== "materials" || asset.metadata?.secret !== true || asset.archivedAt) {
+      io.errorLog(
+        `未知/非 secret 测试资料资产 "${materialsAssetId}"（需 materials 且上传时勾选 secret）`
+      );
+      return 2;
+    }
+  }
   const precheck = precheckTask(
     {
       id: host.id,
@@ -3339,7 +3481,8 @@ async function suiteTaskCreateOnHost(
     createdHostId,
     priority,
     appAssetId,
-    appPackage
+    appPackage,
+    materialsAssetId
   });
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
@@ -4691,7 +4834,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     return sub ? 0 : 2;
   }
   if (
-    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract", "ui-semantics", "ui-parity", "ui-lint", "parity", "text-weight-calibrate", "reference-calibrate"].includes(sub)
+    !["run", "check", "calibrate", "loop", "flake", "retention", "evidence", "api-errors", "baseline", "report", "feedback", "reconcile", "task", "queue", "runner", "schedule", "backfill", "ui-contract", "ui-semantics", "ui-parity", "ui-lint", "parity", "text-weight-calibrate", "reference-calibrate", "field-map"].includes(sub)
   ) {
     errorLog(`未知 suite 子命令 "${sub}"`);
     printSuiteUsage(log);
@@ -4802,6 +4945,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "report") return await suiteReport(built.runtime, flags, { log, errorLog });
     if (sub === "reconcile") return await suiteReconcile(built.runtime, flags, { log, errorLog });
     if (sub === "task") return await suiteTask(built.runtime, flags, { log, errorLog }, deps.env ?? process.env);
+    if (sub === "field-map") return await suiteFieldMap(built.runtime, flags, { log, errorLog });
     if (sub === "queue") {
       return await suiteQueue(built.runtime, flags, { log, errorLog }, deps.env ?? process.env);
     }

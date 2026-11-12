@@ -18,6 +18,8 @@ export interface StructuredIosStepResult {
   resolvedBy?: "id" | "label" | "value" | "point" | "ancestor";
   expected?: StructuredActionExpect;
   actual?: { texts: string[]; screen: { width: number; height: number } | null };
+  /** secretRef 填写后的回读校验结果（无字段映射/密码/point 目标为 skipped）。 */
+  verified?: "ok" | "skipped" | "mismatch";
   error?: string;
 }
 
@@ -25,6 +27,15 @@ export interface StructuredIosRunResult {
   status: "passed" | "failed" | "error";
   steps: StructuredIosStepResult[];
   error?: string;
+}
+
+export interface StructuredSecretField {
+  value: string;
+  kind: "account" | "password" | "token" | "otp" | "other";
+  target?: StructuredTarget;
+  fallbackTargets?: StructuredTarget[];
+  screen?: string;
+  label?: string;
 }
 
 export interface StructuredIosRunInput {
@@ -37,6 +48,8 @@ export interface StructuredIosRunInput {
   sleep?: (ms: number) => Promise<void>;
   /** 执行期 secret 解析；返回 null/undefined 时该步显式失败，不回退明文。 */
   resolveSecret?: (ref: string) => string | null | undefined;
+  /** 字段映射：secretRef 未显式给 target 时按 alias 解析目标，并用于回读校验。 */
+  resolveSecretField?: (ref: string) => StructuredSecretField | null | undefined;
 }
 
 function pointOfTarget(target: StructuredTarget): IosPoint | null {
@@ -177,6 +190,38 @@ function expectError(
   return null;
 }
 
+function sameFieldValue(expected: string, actual: string): boolean {
+  if (normalizeMatchText(expected) === normalizeMatchText(actual)) return true;
+  const canonical = (text: string): string => text.replace(/[^0-9a-z]/gi, "").toLowerCase();
+  const wanted = canonical(expected);
+  return wanted !== "" && canonical(actual) === wanted;
+}
+
+/** secretRef 填写后的回读：按同一 target 找到控件，比较 value/label。 */
+async function verifySecretField(input: {
+  device: StructuredDevice;
+  screen: { width: number; height: number } | null;
+  action: StructuredAction;
+  expected: string;
+  timeoutMs: number;
+  pollMs: number;
+  sleep: (ms: number) => Promise<void>;
+}): Promise<"ok" | "skipped" | "mismatch"> {
+  if (input.action.target === undefined || input.action.target.kind === "point") return "skipped";
+  const deadline = Date.now() + Math.min(input.timeoutMs, 2000);
+  for (;;) {
+    const nodes = visibleNodes(await input.device.nodes(), input.screen);
+    const resolved = resolveTarget(nodes, input.action, { preferEditable: true });
+    if (!("error" in resolved) && resolved.node !== undefined) {
+      const actual =
+        resolved.node.value.trim() !== "" ? resolved.node.value : resolved.node.label;
+      if (sameFieldValue(input.expected, actual)) return "ok";
+    }
+    if (Date.now() >= deadline) return "mismatch";
+    await input.sleep(Math.max(input.pollMs, 100));
+  }
+}
+
 async function observeStable(
   device: StructuredDevice,
   screen: { width: number; height: number } | null,
@@ -233,9 +278,44 @@ export async function runStructuredIosCase(
 
     try {
       if (action.action === "tap" || action.action === "type") {
+        let secretRef: string | null = null;
+        let secretField: StructuredSecretField | null = null;
+        if (
+          action.action === "type" &&
+          action.input?.kind === "secretRef" &&
+          typeof action.input.ref === "string" &&
+          action.input.ref !== ""
+        ) {
+          secretRef = action.input.ref;
+          secretField = input.resolveSecretField?.(secretRef) ?? null;
+        }
+        const effectiveAction: StructuredAction =
+          action.target === undefined && secretField?.target !== undefined
+            ? {
+                ...action,
+                target: secretField.target,
+                ...(secretField.fallbackTargets === undefined
+                  ? {}
+                  : { fallbackTargets: secretField.fallbackTargets })
+              }
+            : action;
+        if (effectiveAction.target !== undefined) base.target = effectiveAction.target;
+        if (secretField?.screen !== undefined) {
+          const screenNodes = visibleNodes(await input.device.nodes(), screen);
+          const wanted = normalizeMatchText(secretField.screen);
+          const all = textsOf(screenNodes).map(normalizeMatchText).join(" | ");
+          if (!all.includes(wanted)) {
+            results.push({ ...base, error: `field-screen-mismatch:${secretField.screen}` });
+            return {
+              status: "failed",
+              steps: results,
+              error: `step ${action.stepIndex}: field-screen-mismatch:${secretField.screen}`
+            };
+          }
+        }
         const resolved = resolveTarget(
           visibleNodes(await input.device.nodes(), screen),
-          action,
+          effectiveAction,
           { preferEditable: action.action === "type" }
         );
         if ("error" in resolved) {
@@ -258,7 +338,8 @@ export async function runStructuredIosCase(
               results.push({ ...base, error: "type-input-missing" });
               return { status: "error", steps: results, error: `step ${action.stepIndex}: type-input-missing` };
             }
-            const resolvedSecret = input.resolveSecret?.(ref);
+            const resolvedSecret =
+              secretField !== null ? secretField.value : input.resolveSecret?.(ref);
             if (
               resolvedSecret === undefined ||
               resolvedSecret === null ||
@@ -277,33 +358,48 @@ export async function runStructuredIosCase(
             results.push({ ...base, error: "type-input-missing" });
             return { status: "error", steps: results, error: `step ${action.stepIndex}: type-input-missing` };
           }
-          let at = resolved.point;
-          if (resolved.target.kind !== "point") {
-            const refreshedNodes = visibleNodes(await input.device.nodes(), screen);
-            const refreshed = resolveTarget(refreshedNodes, action, { preferEditable: true });
-            if (!("error" in refreshed)) {
-              at = refreshed.point;
+          await sleep(120);
+          const shouldClear =
+            action.clear === true ||
+            (action.clear !== false && action.input.kind === "secretRef");
+          if (shouldClear && input.device.clearText !== undefined) {
+            const knownLength = resolved.node?.value.trim().length ?? 0;
+            const clearLength =
+              knownLength > 0 ? knownLength : action.input.kind === "secretRef" ? 100 : 0;
+            if (clearLength > 0) {
+              await input.device.clearText(Math.min(clearLength, 200));
+            }
+          }
+          await input.device.inputText(typeText, resolved.point);
+          if (action.hideKeyboard !== false && input.device.hideKeyboard !== undefined) {
+            await input.device.hideKeyboard().catch(() => undefined);
+          }
+          if (secretRef !== null) {
+            const verifiable =
+              action.verify !== false &&
+              secretField?.kind !== "password" &&
+              effectiveAction.target !== undefined &&
+              effectiveAction.target.kind !== "point";
+            if (!verifiable) {
+              base.verified = "skipped";
             } else {
-              const editable = refreshedNodes.filter((node) =>
-                /textfield|edittext|securetextfield/i.test(node.type)
-              );
-              if (editable.length > 0) {
-                const nearest = editable
-                  .map((node) => ({
-                    node,
-                    distance:
-                      Math.abs(node.rect.x + node.rect.width / 2 - resolved.point.x) +
-                      Math.abs(node.rect.y + node.rect.height / 2 - resolved.point.y)
-                  }))
-                  .sort((left, right) => left.distance - right.distance)[0]!.node;
-                at = {
-                  x: nearest.rect.x + nearest.rect.width / 2,
-                  y: nearest.rect.y + nearest.rect.height / 2
-                };
+              const verified = await verifySecretField({
+                device: input.device,
+                screen,
+                action: effectiveAction,
+                expected: typeText,
+                timeoutMs: action.expect?.timeoutMs ?? action.timeoutMs ?? stepTimeoutMs,
+                pollMs,
+                sleep
+              });
+              base.verified = verified;
+              if (verified === "mismatch") {
+                const error = `field-mismatch:${secretRef}`;
+                results.push({ ...base, status: "failed", error });
+                return { status: "failed", steps: results, error: `step ${action.stepIndex}: ${error}` };
               }
             }
           }
-          await input.device.inputText(typeText, at);
         }
       } else if (action.action === "wait") {
         await sleep(action.timeoutMs ?? Math.min(stepTimeoutMs, 1000));

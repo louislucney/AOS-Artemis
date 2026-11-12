@@ -19,7 +19,7 @@ async function runCli(runtime, args) {
   return { code, logs, errors };
 }
 
-function caseEntry(index, feature) {
+function caseEntry(index, feature, overrides = {}) {
   return {
     id: `case-${index}`,
     name: `Case ${index}`,
@@ -27,7 +27,8 @@ function caseEntry(index, feature) {
     steps: ["点击「Go」，验证进入「Next」"],
     preconditions: ["应用已安装且可正常启动"],
     taskDesc: `run case ${index}（【真实数据】须经真实请求链路，禁止伪造页面/假数据）`,
-    feature
+    feature,
+    ...overrides
   };
 }
 
@@ -102,6 +103,91 @@ test("suite task create: 解析最新份并落库", async () => {
   assert.deepEqual(tasks[0].refs, [{ caseSetId: newSet.id, featureKey: "f-登录-aaaa1111" }]);
   assert.ok(logs.some((line) => line.includes("登录流程")));
   assert.ok(logs.some((line) => line.includes(newer)));
+});
+
+test("suite run --task: secret 测试资料解析为占位符，台账保留模板", async () => {
+  const { runtime, store, proxy, newer } = await setupTaskProject({
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const rootPath = runtime.project.rootDir;
+  fs.writeFileSync(
+    newer,
+    JSON.stringify({
+      flows: [
+        caseEntry(1, "f-登录-aaaa1111", {
+          taskDesc: "登录邮箱 <secret:reg_email>，密码 <secret:reg_password>"
+        })
+      ]
+    }),
+    "utf-8"
+  );
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-materials-"));
+  const file = path.join(dir, "creds.txt");
+  fs.writeFileSync(file, "reg_email=qa@example.com\nreg_password=Secret@123\n", "utf-8");
+  try {
+    const mat = await store.createWebAsset({
+      rootPath,
+      kind: "materials",
+      filename: "creds.txt",
+      sha256: "f".repeat(64),
+      size: fs.statSync(file).size,
+      storagePath: file,
+      metadata: { secret: true }
+    });
+    const created = await runCli(runtime, [
+      "task",
+      "create",
+      "--ref",
+      "f-登录-aaaa1111",
+      "--materials",
+      mat.id
+    ]);
+    assert.equal(created.code, 0);
+    const tasks = await store.listRegressionTasks(rootPath);
+    assert.equal(tasks[0].materialsAssetId, mat.id);
+
+    const run = await runCli(runtime, [
+      "run",
+      "--task",
+      tasks[0].id,
+      "--device",
+      "emulator-5554"
+    ]);
+    assert.equal(run.code, 0);
+    const call = proxy.calls.find((entry) => entry.name === "mobile_run_task");
+    assert.equal(call.args.task_desc, "登录邮箱 qa@example.com，密码 Secret@123");
+    const stats = await store.listTasks(rootPath, 10);
+    assert.match(stats[0].taskDesc, /<secret:reg_email>/);
+    assert.doesNotMatch(stats[0].taskDesc, /qa@example\.com/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("suite run --task: 取消后不再启动后续用例集，也不登记空批次", async () => {
+  const { runtime, store, proxy } = await setupTaskProject();
+  await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--ref",
+    "f-下单-bbbb2222"
+  ]);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  const code = await runSuiteCommand(
+    ["run", "--task", tasks[0].id, "--device", "emulator-5554"],
+    {
+      buildRuntime: async () => ({ runtime, dispose: async () => {} }),
+      log: () => {},
+      errorLog: () => {},
+      shouldAbort: () => true
+    }
+  );
+  assert.equal(code, 2);
+  assert.equal(proxy.calls.filter((call) => call.name === "mobile_run_task").length, 0);
+  const runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
+  assert.equal(runs.length, 0, "取消后不登记空批次");
 });
 
 test("suite task create: 未知 key → exit 2 且列出可用 key", async () => {

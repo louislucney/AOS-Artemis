@@ -267,6 +267,7 @@ type PanelView =
       references: WebAssetRecord[];
       uploadKind?: "excel" | "package" | "materials" | "reference";
       tab?: "overview" | "case-sets" | "excel" | "packages" | "materials" | "reference";
+      archivedView?: boolean;
       sets?: CaseSetRecord[];
       usage?: Record<string, number>;
       mappings: ExcelMappingRecord[];
@@ -818,14 +819,17 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
           : "overview";
     const webProject = await projectStore.getWebProject(resolved.rootPath).catch(() => null);
     const usage = await buildAssetUsage(projectStore, resolved.rootPath);
+    const archivedView = url.searchParams.get("archived") === "1";
     const [excelAssets, packages, materials, references, mappings, sets] = await Promise.all([
-      listWebAssets(projectStore, resolved.rootPath, "excel"),
-      listWebAssets(projectStore, resolved.rootPath, "package"),
-      listWebAssets(projectStore, resolved.rootPath, "materials"),
-      listWebAssets(projectStore, resolved.rootPath, "reference"),
+      listWebAssets(projectStore, resolved.rootPath, "excel", { includeArchived: true }),
+      listWebAssets(projectStore, resolved.rootPath, "package", { includeArchived: true }),
+      listWebAssets(projectStore, resolved.rootPath, "materials", { includeArchived: true }),
+      listWebAssets(projectStore, resolved.rootPath, "reference", { includeArchived: true }),
       listExcelMappings(projectStore, resolved.rootPath),
       projectStore.listCaseSets(resolved.rootPath)
     ]);
+    const visible = (list: typeof excelAssets): typeof excelAssets =>
+      list.filter((asset) => ((asset.archivedAt ?? null) !== null) === archivedView);
     const uploadKindRaw = trimmed(url.searchParams.get("kind"));
     const uploadKind =
       uploadKindRaw === "package" || uploadKindRaw === "materials" || uploadKindRaw === "reference"
@@ -844,12 +848,13 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       rootLabel: resolved.name,
       projectStatus: webProject?.status ?? null,
       appPackage: webProject?.appPackage ?? null,
-      assets: excelAssets,
-      packages,
-      materials,
-      references,
+      assets: visible(excelAssets),
+      packages: visible(packages),
+      materials: visible(materials),
+      references: visible(references),
       uploadKind,
       tab,
+      archivedView,
       sets,
       usage: usage.assets,
       mappings
@@ -2992,6 +2997,62 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       "</header>",
       "<main>",
       '<section id="refs">',
+      '<section id="runtime">',
+      "<h2>运行资料</h2>",
+      renderTable(
+        ["项", "值"],
+        [
+          [
+            "应用包名",
+            detail.runtime.appPackage === null
+              ? '<span class="muted">—</span>'
+              : `<code>${escapeHtml(detail.runtime.appPackage)}</code>`
+          ],
+          [
+            "安装包",
+            detail.runtime.appAssetFilename === null
+              ? '<span class="muted">—</span>'
+              : escapeHtml(detail.runtime.appAssetFilename)
+          ],
+          [
+            "应用版本",
+            detail.runtime.appVersion === null
+              ? `<span class="muted">未采集${detail.runtime.appAssetFilename === null ? "" : "（可重新上传安装包后显示）"}</span>`
+              : `${escapeHtml(`v${detail.runtime.appVersion}`)}${
+                  detail.runtime.appBuild === null
+                    ? ""
+                    : ` <span class="muted">（build ${escapeHtml(detail.runtime.appBuild)}）</span>`
+                }`
+          ],
+          [
+            "执行机",
+            detail.runtime.runnerName === null
+              ? '<span class="muted">—</span>'
+              : `${escapeHtml(detail.runtime.runnerName)}${
+                  detail.runtime.runnerVersion === null
+                    ? ""
+                    : ` · v${escapeHtml(detail.runtime.runnerVersion)}`
+                }`
+          ],
+          [
+            "设备",
+            detail.runtime.deviceSerial === null
+              ? '<span class="muted">—</span>'
+              : `${escapeHtml(detail.runtime.deviceSerial)}${
+                  detail.runtime.deviceModel === null
+                    ? ""
+                    : ` · ${escapeHtml(detail.runtime.deviceModel)}`
+                }${
+                  detail.runtime.deviceOsVersion === null
+                    ? ""
+                    : ` · OS ${escapeHtml(detail.runtime.deviceOsVersion)}`
+                }`
+          ]
+        ],
+        "暂无运行资料",
+        "任务运行资料"
+      ),
+      "</section>",
       "<h2>引用用例集</h2>",
       renderTable(["功能", "用例集", "用例数", "存档路径"], refRows, "无引用", "任务引用用例集"),
       "</section>",

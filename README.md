@@ -146,9 +146,14 @@ node dist/cli.js host register <id|hostname> --label <名> --owner <人> \
 
 # 中心：定向创建回归任务（必须给目标机上的项目根路径）
 node dist/cli.js suite task create --host <id|hostname> --project <rootPath> \
-        --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>] [--app <package>]
+        --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>] [--app <package>] [--materials <secretMaterialsId>]
 node dist/cli.js suite task list --host <id|hostname> [--project <rootPath>]
 node dist/cli.js suite task cancel <taskId> --host <id|hostname> --project <rootPath> [--note <text>]
+
+# 测试资料字段映射（native 确定性填写）：secret JSON 可为 alias 附 target/screen；
+# native type 的 secretRef 可省略 target，执行器按映射定位并回读校验。
+# 先探测当前屏可编辑控件（只读、不输出输入值）：
+node dist/cli.js suite field-map probe --device <serial> [--json]
 
 # 项目机：本地取消（本机 + 本项目作用域，写取消来源与审计）
 node dist/cli.js suite task cancel <taskId> [--note <text>]
@@ -274,7 +279,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 
 | 版块 | 内容与动作 |
 |---|---|
-| `assets` **测试资产** | `overview\|case-sets\|excel\|packages\|materials\|reference`；用例集、Excel/CSV、安装包、测试资料、参考图统一管理；Excel 列映射/导入/上传需 maintainer+。本地注册项目（非网页创建）同样可上传资产/保存映射；归档项目仍拒绝写入。**导入前设计预检**：检测 Wireframe 与 `flows.json`/`ui-contract`，有索引时可选「设计增强导入 / 普通导入」并显示 exact/ambiguous/unmapped 覆盖；无索引或「更换设计来源」时选择 Figma URL / `.pen` / 无设计稿——Figma 与 `.pen` 等价，均提取为同一 flows.json 后回到同一映射预览。Figma 未带 node-id 时先列页面/画板清单（`?depth=2`）再选范围，避免整文件下载；Figma/pen 提取走后台 job（202 + jobId 轮询，显示已用时长），不阻塞 HTTP。Maestro 脚本集入口已移除。 |
+| `assets` **测试资产** | `overview\|case-sets\|excel\|packages\|materials\|reference`；用例集、Excel/CSV、安装包、测试资料、参考图统一管理；Excel 列映射/导入/上传需 maintainer+。本地注册项目（非网页创建）同样可上传资产/保存映射；归档项目仍拒绝写入。**资产归档/删除**：每个资产可「归档」（默认隐藏、不可再选，历史任务仍可读，可恢复；`?archived=1` 查看已归档）或「彻底删除」（仅未被任务/Excel 映射引用；共享内容保留文件，secret 资料删除明文；被引用返回 409 清单）。**导入前设计预检**：检测 Wireframe 与 `flows.json`/`ui-contract`，有索引时可选「设计增强导入 / 普通导入」并显示 exact/ambiguous/unmapped 覆盖；无索引或「更换设计来源」时选择 Figma URL / `.pen` / 无设计稿——Figma 与 `.pen` 等价，均提取为同一 flows.json 后回到同一映射预览。Figma 未带 node-id 时先列页面/画板清单（`?depth=2`）再选范围，避免整文件下载；Figma/pen 提取走后台 job（202 + jobId 轮询，显示已用时长），不阻塞 HTTP。Maestro 脚本集入口已移除。 |
 | `create` **新建测试** | 只保留套件回归四步下发向导；「② 参数」可选安装包（APK/IPA），执行机领取后先安装再跑用例，不要求设备预装；跨机 runner（如 Windows `win-runner-01`）可直接选用中心项目目录，不需要在 runner 主机重复登记项目；切换 host/project 保留已填表单；旧网页测试入口自动跳回套件回归。 |
 | `tasks` **任务与结果** | 套件回归任务列表（状态/设备/门禁/失败域），25 条/页分页并保留搜索/筛选；详情 `section=tasks&task=<id>` 展示运行/引用/跨端+重新派发/只重跑失败用例（`caseIds`），运行行可直接打开批次/轨迹/运行档案/失败分析；`view=review\|stats` 为待处理失败与统计子视图。历史 Web 任务数据保留但不在面板/对比计数中展示 |
 | `devices` **设备台账** | 设备列表（suite runner）：执行机在线/离线、平台、模拟器/真机、型号/系统版本、`空闲`/`占用`/`离线`、当前任务（设备租约）与到期、最后心跳、工具；带项目上下文时保留项目并给每行「去下发」入口；按 `state=idle|busy|offline`、`platform=android|ios` 过滤；空闲＝在线且无有效租约；页面只读、不展示 token/secret |
@@ -324,7 +329,7 @@ node dist/cli.js suite task cancel <taskId> [--note <text>]  # 取消：pending 
 
 - 设备盘点：adb devices（emulator-* 归 emulator）＋模拟器（darwin，仅 Booted 可用）＋真机 `idevice_id -l`（best-effort）；**真机 UDID 请用 `AOS_RUNNER_DEVICES="udid1,udid2"` 显式列入**（设了即覆盖全部来源）。
 - **控制面模式**：`MOBILE_TESTING_RUNNER_CONTROL_URL=http://<中心>:8765` + `MOBILE_TESTING_RUNNER_JOB_TOKEN`（≥16）后，suite runner 使用本地 FileStore + `/panel/api/runners/suite/*` 资源 API，任务/case set/run/租约/runner 注册/定时回归/审计走 HTTP；`suite run --task` 优先用 `GET /tasks/:id/bundle`（任务 + 项目 + 引用 case set），不打开中心 PG；suite 租约续租/释放也带 HMAC `leaseTokens`。
-- 命名与登记：`--name <n>`＝心跳/登记名（缺省 hostname）；runner 执行的任务设备运行 `suite_runs.runner` 记录该名（显式透传，不影响手动运行归因）。优雅退出（SIGINT/TERM、`--once` 结束）会把本实例行标记为陈旧，**立即重启可直接接管**（崩溃仍按 TTL 接管）。环境变量：`AOS_RUNNER_POLL_MS`（5000）、`AOS_RUNNER_HEARTBEAT_MS`（30000）、`AOS_RUNNER_TTL_MS`（在线判定，90000）、`AOS_RUNNER_MAX_ATTEMPTS`（失败重试上限，默认 3）、`MOBILE_TESTING_RUNNER_STALE_CLAIM_MS`（失联领取自动回收阈值，默认 900000＝15min，`0` 关闭；旧名 `AOS_RUNNER_STALE_CLAIM_MS` 兼容）、`AOS_TASK_MAX_RUNTIME_MS`（单任务执行上限（协作式中止），默认 0 关闭；超时按取消 `source=runner` 终结、不释放不重试）、`AOS_CANCEL_GRACE_MS`（离线取消宽限，默认 90000）、`AOS_RUNNER_PARTIAL_CLAIM`（`=1` 开启按端部分领取，默认关）、`AOS_APP_INSTALL_POLICY`（默认 `skip-if-present`：设备已安装同名包**且已安装 APK 的 sha256 与下发 APK 一致**时才跳过重复安装，避免设备只给“重新打开”而中止；不一致或未安装则安装；`always` 每次强制安装）、`AOS_ANDROID_INSTALL_MODE`（默认 `adb`：runner 用 streamed `adb install -r -t` 安装并复验 SHA；`artemis` 恢复交给 Artemis push+pm 的旧行为）、`AOS_RUNNER_RESTART_CHILD_PER_TASK`（默认 `1`：每个任务开始前重启 Artemis 子进程，清理上一个任务残留的设备锁/队列；`0` 关闭）、`AOS_RUNNER_ARTIFACT_PORT/HOST`、`AOS_RUNNER_ADVERTISE_URL`（可选覆盖；缺省自动取第一块非回环 IPv4。**生产优先用中心可解析的主机名/DNS 名，固定 IP 只作兜底**；新版本支持写入项目 `.env`，进程 env 优先）。
+- 命名与登记：`--name <n>`＝心跳/登记名（缺省 hostname）；runner 执行的任务设备运行 `suite_runs.runner` 记录该名（显式透传，不影响手动运行归因）。优雅退出（SIGINT/TERM、`--once` 结束）会把本实例行标记为陈旧，**立即重启可直接接管**（崩溃仍按 TTL 接管）。环境变量：`AOS_RUNNER_POLL_MS`（5000）、`AOS_RUNNER_HEARTBEAT_MS`（30000）、`AOS_RUNNER_TTL_MS`（在线判定，90000）、`AOS_RUNNER_MAX_ATTEMPTS`（失败重试上限，默认 3）、`MOBILE_TESTING_RUNNER_STALE_CLAIM_MS`（失联领取自动回收阈值，默认 900000＝15min，`0` 关闭；旧名 `AOS_RUNNER_STALE_CLAIM_MS` 兼容）、`AOS_TASK_MAX_RUNTIME_MS`（单任务执行上限（协作式中止），默认 0 关闭；超时按取消 `source=runner` 终结、不释放不重试）、`AOS_CANCEL_GRACE_MS`（离线取消宽限，默认 90000）、`AOS_RUNNER_PARTIAL_CLAIM`（`=1` 开启按端部分领取，默认关）、`AOS_APP_INSTALL_POLICY`（默认 `skip-if-present`：设备已安装同名包**且已安装 APK 的 sha256 与下发 APK 一致**时才跳过重复安装，避免设备只给“重新打开”而中止；不一致或未安装则安装；`always` 每次强制安装）、`AOS_ANDROID_INSTALL_MODE`（默认 `adb`：runner 用 streamed `adb install -r -t` 安装并复验 SHA；`artemis` **已停用**——Artemis 安装冲突时会卸载应用并清空数据，设置后仅告警并回退 adb）、`AOS_RUNNER_RESTART_CHILD_PER_TASK`（默认 `1`：每个任务开始前重启 Artemis 子进程，清理上一个任务残留的设备锁/队列；`0` 关闭）、`AOS_RUNNER_ARTIFACT_PORT/HOST`、`AOS_RUNNER_ADVERTISE_URL`（可选覆盖；缺省自动取第一块非回环 IPv4。**生产优先用中心可解析的主机名/DNS 名，固定 IP 只作兜底**；新版本支持写入项目 `.env`，进程 env 优先）。
 - 失败重试：任务未达终态（如引用用例集失效、执行前置失败）自动释放重试；**连续失败达上限置 `failed`**（不再自动重试、不阻塞后续任务；修复引用后请新建任务）。`suite task release` 对 `claimed_by` 为空的数据异常态需配 `--force`。
 - 领取条件：**任务目标端 ⊆ 该 runner 的设备端集合**（缺端不领）；**双端任务需单机双端 runner**（两端分属两台机时请拆单端任务或手动执行）；面板对「pending 且无 runner 可覆盖」会给提示。默认严格子集；设 `AOS_RUNNER_PARTIAL_CLAIM=1` 后可**按端部分领取**——仅当**无任一在线 runner 可全覆盖**该任务时按交集端领取（完全覆盖仍优先，双端齐备在场时绝不部分抢占）；缺端**不自动补跑**、不新增状态字段，仅领取日志「部分端执行（缺 X——在线无全覆盖执行机）」＋执行侧既有缺端标注；**端覆盖审计反推口径**＝任务 `runIds` 关联的 `suite_runs.platform` 集合 vs 任务 `platforms`（统计下钻分母按实际已跑端）。
 - 产物预览与风险：只读服务默认监听 `0.0.0.0`（LAN 预览所需；启动打印醒目告警）；**可选令牌 `AOS_RUNNER_ARTIFACT_TOKEN`**——设置后 `/artifact*` 强制认证（Bearer/Basic/`?t=`，`GET|HEAD /healthz` 豁免，见「鉴权」段），未设则维持「无鉴权」内网口径；暴露范围＝项目 `.artemis`（**含 `logs/` 与 `crashes/`**）；`--artifact-port 0` 关闭。同一项目**勿双开同名 runner**（会互相释放/领取）。
@@ -392,7 +397,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.6-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.14-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -673,7 +678,7 @@ node dist/cli.js suite report [--limit N] [--case <caseId|semanticId|displayId>]
                            [--update-tests [--tests-xlsx <path>]]
 node dist/cli.js suite feedback [--min-failures N]
 node dist/cli.js suite reconcile list|confirm|reject [--from <screen> --to <screen>] [--reviewer <name>] [--note <text>] [--json]
-node dist/cli.js suite task create --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>] [--app <package>]
+node dist/cli.js suite task create --ref <featureKey>... [--platform ios|android]... [--baseline latest|none] [--app-asset <packageAssetId>] [--app <package>] [--materials <materialsAssetId>]
 node dist/cli.js suite task list|show <id> [--json]
 node dist/cli.js suite task create|list|cancel --host <id|hostname> --project <rootPath> ...   # 中心模式（仅 PG）
 node dist/cli.js suite queue status|pause|resume [--host <id|hostname>] [--note <text>] [--json]

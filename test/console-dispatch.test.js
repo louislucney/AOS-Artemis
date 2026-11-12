@@ -471,6 +471,73 @@ test("dispatch preview: 可选安装包并进入表单/签名", async () => {
   assert.match(dispatchFormSignature(params), /com\.example\.app/);
 });
 
+test("dispatch preview: 可选 secret 测试资料并进入表单/签名", async () => {
+  const { store, setA } = await seed();
+  const mat = await store.createWebAsset({
+    rootPath: ROOT,
+    kind: "materials",
+    filename: "virtual-card-reg.txt",
+    sha256: "c".repeat(64),
+    size: 175,
+    storagePath: "/w/p/.artemis/web/assets/materials/card.txt",
+    metadata: { secret: true }
+  });
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: setA.id,
+    platforms: "android",
+    materialsAssetId: mat.id
+  });
+  const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
+  assert.equal(preview.materialsAssetId, mat.id);
+  assert.equal(preview.materials.length, 1);
+  assert.equal(preview.materials[0].secret, true);
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId: dispatchPreviewId(preview, dispatchFormSignature(params), ROOT),
+    formSignature: dispatchFormSignature(params),
+    query: Object.fromEntries(params)
+  });
+  assert.match(html, /name="materialsAssetId"/);
+  assert.match(html, /virtual-card-reg\.txt/);
+  assert.match(html, /secret/);
+  assert.match(dispatchFormSignature(params), new RegExp(mat.id));
+});
+
+test("dispatch preview: 非 secret 测试资料不可选并给警告", async () => {
+  const { store, setA } = await seed();
+  const mat = await store.createWebAsset({
+    rootPath: ROOT,
+    kind: "materials",
+    filename: "plain.txt",
+    sha256: "d".repeat(64),
+    size: 10,
+    storagePath: "/w/p/.artemis/web/assets/materials/plain.txt",
+    metadata: {}
+  });
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: setA.id,
+    platforms: "android",
+    materialsAssetId: mat.id
+  });
+  const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
+  assert.equal(preview.materialsAssetId, null);
+  assert.match(preview.warnings.join(" "), /未标记 secret/);
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId: dispatchPreviewId(preview, dispatchFormSignature(params), ROOT),
+    formSignature: dispatchFormSignature(params),
+    query: Object.fromEntries(params)
+  });
+  assert.match(html, /未标记 secret/);
+  assert.match(html, new RegExp(`value="${mat.id}"[^>]*disabled`), "非 secret 选项禁用");
+});
+
 test("dispatch preview: 从安装包自动识别包名，不再显示手填输入", async () => {
   const { store, setA } = await seed();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-apk-"));

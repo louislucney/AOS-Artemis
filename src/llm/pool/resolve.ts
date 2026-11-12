@@ -171,8 +171,9 @@ export async function resolveCenterLlmCandidates(
   const entries = await store.listLlms(rootPath);
   const entry = selectEntry(entries);
   if (entry !== null) {
-    if (entry.poolTokenId !== null) {
-      return poolResolution(store, env, entry, entry.poolTokenId);
+    const poolTokenId = entry.poolTokenId ?? null;
+    if (poolTokenId !== null) {
+      return poolResolution(store, env, entry, poolTokenId);
     }
     return {
       entryName: entry.name,

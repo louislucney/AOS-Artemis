@@ -39,6 +39,12 @@ export interface StructuredAction {
   expect?: StructuredActionExpect;
   timeoutMs?: number;
   optional?: boolean;
+  /** secretRef 填写后回读校验（默认 true；密码类自动跳过）。 */
+  verify?: boolean;
+  /** 输入前清空已有文本；secretRef 默认 true，其他默认 false。 */
+  clear?: boolean;
+  /** 输入后收起键盘；默认 true（设备不支持时跳过）。 */
+  hideKeyboard?: boolean;
 }
 
 export interface StructuredActionValidation {
@@ -148,12 +154,17 @@ export function validateStructuredActions(
       : [];
     const input = inputOf(record.input);
     const expect = expectOf(record.expect);
-    if ((action === "tap" || action === "type") && target === null) {
-      errors.push(`actions[${index}] ${action} 缺少有效 target`);
+    if (action === "tap" && target === null) {
+      errors.push(`actions[${index}] tap 缺少有效 target`);
       return;
     }
     if (action === "type" && input === null) {
       errors.push(`actions[${index}] type 缺少有效 input（text/secretRef）`);
+      return;
+    }
+    // secretRef 允许省略 target：执行期从 secret 资料的字段映射解析。
+    if (action === "type" && target === null && input?.kind !== "secretRef") {
+      errors.push(`actions[${index}] type(text) 缺少有效 target`);
       return;
     }
     const timeoutMs =
@@ -168,7 +179,10 @@ export function validateStructuredActions(
       ...(input === null ? {} : { input }),
       ...(expect === null ? {} : { expect }),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
-      ...(record.optional === true ? { optional: true } : {})
+      ...(record.optional === true ? { optional: true } : {}),
+      ...(record.verify === false ? { verify: false } : {}),
+      ...(record.clear === true ? { clear: true } : {}),
+      ...(record.hideKeyboard === false ? { hideKeyboard: false } : {})
     });
     seenSteps.add(stepIndex);
   });

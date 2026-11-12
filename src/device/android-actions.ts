@@ -152,6 +152,21 @@ export function createAdbAndroidDevice(
       ]);
       return { mode: "type" };
     },
+    async clearText(length) {
+      const count = Math.min(Math.max(1, Math.trunc(length)), 200);
+      await shell(["input", "keyevent", "KEYCODE_MOVE_END"]);
+      await shell([
+        "input",
+        "keyevent",
+        ...Array.from({ length: count }, () => "KEYCODE_DEL")
+      ]);
+    },
+    async hideKeyboard() {
+      const state = await shell(["dumpsys", "input_method"]).catch(() => "");
+      if (/mInputShown=true/.test(state)) {
+        await shell(["input", "keyevent", "KEYCODE_BACK"]);
+      }
+    },
     async launch(appId) {
       await shell(["monkey", "-p", appId, "-c", "android.intent.category.LAUNCHER", "1"]);
     },

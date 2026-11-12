@@ -43,6 +43,28 @@ test("structured actions: 合法动作解析、补全与 engine 选择", () => {
   );
 });
 
+test("structured actions: secretRef type 可省略 target（执行期按字段映射解析）", () => {
+  const validation = validateStructuredActions(
+    [
+      {
+        stepIndex: 0,
+        action: "type",
+        input: { kind: "secretRef", ref: "reg_email" },
+        expect: { hints: ["注册"] }
+      }
+    ],
+    1
+  );
+  assert.deepEqual(validation.errors, []);
+  assert.equal(validation.actions[0].target, undefined);
+
+  const textWithoutTarget = validateStructuredActions(
+    [{ stepIndex: 0, action: "type", input: { kind: "text", text: "qa" } }],
+    1
+  );
+  assert.ok(textWithoutTarget.errors.some((error) => error.includes("缺少有效 target")));
+});
+
 test("structured actions: 非法 stepIndex/target/action/重复显式报错", () => {
   const validation = validateStructuredActions(
     [

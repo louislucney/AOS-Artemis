@@ -1582,14 +1582,36 @@ export class FileStore implements ProjectStore {
     return record;
   }
 
-  async listWebAssets(rootPath: string, kind?: WebAssetKind): Promise<WebAssetRecord[]> {
+  async listWebAssets(
+    rootPath: string,
+    kind?: WebAssetKind,
+    options: { includeArchived?: boolean } = {}
+  ): Promise<WebAssetRecord[]> {
     const bucket = await this.bucket(rootPath);
-    return this.scopedMem(bucket, this.hostId).listWebAssets(rootPath, kind);
+    return this.scopedMem(bucket, this.hostId).listWebAssets(rootPath, kind, options);
   }
 
   async getWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null> {
     const bucket = await this.bucket(rootPath);
     return this.scopedMem(bucket, this.hostId).getWebAsset(rootPath, id);
+  }
+
+  async setWebAssetArchived(rootPath: string, id: string, archived: boolean): Promise<boolean> {
+    const bucket = await this.bucket(rootPath);
+    const updated = await this.scopedMem(bucket, this.hostId).setWebAssetArchived(
+      rootPath,
+      id,
+      archived
+    );
+    if (updated) await this.persist(bucket, "setWebAssetArchived");
+    return updated;
+  }
+
+  async deleteWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null> {
+    const bucket = await this.bucket(rootPath);
+    const removed = await this.scopedMem(bucket, this.hostId).deleteWebAsset(rootPath, id);
+    if (removed !== null) await this.persist(bucket, "deleteWebAsset");
+    return removed;
   }
 
   async saveExcelMapping(input: SaveExcelMappingInput): Promise<ExcelMappingRecord> {

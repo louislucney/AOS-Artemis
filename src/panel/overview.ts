@@ -313,6 +313,18 @@ export interface PanelTaskRunView {
 
 export interface PanelTaskDetail {
   task: RegressionTaskRecord;
+  /** 运行资料（应用/安装包/执行机/设备版本，best-effort）。 */
+  runtime: {
+    appPackage: string | null;
+    appAssetFilename: string | null;
+    appVersion: string | null;
+    appBuild: string | null;
+    runnerName: string | null;
+    runnerVersion: string | null;
+    deviceSerial: string | null;
+    deviceModel: string | null;
+    deviceOsVersion: string | null;
+  };
   refs: Array<{
     caseSetId: string;
     featureKey: string;
@@ -1524,6 +1536,46 @@ export async function buildPanelTaskDetail(
     ? (runners.find((entry) => entry.id === task.claimedBy) ?? null)
     : null;
 
+  const latestRun = runs[0] ?? null;
+  const appAsset =
+    task.appAssetId === null
+      ? null
+      : await deps.store.getWebAsset(rootPath, task.appAssetId).catch(() => null);
+  const assetMeta = appAsset?.metadata ?? {};
+  const metaString = (key: string): string | null => {
+    const value = assetMeta[key];
+    return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+  };
+  const filenameVersion = ((): { version: string | null; build: string | null } => {
+    const filename = appAsset?.filename ?? "";
+    const match = /(\d+\.\d+(?:\.\d+){0,2})(?:[_-]b(\d+))?/i.exec(filename);
+    return {
+      version: match?.[1] ?? null,
+      build: match?.[2] === undefined ? null : match[2]
+    };
+  })();
+  const runnerName = task.claimedBy ?? latestRun?.runner ?? null;
+  const taskRunner =
+    runnerName === null
+      ? null
+      : (runners.find((entry) => entry.id === runnerName || entry.name === runnerName) ?? null);
+  const deviceSerial = latestRun?.device ?? task.deviceSerial ?? null;
+  const device =
+    taskRunner === null || deviceSerial === null
+      ? null
+      : (taskRunner.devices.find((entry) => entry.serial === deviceSerial) ?? null);
+  const runtime = {
+    appPackage: task.appPackage ?? metaString("appId"),
+    appAssetFilename: appAsset?.filename ?? null,
+    appVersion: latestRun?.appVersion ?? metaString("appVersion") ?? filenameVersion.version,
+    appBuild: metaString("build") ?? filenameVersion.build,
+    runnerName: taskRunner?.name ?? runnerName,
+    runnerVersion: taskRunner?.version ?? null,
+    deviceSerial,
+    deviceModel: device?.model ?? null,
+    deviceOsVersion: device?.osVersion ?? null
+  };
+
   const base = runner?.artifactBaseUrl ?? null;
   const runViews: PanelTaskRunView[] = runs.map((run) => ({
     runId: run.id,
@@ -1549,7 +1601,7 @@ export async function buildPanelTaskDetail(
     xlsxUrl: artifactUrl(base, rootPath, ref.xlsxPath)
   }));
 
-  return { task, refs: refViews, runs: runViews, crossPlatform, runner, runners, warnings };
+  return { task, refs: refViews, runs: runViews, crossPlatform, runner, runners, runtime, warnings };
 }
 
 /** 归因队列（DESIGN：回归服务 §5.7）：最近 N 次运行的全部失败用例；

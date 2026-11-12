@@ -386,6 +386,80 @@ test("console actions: 服务端重解析（case-set/keyword 不信客户端 ref
   assert.equal(noHit.status, 400);
 });
 
+test("console actions: 套件回归可挂 secret 测试资料（非 secret/错类型拒绝）", async () => {
+  const { deps, rootPath, store } = await setup();
+  const set = await store.recordCaseSet({
+    rootPath,
+    source: "figma:x",
+    basename: "登录回归",
+    features: [
+      { key: "f-1", name: "登录", caseCount: 1, screens: [], jsonPath: "/x/a.json", mdPath: "/x/a.md", xlsxPath: "/x/a.xlsx" }
+    ]
+  });
+  const secret = await store.createWebAsset({
+    rootPath,
+    kind: "materials",
+    filename: "card.txt",
+    sha256: "c".repeat(64),
+    size: 20,
+    storagePath: "/x/card.txt",
+    metadata: { secret: true }
+  });
+  const plain = await store.createWebAsset({
+    rootPath,
+    kind: "materials",
+    filename: "plain.txt",
+    sha256: "d".repeat(64),
+    size: 20,
+    storagePath: "/x/plain.txt",
+    metadata: {}
+  });
+  const pkg = await store.createWebAsset({
+    rootPath,
+    kind: "package",
+    filename: "app.apk",
+    sha256: "e".repeat(64),
+    size: 20,
+    storagePath: "/x/app.apk"
+  });
+
+  const ok = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: set.id,
+      materialsAssetId: secret.id
+    }),
+    deps
+  );
+  assert.equal(ok.status, 200);
+  assert.equal(JSON.parse(ok.body).task.materialsAssetId, secret.id);
+
+  const nonSecret = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: set.id,
+      materialsAssetId: plain.id
+    }),
+    deps
+  );
+  assert.equal(nonSecret.status, 400);
+  assert.match(nonSecret.body, /未标记 secret/);
+
+  const wrongKind = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: set.id,
+      materialsAssetId: pkg.id
+    }),
+    deps
+  );
+  assert.equal(wrongKind.status, 400);
+  assert.match(wrongKind.body, /未知测试资料资产/);
+});
+
 test("console actions: 下发预览合同（previewId 复算；改端/范围变化 409；缺省向后兼容）", async () => {
   const { deps, rootPath, store } = await setup();
   const set = await store.recordCaseSet({

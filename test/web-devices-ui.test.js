@@ -158,6 +158,22 @@ test("devices page: idle/platform filters only hide non-matching rows", async (t
   assert.match(ios, /当前筛选下没有设备/);
 });
 
+test("devices page: 指定项目时保留项目导航；离线执行机不再显示「去下发」", async (t) => {
+  const { store, rootPath, workspace } = await setup(t);
+  const html = await page(store, workspace, `&project=${encodeURIComponent(rootPath)}`);
+  assert.match(html, /当前项目：/);
+  assert.match(html, /section=tasks#tasks/, "项目级导航保留");
+  assert.match(html, /section=create/, "新建测试导航保留");
+  assert.doesNotMatch(html, /进入任一项目后显示项目级版块/);
+  assert.match(html, /执行机离线/);
+  assert.match(html, /href="\/panel\?section=devices#runner-download"/);
+  assert.equal(
+    (html.match(/>去下发</g) ?? []).length,
+    2,
+    "仅在线设备显示去下发（idle + busy），离线的 R58M12345 不显示"
+  );
+});
+
 test("devices page: pending suite task without a lease does not mark the device busy", async (t) => {
   const { store, rootPath, workspace } = await setup(t);
   await store.createRegressionTask({
@@ -275,9 +291,13 @@ test("devices page: offline device cannot dispatch", async (t) => {
   const html = await page(store, workspace, `&project=${encodeURIComponent(rootPath)}`);
   const index = html.indexOf("R58M12345");
   assert.ok(index >= 0);
-  const segment = html.slice(Math.max(0, index - 900), index + 500);
-  assert.match(segment, /disabled title="执行机离线/, "离线设备禁用去下发");
-  assert.doesNotMatch(segment, /section=create&amp;type=suite/, "离线设备不渲染可点下发链接");
+  const rowStart = html.lastIndexOf("<tr>", index);
+  const rowEnd = html.indexOf("</tr>", index);
+  const segment = html.slice(rowStart === -1 ? 0 : rowStart, rowEnd === -1 ? html.length : rowEnd);
+  assert.match(segment, /执行机离线/, "离线设备明确标注");
+  assert.doesNotMatch(segment, /去下发/, "离线设备不显示去下发");
+  assert.doesNotMatch(segment, /section=create&amp;type=suite/, "离线设备不渲染下发链接");
+  assert.match(segment, /#runner-download/, "给出接入执行机入口");
 });
 
 test("devices page: preserves project context and offers dispatch action", async (t) => {

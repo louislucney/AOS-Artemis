@@ -15,6 +15,7 @@ export function createHybridSuiteStore(
     getRegressionTask: (rootPath, id) => client.getRegressionTask(rootPath, id),
     getTaskBundle: (rootPath, id) => client.getTaskBundle(rootPath, id),
     downloadTaskApp: (rootPath, id) => client.downloadTaskApp(rootPath, id),
+    downloadTaskMaterials: (rootPath, id) => client.downloadTaskMaterials(rootPath, id),
     updateRegressionTask: (rootPath, id, patch) =>
       client.updateRegressionTask(rootPath, id, patch),
     listCaseSets: (rootPath, limit) => client.listCaseSets(rootPath, limit),

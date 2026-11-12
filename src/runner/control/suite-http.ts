@@ -61,7 +61,7 @@ export async function handleSuiteControlRequest(
       instanceId,
       input.publicBaseUrl ?? ""
     );
-    if (route.op === "getTaskApp") {
+    if (route.op === "getTaskApp" || route.op === "getTaskMaterials") {
       const value = (await service.execute(route.op, route.args)) as {
         filename: string;
         sha256: string;
@@ -70,9 +70,12 @@ export async function handleSuiteControlRequest(
       };
       return {
         status: 200,
-        contentType: value.filename.toLowerCase().endsWith(".ipa")
-          ? "application/octet-stream"
-          : "application/vnd.android.package-archive",
+        contentType:
+          route.op === "getTaskMaterials"
+            ? "text/plain; charset=utf-8"
+            : value.filename.toLowerCase().endsWith(".ipa")
+              ? "application/octet-stream"
+              : "application/vnd.android.package-archive",
         body: "",
         streamPath: value.filePath,
         streamSize: value.size,

@@ -49,7 +49,7 @@ New-NetFirewallRule -DisplayName "mobile-testing runner artifacts" -Direction In
 
 ### 安装策略（已安装同包）
 
-任务带安装包时，runner 会先查设备是否已安装同名包，并比较**已安装 APK 的 sha256 与下发 APK 的 sha256**；两者一致才默认**跳过安装并直接启动**，避免部分设备（vivo 等）在重复安装时只给“重新打开”而中止安装。不一致或未安装时由 runner 用 **streamed `adb install -r -t`** 安装（默认），安装后再复验 SHA；`AOS_ANDROID_INSTALL_MODE=artemis` 可恢复交给 Artemis 安装的旧路径。需要强制更新时在 `project\.env` 设：
+任务带安装包时，runner 会先查设备是否已安装同名包，并比较**已安装 APK 的 sha256 与下发 APK 的 sha256**；两者一致才默认**跳过安装并直接启动**，避免部分设备（vivo 等）在重复安装时只给“重新打开”而中止安装。不一致或未安装时由 runner 用 **streamed `adb install -r -t`** 安装（默认），安装后再复验 SHA；`AOS_ANDROID_INSTALL_MODE=artemis` **已停用**（Artemis 安装冲突时会卸载应用并清空数据，设置后仅告警并回退 adb）。需要强制更新时在 `project\.env` 设：
 
 ```dotenv
 AOS_APP_INSTALL_POLICY=always
@@ -64,7 +64,7 @@ AOS_APP_INSTALL_POLICY=always
 启动脚本已固定 `UV_PYTHON=3.12`、`UV_SYSTEM_CERTS=1`。如果 `uv` 仍选 3.13，先 `uv python find 3.12`。如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler）：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.6-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.14-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -80,7 +80,7 @@ $env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 `依赖已就绪` 只代表 lock 匹配，不代表 venv 能导入。常见原因是旧 `.venv` 不是 Python 3.12（离线依赖按 3.12 打包）或上次安装半途中断：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.6-win32-x64-offline
+cd C:\RUNNER\aos-artemis-runner-0.3.14-win32-x64-offline
 Remove-Item -Recurse -Force .\artemis\.venv
 .\setup-offline.cmd
 ```

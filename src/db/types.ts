@@ -39,6 +39,8 @@ export interface WebAssetRecord {
   storagePath: string;
   uploadedBy: string | null;
   createdAt: string;
+  /** 归档时间；归档资产默认不出现在列表/选择器，但历史引用仍可读取。 */
+  archivedAt?: string | null;
   metadata: Record<string, unknown>;
 }
 
@@ -741,6 +743,8 @@ export interface RegressionTaskRecord {
   appAssetId: string | null;
   /** 可选应用包名（Android package / iOS bundle id）；runner 用它锁定并启动被测应用。 */
   appPackage: string | null;
+  /** 可选测试资料资产 id（materials，secret=true 时按 alias=value/JSON 解析为占位符）；runner 执行前下载。 */
+  materialsAssetId: string | null;
   /** 可选用例过滤（重跑失败用例）：runner 仅执行这些 caseId；空＝全部。 */
   caseIds: string[];
   /** runner 主动上报的最新执行进度；旧任务为 null。 */
@@ -765,6 +769,7 @@ export function normalizeRegressionTask(record: RegressionTaskRecord): Regressio
     deviceLeaseId: record.deviceLeaseId ?? null,
     appAssetId: record.appAssetId ?? null,
     appPackage: record.appPackage ?? null,
+    materialsAssetId: record.materialsAssetId ?? null,
     caseIds: record.caseIds ?? [],
     progress: record.progress ?? null
   };
@@ -1179,6 +1184,7 @@ export interface CreateRegressionTaskInput {
   deviceLeaseId?: string | null;
   appAssetId?: string | null;
   appPackage?: string | null;
+  materialsAssetId?: string | null;
   caseIds?: string[];
   progress?: TaskProgress | null;
 }
@@ -1257,9 +1263,22 @@ export interface ProjectStore {
     flows?: { path: string; content: string } | null;
     /** 任务选择的安装包元数据（runner 通过控制面下载；不含中心路径）。 */
     appAsset?: { id: string; filename: string; sha256: string; size: number } | null;
+    /** 任务选择的测试资料元数据（runner 通过控制面下载；secret 决定是否解析占位符）。 */
+    materialsAsset?: {
+      id: string;
+      filename: string;
+      sha256: string;
+      size: number;
+      secret: boolean;
+    } | null;
   }>;
   /** runner 控制面：下载任务选择的安装包（仅远程 client 实现）。 */
   downloadTaskApp?(
+    rootPath: string,
+    id: string
+  ): Promise<{ filename: string; sha256: string; size: number; buffer: Buffer } | null>;
+  /** runner 控制面：下载任务选择的测试资料（仅远程 client 实现）。 */
+  downloadTaskMaterials?(
     rootPath: string,
     id: string
   ): Promise<{ filename: string; sha256: string; size: number; buffer: Buffer } | null>;
@@ -1554,9 +1573,17 @@ export interface ProjectStore {
   linkWebProjectProjectId(rootPath: string, projectId: string): Promise<boolean>;
   /** 登记 Web 资产；version＝同 rootPath+kind 最大 version+1（同内容也递增，文件由调用方复用）。 */
   createWebAsset(input: CreateWebAssetInput): Promise<WebAssetRecord>;
-  /** 新→旧（version DESC, id DESC）；`kind` 缺省为全部。 */
-  listWebAssets(rootPath: string, kind?: WebAssetKind): Promise<WebAssetRecord[]>;
+  /** 新→旧（version DESC, id DESC）；`kind` 缺省为全部；默认排除已归档。 */
+  listWebAssets(
+    rootPath: string,
+    kind?: WebAssetKind,
+    options?: { includeArchived?: boolean }
+  ): Promise<WebAssetRecord[]>;
   getWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null>;
+  /** 归档/恢复（归档后默认不出现在列表与选择器；历史引用仍可读取）。 */
+  setWebAssetArchived(rootPath: string, id: string, archived: boolean): Promise<boolean>;
+  /** 彻底删除资产记录（文件由调用方按引用/共享判断后清理）。 */
+  deleteWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null>;
   /** 按 `(rootPath, assetId, headerFingerprint)` 幂等 upsert：同键覆盖 columnMap，保留 id/createdAt。 */
   saveExcelMapping(input: SaveExcelMappingInput): Promise<ExcelMappingRecord>;
   findExcelMapping(

@@ -755,6 +755,14 @@ test("suite control: default project + bundle documents allow a different runner
     filename: "app-release.apk",
     buffer: Buffer.from("fake-apk-bytes")
   });
+  const materials = await storeWebAsset({
+    store: central.store,
+    rootPath: central.rootPath,
+    kind: "materials",
+    filename: "virtual-card-reg.txt",
+    buffer: Buffer.from("reg_email=qa@example.com\n"),
+    metadata: { secret: true }
+  });
   const task = await central.store.createRegressionTask({
     rootPath: central.rootPath,
     refs: [{ caseSetId: caseSet.id, featureKey: "login" }],
@@ -762,7 +770,8 @@ test("suite control: default project + bundle documents allow a different runner
     baseline: "latest",
     targetHostId: HOST,
     appAssetId: app.id,
-    appPackage: "com.example.app"
+    appPackage: "com.example.app",
+    materialsAssetId: materials.id
   });
   const localDir = makeTempProject({ config: baseConfig() });
   const workspaceRoot = await makeWorkspace();
@@ -797,7 +806,20 @@ test("suite control: default project + bundle documents allow a different runner
         assert.match(bundlePayload.value.flows.content, /screens/);
         assert.equal(bundlePayload.value.appAsset.id, app.id);
         assert.equal(bundlePayload.value.appAsset.filename, "app-release.apk");
+        assert.equal(bundlePayload.value.materialsAsset.id, materials.id);
+        assert.equal(bundlePayload.value.materialsAsset.secret, true);
         assert.equal(bundlePayload.value.task.appPackage, "com.example.app");
+
+        const materialsResponse = await fetch(
+          `${baseUrl}/panel/api/runners/suite/tasks/${encodeURIComponent(task.id)}/materials?rootPath=${encodeURIComponent(central.rootPath)}`,
+          { headers }
+        );
+        assert.equal(materialsResponse.status, 200);
+        assert.equal(materialsResponse.headers.get("x-aos-sha256"), materials.sha256);
+        assert.equal(
+          Buffer.from(await materialsResponse.arrayBuffer()).toString(),
+          "reg_email=qa@example.com\n"
+        );
 
         const appResponse = await fetch(
           `${baseUrl}/panel/api/runners/suite/tasks/${encodeURIComponent(task.id)}/app?rootPath=${encodeURIComponent(central.rootPath)}`,
@@ -822,9 +844,16 @@ test("suite control: default project + bundle documents allow a different runner
           const remoteBundle = await built.runtime.store.getTaskBundle?.(localDir, task.id);
           assert.equal(remoteBundle?.documents?.length, 1);
           assert.equal(remoteBundle?.appAsset?.id, app.id);
+          assert.equal(remoteBundle?.materialsAsset?.id, materials.id);
           const downloaded = await built.runtime.store.downloadTaskApp?.(localDir, task.id);
           assert.equal(downloaded?.filename, "app-release.apk");
           assert.equal(downloaded?.buffer.toString(), "fake-apk-bytes");
+          const downloadedMaterials = await built.runtime.store.downloadTaskMaterials?.(
+            localDir,
+            task.id
+          );
+          assert.equal(downloadedMaterials?.filename, "virtual-card-reg.txt");
+          assert.equal(downloadedMaterials?.buffer.toString(), "reg_email=qa@example.com\n");
           const projectAfter = await central.store.getProjectByPath(central.rootPath);
           assert.equal(projectAfter?.name, path.basename(central.rootPath));
         } finally {

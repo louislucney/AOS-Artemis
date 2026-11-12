@@ -21,6 +21,7 @@ import {
   taskProgressLabel
 } from "../dist/panel/overview.js";
 import { serviceRepoRoot } from "../dist/project-visibility.js";
+import { storeWebAsset } from "../dist/web/assets.js";
 import { baseConfig, makeTempDir, makeTempProject } from "./helpers.js";
 
 async function makePgStore() {
@@ -660,6 +661,65 @@ test("panel detail: buildPanelTaskDetail（引用解析/设备运行/对比/跨�
   assert.equal(projectDetail.tasks[0].runIds, 2);
 
   assert.equal(await buildPanelTaskDetail(deps, dir, "task-nope"), null);
+});
+
+test("panel detail: 运行资料（应用/安装包版本、执行机版本、设备 OS）", async () => {
+  const store = await makePgStore();
+  const repo = makeReadyRepo();
+  const dir = makeTempProject({ config: baseConfig(), dotenv: COMPLETE_DOTENV });
+  await store.upsertProject({ rootPath: dir, name: "runtime-app" });
+  const asset = await storeWebAsset({
+    store,
+    rootPath: dir,
+    kind: "package",
+    filename: "Esso_AOS_GuamSaipanDevRelease_2.0.0_b1_20261109.apk",
+    buffer: Buffer.from("not-a-real-apk")
+  });
+  const runner = await store.upsertRunner({
+    rootPath: dir,
+    name: "win-runner-01",
+    hostname: "CN2368578W1",
+    platforms: ["android"],
+    devices: [
+      {
+        serial: "10CF6609P900059",
+        name: "",
+        model: "V2453A",
+        osVersion: "16",
+        platform: "android",
+        kind: "device",
+        state: "device"
+      }
+    ],
+    tools: { adb: true, idb: false, simctl: false, ideviceId: false, appium: false },
+    version: "0.3.10",
+    hostId: "win-runner-01"
+  });
+  const task = await store.createRegressionTask({
+    rootPath: dir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["android"],
+    baseline: "latest",
+    appAssetId: asset.id,
+    appPackage: "com.exxonmobil.mobil.gusp.dev",
+    deviceSerial: "10CF6609P900059"
+  });
+  await store.updateRegressionTask(dir, task.id, {
+    status: "running",
+    claimedBy: runner.id
+  });
+
+  const detail = await buildPanelTaskDetail({ store, serviceRepo: repo, buildStale: false, env: {} }, dir, task.id);
+  assert.ok(detail);
+  assert.equal(detail.runtime.appPackage, "com.exxonmobil.mobil.gusp.dev");
+  assert.match(detail.runtime.appAssetFilename ?? "", /2\.0\.0/);
+  assert.equal(detail.runtime.appVersion, "2.0.0", "文件名版本兜底");
+  assert.equal(detail.runtime.appBuild, "1");
+  assert.equal(detail.runtime.runnerName, "win-runner-01");
+  assert.equal(detail.runtime.runnerVersion, "0.3.10");
+  assert.equal(detail.runtime.deviceSerial, "10CF6609P900059");
+  assert.equal(detail.runtime.deviceModel, "V2453A");
+  assert.equal(detail.runtime.deviceOsVersion, "16");
 });
 
 test("panel detail: 归因队列聚合（未裁决在前、初判字段、已裁决展示）", async () => {

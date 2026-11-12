@@ -75,6 +75,9 @@ export interface DispatchPreview {
   /** 可选应用包名（Android package / iOS bundle id）；执行机锁定并启动被测应用。 */
   appPackage: string;
   appPackages: Array<{ id: string; filename: string; label: string; platform: "android" | "ios" | null }>;
+  /** 可选测试资料资产（materials）；secret=true 时解析为占位符。 */
+  materialsAssetId: string | null;
+  materials: Array<{ id: string; filename: string; version: number; secret: boolean }>;
   /** 目标主机能力/项目不满足：前端禁用确认（离线只告警，不置位）。 */
   hostBlocked: boolean;
   /** 用例集来源实际读的是哪一层 store；`error` 非空时来源区必须显式示因。 */
@@ -130,11 +133,12 @@ export function dispatchFormSignature(
   const platforms = dispatchPlatforms(params).join(",");
   const baseline = (params.get("baseline") ?? "latest").trim() === "none" ? "none" : "latest";
   const appAssetId = (params.get("appAssetId") ?? "").trim();
+  const materialsAssetId = (params.get("materialsAssetId") ?? "").trim();
   const appPackage =
     resolvedAppPackage !== undefined
       ? resolvedAppPackage.trim()
       : (params.get("appPackage") ?? "").trim();
-  return [mode, refOrKeyword, platforms, baseline, appAssetId, appPackage].join("|");
+  return [mode, refOrKeyword, platforms, baseline, appAssetId, materialsAssetId, appPackage].join("|");
 }
 
 /** 预览 ID＝表单签名＋目标主机/项目＋服务端解析结果（用例集集合/用例数）短哈希；服务端复算不一致即视为过期。 */
@@ -546,6 +550,30 @@ export async function computeDispatchPreview(
   if (requestedAppAssetId !== "" && appAssetId === null) {
     warnings.push("所选安装包不存在或已删除：请重新选择（本次不会安装）");
   }
+  const materialAssets =
+    sourceStore === null || rootPath === ""
+      ? []
+      : await listWebAssets(sourceStore, rootPath, "materials").catch(() => []);
+  const materials = materialAssets.map((asset) => ({
+    id: asset.id,
+    filename: asset.filename,
+    version: asset.version,
+    secret: asset.metadata?.secret === true
+  }));
+  const requestedMaterialsAssetId = (params.get("materialsAssetId") ?? "").trim();
+  const materialsAssetId =
+    requestedMaterialsAssetId !== "" &&
+    materials.some((asset) => asset.id === requestedMaterialsAssetId && asset.secret)
+      ? requestedMaterialsAssetId
+      : null;
+  if (requestedMaterialsAssetId !== "") {
+    const picked = materials.find((asset) => asset.id === requestedMaterialsAssetId);
+    if (picked === undefined) {
+      warnings.push("所选测试资料不存在或已删除：请重新选择（本次不使用）");
+    } else if (!picked.secret) {
+      warnings.push("所选测试资料未标记 secret：仅 secret 资料支持占位符替换（本次不使用）");
+    }
+  }
   let resolvedAppPackage = appPackage;
   if (appAssetId !== null) {
     const asset = packageAssets.find((entry) => entry.id === appAssetId);
@@ -636,6 +664,8 @@ export async function computeDispatchPreview(
     appAssetId,
     appPackage: resolvedAppPackage,
     appPackages,
+    materialsAssetId,
+    materials,
     hostBlocked,
     sourceStore: { tier: sourceTier, hostId: sourceHostId, error: sourceError },
     warnings
@@ -806,6 +836,7 @@ export function renderDispatchPage(view: DispatchView): string {
       : `<p class="muted">Excel 用例还没进用例库？<a href="/panel?project=${encodeURIComponent(view.rootPath)}&amp;section=assets&amp;tab=case-sets#library-import">去用例库导入 Excel</a>；安装包在下一步「参数」里选，执行机会自动安装。</p>`
   ].join("\n");
 
+  const materialsHref = `/panel?project=${encodeURIComponent(view.rootPath)}&section=assets&tab=materials&kind=materials${dispatchHostQuery}#asset-upload`;
   const appPackageOptions = preview.appPackages
     .map(
       (asset) =>
@@ -824,12 +855,25 @@ export function renderDispatchPage(view: DispatchView): string {
       : `<p class="muted">应用包名：<code>${escapeHtml(preview.appPackage)}</code>${
           preview.appAssetId === null ? "" : "（从安装包自动识别）"
         }</p><input type="hidden" name="appPackage" value="${escapeHtml(preview.appPackage)}">`;
+  const materialsOptions = preview.materials
+    .map(
+      (asset) =>
+        `<option value="${escapeHtml(asset.id)}"${
+          asset.id === preview.materialsAssetId ? " selected" : ""
+        }${asset.secret ? "" : " disabled"}>v${asset.version} · ${escapeHtml(asset.filename)}${asset.secret ? "（secret）" : "（未标记 secret）"}</option>`
+    )
+    .join("");
+  const materialsField =
+    preview.materials.length === 0
+      ? `<p><label>测试资料（可选） <select name="materialsAssetId" aria-label="测试资料" disabled><option>暂无测试资料</option></select></label> <a class="c-button" href="${escapeHtml(materialsHref)}" target="_blank" rel="noopener">上传测试资料</a> <span class="muted">仅 secret 资料会解析 <code>&lt;secret:alias&gt;</code> 占位符。</span></p>`
+      : `<p><label>测试资料（可选） <select name="materialsAssetId" aria-label="测试资料"><option value="">不使用</option>${materialsOptions}</select></label> <span class="muted">secret 资料按 <code>alias=value</code> 或 JSON 解析；用例里写 <code>&lt;secret:alias&gt;</code>，执行前替换。</span></p>`;
 
   const paramsBody = [
     `<fieldset class="c-fieldset"><legend>目标端</legend>${platformChecks}</fieldset>`,
     `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本用例集最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`,
     appAssetField,
     appPackageField,
+    materialsField,
     priorityField
   ].join("\n");
 
@@ -888,6 +932,14 @@ export function renderDispatchPage(view: DispatchView): string {
           : (preview.appPackages.find((asset) => asset.id === preview.appAssetId)?.filename ??
             "已选择")
     }),
+    cStat({
+      label: "测试资料",
+      value:
+        preview.materialsAssetId === null
+          ? "不使用"
+          : (preview.materials.find((asset) => asset.id === preview.materialsAssetId)?.filename ??
+            "已选择")
+    }),
     cStat({ label: "应用", value: preview.appPackage || "未指定" }),
     deviceStat,
     `</div>`,
@@ -935,8 +987,9 @@ function formSignature(){
   var platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;}).sort().join(',');
   var baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
   var appAssetId=(form.querySelector('select[name="appAssetId"]')||{value:''}).value;
+  var materialsAssetId=(form.querySelector('select[name="materialsAssetId"]')||{value:''}).value;
   var appPackage=((form.querySelector('input[name="appPackage"]')||{value:''}).value||'').trim();
-  return [mode,refOrKeyword,platforms,baseline,appAssetId,appPackage].join('|');
+  return [mode,refOrKeyword,platforms,baseline,appAssetId,materialsAssetId,appPackage].join('|');
 }
 function refreshStale(){
   var host=(form.querySelector('select[name="host"]')||{value:''}).value;
@@ -979,9 +1032,13 @@ go.addEventListener('click',function(){
   var appAssetId=appSel?appSel.value:'';
   var appLabel=appSel&&appSel.selectedIndex>=0?appSel.options[appSel.selectedIndex].text:'';
   var appText=appAssetId===''?'不安装（设备需已安装）':('安装 '+appLabel);
+  var matSel=form.querySelector('select[name="materialsAssetId"]');
+  var materialsAssetId=matSel?matSel.value:'';
+  var matLabel=matSel&&matSel.selectedIndex>=0?matSel.options[matSel.selectedIndex].text:'';
+  var matText=materialsAssetId===''?'不使用测试资料':('测试资料 '+matLabel);
   var appPackage=((form.querySelector('input[name="appPackage"]')||{value:''}).value||'').trim();
   var appPackageText=appPackage===''?'应用未指定':('应用 '+appPackage);
-  var text='将创建回归任务：目标主机「'+hostName+'」 · 来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · '+appText+' · '+appPackageText+' · 优先级 P'+priority+' · 执行机：'+runner;
+  var text='将创建回归任务：目标主机「'+hostName+'」 · 来源「'+(s.label||'—')+'」 · 用例 '+(s.caseCount==null?'—':s.caseCount)+' 条'+refText+' · 端 '+((s.platforms||[]).join('、')||'—')+' · 基线 '+(s.baseline||'latest')+' · '+appText+' · '+matText+' · '+appPackageText+' · 优先级 P'+priority+' · 执行机：'+runner;
   window.aosInlineConfirm(go,text,function(){
     var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
     var payload={project:island.project,previewId:island.previewId,source:mode};
@@ -992,6 +1049,7 @@ go.addEventListener('click',function(){
     payload.platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
     payload.baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
     payload.appAssetId=appAssetId;
+    payload.materialsAssetId=materialsAssetId;
     payload.appPackage=appPackage;
     payload.priority=priority;
     go.disabled=true;if(status)status.textContent='提交中…';

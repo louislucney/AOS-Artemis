@@ -501,6 +501,35 @@ test("pooled settlement applies usage retention", async () => {
   );
 });
 
+test("MemoryStore: importState 旧 LLM 行缺 pool 字段 → 归一化为未绑定", async () => {
+  const store = new MemoryStore();
+  store.importState({
+    llms: [
+      {
+        rootPath: "/w/p",
+        entries: [
+          {
+            id: "legacy",
+            projectId: "p",
+            name: "entry",
+            provider: "custom",
+            baseUrl: "https://legacy.example.com",
+            model: "m",
+            apiKey: "sk-legacy",
+            isActive: true,
+            createdAt: "x",
+            updatedAt: "x"
+          }
+        ]
+      }
+    ]
+  });
+  const [entry] = await store.listLlms("/w/p");
+  assert.equal(entry.poolTokenId, null);
+  assert.equal(entry.poolMode, "pinned");
+  assert.equal(entry.poolModel, null);
+});
+
 test("FileStore attributes usage to the project id", async () => {
   const home = await tempHome();
   try {

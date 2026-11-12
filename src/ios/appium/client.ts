@@ -164,6 +164,14 @@ export class AppiumClient {
     return value === true;
   }
 
+  async hideKeyboard(sessionId: string): Promise<void> {
+    await this.request<unknown>(
+      "POST",
+      `/session/${encodeURIComponent(sessionId)}/appium/device/hide_keyboard`,
+      {}
+    );
+  }
+
   async terminateApp(sessionId: string, bundleId: string): Promise<boolean> {
     const value = await this.execute(sessionId, "mobile: terminateApp", [{ bundleId }]);
     return value === true;

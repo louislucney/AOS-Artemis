@@ -16,6 +16,10 @@ export interface StructuredDevice {
   tap(x: number, y: number): Promise<void>;
   swipe(x1: number, y1: number, x2: number, y2: number, ms: number): Promise<void>;
   inputText(text: string, at?: StructuredPoint): Promise<IosInputResult>;
+  /** 清空当前聚焦输入框（最多 length 个字符）；不支持时 runner 跳过。 */
+  clearText?(length: number): Promise<void>;
+  /** 输入后收起键盘；不支持时 runner 跳过。 */
+  hideKeyboard?(): Promise<void>;
   launch(appId: string): Promise<void>;
   terminate(appId: string): Promise<boolean>;
   openUrl(url: string): Promise<void>;

@@ -271,6 +271,7 @@ const SCHEMA = [
      device_lease_id TEXT,
      app_asset_id TEXT,
      app_package TEXT,
+     materials_asset_id TEXT,
      case_ids TEXT NOT NULL DEFAULT '[]',
      progress_json TEXT
     )`,
@@ -471,6 +472,7 @@ const SCHEMA = [
      storage_path TEXT NOT NULL,
      uploaded_by TEXT,
      created_at TEXT NOT NULL,
+     archived_at TEXT,
      metadata TEXT NOT NULL DEFAULT '{}',
      dedupe_key TEXT
    )`,
@@ -660,6 +662,7 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS device_lease_id TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_asset_id TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_package TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS materials_asset_id TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS case_ids TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS progress_json TEXT`,
   `ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor TEXT`,
@@ -688,6 +691,7 @@ const MIGRATIONS = [
   `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS host_id TEXT`,
   `ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS session_id TEXT`,
   `ALTER TABLE web_assets ADD COLUMN IF NOT EXISTS dedupe_key TEXT`,
+  `ALTER TABLE web_assets ADD COLUMN IF NOT EXISTS archived_at TEXT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS web_assets_root_kind_dedupe_idx ON web_assets(root_path, kind, dedupe_key)`,
   `ALTER TABLE excel_writeback_journal ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'confirmed'`,
   `CREATE INDEX IF NOT EXISTS excel_writeback_journal_pending_idx
@@ -1256,8 +1260,8 @@ export class PostgresStore implements ProjectStore {
       `INSERT INTO regression_tasks
          (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids,
           target_host_id, created_host_id, priority, job_spec, execution_mode, device_serial, device_lease_id,
-          app_asset_id, app_package, case_ids, progress_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+          app_asset_id, app_package, materials_asset_id, case_ids, progress_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
       [
         id,
         project?.id ?? null,
@@ -1277,6 +1281,7 @@ export class PostgresStore implements ProjectStore {
         input.deviceLeaseId ?? null,
         input.appAssetId ?? null,
         input.appPackage ?? null,
+        input.materialsAssetId ?? null,
         JSON.stringify(input.caseIds ?? []),
         input.progress === undefined || input.progress === null ? null : JSON.stringify(input.progress)
       ]
@@ -1313,6 +1318,7 @@ export class PostgresStore implements ProjectStore {
       deviceLeaseId: input.deviceLeaseId ?? null,
       appAssetId: input.appAssetId ?? null,
       appPackage: input.appPackage ?? null,
+      materialsAssetId: input.materialsAssetId ?? null,
       caseIds: [...(input.caseIds ?? [])],
       progress: input.progress ?? null
     };
@@ -2962,8 +2968,8 @@ export class PostgresStore implements ProjectStore {
         `INSERT INTO regression_tasks
            (id, project_id, created_at, created_by, refs, platforms, baseline, status, claimed_by, claimed_at,
             run_ids, attempts, cancel_source, cancelled_by, cancelled_host_id, cancelled_at, cancel_note,
-            cancel_requested_at, job_spec, device_serial, device_lease_id, app_asset_id, app_package, case_ids, progress_json)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+            cancel_requested_at, job_spec, device_serial, device_lease_id, app_asset_id, app_package, materials_asset_id, case_ids, progress_json)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
          ON CONFLICT (id) DO NOTHING
          RETURNING id`,
         [
@@ -2990,6 +2996,7 @@ export class PostgresStore implements ProjectStore {
           entry.deviceLeaseId ?? null,
           entry.appAssetId ?? null,
           entry.appPackage ?? null,
+          entry.materialsAssetId ?? null,
           JSON.stringify(entry.caseIds ?? []),
           entry.progress === null || entry.progress === undefined ? null : JSON.stringify(entry.progress)
         ]
@@ -3454,23 +3461,49 @@ export class PostgresStore implements ProjectStore {
     }
   }
 
-  async listWebAssets(rootPath: string, kind?: WebAssetKind): Promise<WebAssetRecord[]> {
-    const result =
-      kind === undefined
-        ? await this.pool.query(
-            "SELECT * FROM web_assets WHERE root_path = $1 ORDER BY version DESC, id DESC",
-            [rootPath]
-          )
-        : await this.pool.query(
-            "SELECT * FROM web_assets WHERE root_path = $1 AND kind = $2 ORDER BY version DESC, id DESC",
-            [rootPath, kind]
-          );
+  async listWebAssets(
+    rootPath: string,
+    kind?: WebAssetKind,
+    options: { includeArchived?: boolean } = {}
+  ): Promise<WebAssetRecord[]> {
+    const clauses = ["root_path = $1"];
+    const values: unknown[] = [rootPath];
+    if (kind !== undefined) {
+      values.push(kind);
+      clauses.push(`kind = $${values.length}`);
+    }
+    if (options.includeArchived !== true) clauses.push("archived_at IS NULL");
+    const result = await this.pool.query(
+      `SELECT * FROM web_assets WHERE ${clauses.join(" AND ")} ORDER BY version DESC, id DESC`,
+      values
+    );
     return result.rows.map(mapWebAsset);
   }
 
   async getWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null> {
     const result = await this.pool.query(
       "SELECT * FROM web_assets WHERE root_path = $1 AND id = $2",
+      [rootPath, id]
+    );
+    return result.rows.length > 0 ? mapWebAsset(result.rows[0]!) : null;
+  }
+
+  async setWebAssetArchived(rootPath: string, id: string, archived: boolean): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE web_assets
+          SET archived_at = CASE
+            WHEN $3 = TRUE THEN COALESCE(archived_at, $4)
+            ELSE NULL
+          END
+        WHERE root_path = $1 AND id = $2`,
+      [rootPath, id, archived, new Date().toISOString()]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async deleteWebAsset(rootPath: string, id: string): Promise<WebAssetRecord | null> {
+    const result = await this.pool.query(
+      "DELETE FROM web_assets WHERE root_path = $1 AND id = $2 RETURNING *",
       [rootPath, id]
     );
     return result.rows.length > 0 ? mapWebAsset(result.rows[0]!) : null;
@@ -4811,6 +4844,7 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     deviceLeaseId: nullableString(row.device_lease_id),
     appAssetId: nullableString(row.app_asset_id),
     appPackage: nullableString(row.app_package),
+    materialsAssetId: nullableString(row.materials_asset_id),
     caseIds: parseStringArray(row.case_ids),
     progress: parseTaskProgress(row.progress_json)
   });
@@ -5089,6 +5123,7 @@ function mapWebAsset(row: Record<string, unknown>): WebAssetRecord {
     storagePath: String(row.storage_path),
     uploadedBy: nullableString(row.uploaded_by),
     createdAt: String(row.created_at),
+    archivedAt: nullableString(row.archived_at),
     metadata: parseJsonObject(row.metadata)
   };
 }

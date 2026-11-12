@@ -11,8 +11,11 @@ import { isIosTraceDir, readIosRunPayload } from "../ios/trace-store.js";
 import { logWarn } from "../log.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "../device/logcat.js";
 import { resetApp, type AppResetOptions, type AppResetOutcome, type AppResetRequest } from "../device/reset.js";
+import { adbInstallAndroidApk } from "../device/install.js";
+import { materializeAppPathUrl } from "../device/app-artifacts.js";
 import type { IosDevice } from "../device/ios-actions.js";
 import type { Runtime } from "../runtime.js";
+import type { SecretEntry } from "../web/llm/secrets.js";
 import { errorMessage } from "../util.js";
 import { autoCheckUi } from "../ui/auto-check.js";
 import {
@@ -24,8 +27,7 @@ import {
   type UiSummary,
   type UiVerification
 } from "../ui/verification.js";
-import { executeCase } from "./case-runner.js";
-import { designFlowsPath } from "./design-source.js";
+import { executeCase } from "./case-runner.js";import { designFlowsPath } from "./design-source.js";
 import { designDir, loadDesignFlowGraph, loadGeneratedCases, type GeneratedCase } from "./design-store.js";
 import {
   hitsFromRunSteps,
@@ -128,8 +130,18 @@ export interface SuiteRunOptions {
   shouldAbort?: () => boolean;
   deviceSerial?: string;
   lockedAppPackage?: string;
-  /** 可选：Android APK/iOS IPA 的本地路径或 URL；透传 `mobile_run_task.app_path`，由 Artemis 安装。 */
+  /** 可选：Android APK/iOS IPA 的本地路径或 URL。
+   * Android：套件开始前只安装一次（adb install -r -t），不再透传给 Artemis（其安装冲突会卸载清数据）；
+   * iOS：透传 `mobile_run_task.app_path`，由 Artemis 安装。 */
   appPath?: string;
+  /** 测试注入：Android 安装函数；默认 adb install -r -t，失败即中止（绝不卸载/清数据）。 */
+  installAndroidApp?: (
+    env: NodeJS.ProcessEnv,
+    serial: string,
+    apkPath: string
+  ) => Promise<{ ok: true; output?: string } | { ok: false; error: string }>;
+  /** secret 测试资料（alias→value）；用例 taskDesc/actions 中的 `<secret:alias>` 执行前替换。 */
+  secrets?: SecretEntry[];
   regressionTaskId?: string | null;
   model?: string;
   /** Opt-in: compare screens visited by each case against per-screen design. */
@@ -479,6 +491,23 @@ function uiContractScreens(runtime: Runtime): UiScreenRef[] {
   }
 }
 
+function emptySuiteReport(testsPath: string, error: string): SuiteRunReport {
+  return {
+    ok: false,
+    testsPath,
+    total: 0,
+    executed: 0,
+    skipped: 0,
+    passed: 0,
+    failed: 0,
+    ui: { passed: 0, failed: 0, unverified: 0, notApplicable: 0 },
+    preflight: null,
+    apiErrorCatalog: null,
+    cases: [],
+    error
+  };
+}
+
 export async function runGeneratedTests(
   runtime: Runtime,
   options: SuiteRunOptions = {}
@@ -492,20 +521,7 @@ export async function runGeneratedTests(
     ...(options.maxCases !== undefined ? { maxCases: options.maxCases } : {})
   });
   if (!cases) {
-    return {
-      ok: false,
-      testsPath,
-      total: 0,
-      executed: 0,
-      skipped: 0,
-      passed: 0,
-      failed: 0,
-      ui: { passed: 0, failed: 0, unverified: 0, notApplicable: 0 },
-      preflight: null,
-      apiErrorCatalog: null,
-      cases: [],
-      error: `无法读取用例文件：${testsPath}`
-    };
+    return emptySuiteReport(testsPath, `无法读取用例文件：${testsPath}`);
   }
   if (options.caseIds && options.caseIds.length > 0) {
     const wanted = new Set(options.caseIds);
@@ -543,6 +559,35 @@ export async function runGeneratedTests(
   const collectIosLogs =
     options.iosLogCollector ?? ((request) => new IosLogCollector().collect(request));
 
+  // Android 只在这里安装一次：Artemis 的 adbutils 在版本/签名冲突时会先卸载再装，
+  // 等同清空 app 数据；套件内任何用例都不再携带 app_path。
+  let caseAppPath = options.appPath ?? null;
+  if (caseAppPath !== null && serial !== null && serialKind === null) {
+    let localPath = caseAppPath;
+    if (/^https?:\/\//i.test(localPath)) {
+      const materialized = await materializeAppPathUrl({
+        appPath: localPath,
+        cacheDir: path.join(runtime.project.rootDir, ".artemis", "cache", "apps")
+      });
+      if (!materialized.ok) {
+        return emptySuiteReport(
+          testsPath,
+          `Android app_path 下载失败（不会回退到 Artemis 安装）：${materialized.error}`
+        );
+      }
+      localPath = materialized.path;
+    }
+    const install = options.installAndroidApp ?? adbInstallAndroidApk;
+    const installed = await install(process.env, serial, localPath);
+    if (!installed.ok) {
+      return emptySuiteReport(
+        testsPath,
+        `Android 安装失败（不会卸载/清空应用数据）：${installed.error}`
+      );
+    }
+    caseAppPath = null;
+  }
+
   const results: SuiteCaseResult[] = [];
   let submitted = 0;
   let firstSubmitError: string | null = null;
@@ -563,7 +608,8 @@ export async function runGeneratedTests(
       model: options.model ?? null,
       deviceSerial: options.deviceSerial ?? null,
       lockedAppPackage: options.lockedAppPackage ?? null,
-      appPath: options.appPath ?? null,
+      appPath: caseAppPath,
+      secrets: options.secrets,
       regressionTaskId: options.regressionTaskId ?? null,
       quarantined,
       failOnApiErrors: options.failOnApiErrors === true,

@@ -195,6 +195,8 @@ export interface WebAssetsPageData {
   uploadKind?: "excel" | "package" | "materials" | "reference";
   /** 测试资产 hub 的当前 tab；缺省＝旧版全量页（兼容旧链接）。 */
   tab?: AssetsTab;
+  /** true＝查看已归档资产（默认只看在用）。 */
+  archivedView?: boolean;
   /** 概览的用例集数量（不渲染用例集表）。 */
   sets?: CaseSetRecord[];
   /** 资产 id → 被任务引用次数。 */
@@ -272,6 +274,21 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       : "";
 
   const usage = data.usage ?? {};
+  const archivedView = data.archivedView === true;
+  const assetManageCell = (asset: WebAssetRecord): string => {
+    const id = escapeHtml(asset.id);
+    const archivedMark = asset.archivedAt
+      ? ` ${cBadge({ label: "已归档", tone: "warning", title: `archivedAt=${asset.archivedAt}` })}`
+      : "";
+    if (archivedView) {
+      return `${archivedMark} <button class="c-button" type="button" data-asset-action="restore" data-asset-id="${id}"${disabledAttr}>恢复</button> <button class="c-button c-button-danger" type="button" data-asset-action="delete" data-asset-id="${id}" data-confirm="彻底删除不可恢复；若仍被任务/映射引用会被拒绝。secret 资料会同时删除明文文件。"${disabledAttr}>彻底删除</button>`;
+    }
+    return `<button class="c-button" type="button" data-asset-action="archive" data-asset-id="${id}" data-confirm="归档后默认隐藏、不可再选；历史任务/运行仍可读取。可随时恢复。"${disabledAttr}>归档</button>`;
+  };
+  const tabQuery = data.tab === undefined ? "" : `&tab=${data.tab}`;
+  const archivedHref = `/panel?project=${encodeURIComponent(data.rootPath)}&section=assets${tabQuery}${hostQuery}${
+    archivedView ? "" : "&archived=1"
+  }`;
   const assetName = new Map<string, string>();
   for (const asset of data.assets) {
     assetName.set(asset.id, `${asset.filename} v${asset.version}`);
@@ -302,7 +319,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     String(usage[asset.id] ?? 0),
     `${assetOpenCell(asset)} <button class="c-button" type="button" data-import-excel="${escapeHtml(
       asset.id
-    )}"${disabledAttr}>导入用例库</button>`
+    )}"${disabledAttr}>导入用例库</button> ${assetManageCell(asset)}`
   ]);
   const assetOptions = data.assets
     .map(
@@ -325,7 +342,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
     relativeTime(asset.createdAt),
     String(usage[asset.id] ?? 0),
-    assetOpenCell(asset)
+    `${assetOpenCell(asset)} ${assetManageCell(asset)}`
   ]);
   const materialRows = materials.map((asset) => {
     const secret = asset.metadata?.secret === true;
@@ -337,7 +354,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
       `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
       relativeTime(asset.createdAt),
       String(usage[asset.id] ?? 0),
-      assetOpenCell(asset)
+      `${assetOpenCell(asset)} ${assetManageCell(asset)}`
     ];
   });
   const references = data.references ?? [];
@@ -347,7 +364,8 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     formatBytes(asset.size),
     `<code>${escapeHtml(asset.sha256.slice(0, 12))}</code>`,
     relativeTime(asset.createdAt),
-    assetOpenCell(asset)
+    '<span class="muted">—</span>',
+    `${assetOpenCell(asset)} ${assetManageCell(asset)}`
   ]);
   const mappingRows = data.mappings.map((mapping) => [
     `<code>${escapeHtml(
@@ -483,7 +501,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "Excel 文档",
     subtitle: `共 ${data.assets.length} 个 Excel 版本`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用", "操作"],
+      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用", "操作", "归档"],
       rows: assetRows,
       caption: "Excel 资产版本",
       empty: "暂无 Excel 资产（上方上传）"
@@ -508,7 +526,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "安装包",
     subtitle: `共 ${packages.length} 个 APK/IPA 版本（Android/iOS 各自编号）`,
     body: cTable({
-      columns: ["文件名", "平台", "版本", "大小", "sha256", "上传时间", "被使用", "打开"],
+      columns: ["文件名", "平台", "版本", "大小", "sha256", "上传时间", "被使用", "打开/归档"],
       rows: packageRows,
       caption: "安装包资产版本",
       empty: "暂无安装包资产（上方上传）"
@@ -518,7 +536,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "测试资料",
     subtitle: `共 ${materials.length} 个资料版本`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "secret", "sha256", "上传时间", "被使用", "打开"],
+      columns: ["文件名", "版本", "大小", "secret", "sha256", "上传时间", "被使用", "打开/归档"],
       rows: materialRows,
       caption: "测试资料资产版本",
       empty: "暂无测试资料（上方上传）"
@@ -528,7 +546,7 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
     title: "参考图（L2）",
     subtitle: `共 ${references.length} 个参考图版本`,
     body: cTable({
-      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用", "打开"],
+      columns: ["文件名", "版本", "大小", "sha256", "上传时间", "被使用", "打开/归档"],
       rows: referenceRows,
       caption: "参考图资产版本",
       empty: "暂无参考图（上方上传 .png/.jpg/.jpeg/.webp）"
@@ -544,11 +562,23 @@ export function renderWebAssetsPage(data: WebAssetsPageData): string {
   ];
   if (show("overview")) sections.push(overviewCard);
   sections.push(uploadCard);
+  sections.push(
+    `<p><a class="c-button" href="${escapeHtml(archivedHref)}">${
+      archivedView ? "返回在用资产" : "查看已归档"
+    }</a>${
+      archivedView
+        ? ' <span class="muted">已归档资产默认不出现在上传选择器/任务下发中；可恢复或彻底删除。</span>'
+        : ""
+    }</p>`
+  );
   if (show("excel")) sections.push(excelCard, mappingCard, mappingsCard);
   if (show("packages")) sections.push(packageCard);
   if (show("materials")) sections.push(materialsCard);
   if (show("reference")) sections.push(referenceCard, figmaReferenceCard);
   sections.push(script);
+  sections.push(
+    `<script>(function(){var root=${JSON.stringify(data.rootPath).replace(/</g, "\\u003c")};document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-asset-action]'):null;if(!b)return;var action=b.getAttribute('data-asset-action')||'';var id=b.getAttribute('data-asset-id')||'';var confirmText=b.getAttribute('data-confirm')||'';if(confirmText&&!window.confirm(confirmText))return;var body={project:root,assetId:id,archived:action==='archive'};var url=action==='delete'?'/panel/api/projects/assets/delete':'/panel/api/projects/assets/archive';b.disabled=true;fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-AOS-Console':'1'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});}).then(function(res){if(res.ok&&res.j&&res.j.ok){location.reload();return;}b.disabled=false;var detail=(res.j&&(res.j.error||(res.j.references&&res.j.references.join('；'))))||('HTTP '+res.status);window.alert('操作失败：'+detail);}).catch(function(err){b.disabled=false;window.alert('操作失败：'+err);});});})();</script>`
+  );
   sections.push(designImportDialog);
   sections.push(designImportScript);
   if (show("reference")) sections.push(figmaReferenceScript);
@@ -889,7 +919,7 @@ export function renderDevicesPage(data: DevicesPageData): string {
       dispatchHref === null
         ? '<a class="c-button" href="/panel" title="先在顶部切换到项目，再回到本页下发">选择项目</a>'
         : offline
-          ? '<button class="c-button" type="button" disabled title="执行机离线：先启动 runner / 恢复设备后再下发">去下发</button>'
+          ? '<span class="c-badge" title="执行机离线：先启动 runner / 恢复设备后再下发">执行机离线</span> <a class="c-button" href="/panel?section=devices#runner-download">接入执行机</a>'
           : `<a class="c-button" href="${escapeHtml(
               dispatchHref
             )}" title="进入套件回归；设备由执行机自动选择">去下发</a>`;
@@ -1037,6 +1067,8 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
   return renderConsoleShell({
     title: "设备",
     active: "devices",
+    project: data.rootPath ?? null,
+    projectHostId: data.hostId ?? null,
     body,
     capabilities: data.capabilities,
     storeHealth: data.storeHealth
