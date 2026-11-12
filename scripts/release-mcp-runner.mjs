@@ -32,23 +32,29 @@ function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-function findOfflineDeps() {
-  const explicit = (process.env.AOS_RUNNER_OFFLINE_DEPS ?? "").trim();
+function findOfflineDeps(platformKey, required = true) {
+  const envName =
+    platformKey === "win32-x64" ? "AOS_RUNNER_OFFLINE_DEPS" : "AOS_RUNNER_OFFLINE_DEPS_DARWIN";
+  const explicit = (process.env[envName] ?? "").trim();
   if (explicit !== "") {
-    if (!fs.existsSync(explicit)) fail(`AOS_RUNNER_OFFLINE_DEPS 不存在：${explicit}`);
+    if (!fs.existsSync(explicit)) fail(`${envName} 不存在：${explicit}`);
     return explicit;
   }
+  const filename =
+    platformKey === "win32-x64" ? "win32-site-packages.zip" : `${platformKey}-site-packages.zip`;
   if (!fs.existsSync(offlineStaging)) {
-    fail("缺少离线依赖：先准备 deps/win32-site-packages.zip，或设置 AOS_RUNNER_OFFLINE_DEPS");
+    if (!required) return null;
+    fail(`缺少离线依赖：先准备 deps/${filename}，或设置 ${envName}`);
   }
   const candidates = fs
     .readdirSync(offlineStaging, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(offlineStaging, entry.name, "deps", "win32-site-packages.zip"))
+    .map((entry) => path.join(offlineStaging, entry.name, "deps", filename))
     .filter((file) => fs.existsSync(file))
     .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
   if (candidates.length === 0) {
-    fail("缺少离线依赖：先准备 deps/win32-site-packages.zip，或设置 AOS_RUNNER_OFFLINE_DEPS");
+    if (!required) return null;
+    fail(`缺少离线依赖：先准备 deps/${filename}，或设置 ${envName}`);
   }
   return candidates[0];
 }
@@ -94,25 +100,69 @@ if (!bundleReadme.includes(`v${version}`)) {
   fail(`包内 README.md 未包含版本号 v${version}`);
 }
 
-const deps = findOfflineDeps();
-const stageName = `aos-artemis-runner-${version}-win32-x64-offline`;
-const stageDir = path.join(offlineStaging, stageName);
-fs.rmSync(stageDir, { recursive: true, force: true });
+const winDeps = findOfflineDeps("win32-x64");
+const winStageName = `aos-artemis-runner-${version}-win32-x64-offline`;
+const winStageDir = path.join(offlineStaging, winStageName);
+fs.rmSync(winStageDir, { recursive: true, force: true });
 fs.mkdirSync(offlineStaging, { recursive: true });
 execFileSync("unzip", ["-q", onlineZip, "-d", offlineStaging], { stdio: "inherit" });
-const extracted = path.join(offlineStaging, `aos-artemis-runner-${version}-win32-x64`);
-if (!fs.existsSync(extracted)) fail(`解包后目录不存在：${extracted}`);
-fs.renameSync(extracted, stageDir);
-fs.mkdirSync(path.join(stageDir, "deps"), { recursive: true });
-fs.copyFileSync(deps, path.join(stageDir, "deps", "win32-site-packages.zip"));
+const winExtracted = path.join(offlineStaging, `aos-artemis-runner-${version}-win32-x64`);
+if (!fs.existsSync(winExtracted)) fail(`解包后目录不存在：${winExtracted}`);
+fs.renameSync(winExtracted, winStageDir);
+fs.mkdirSync(path.join(winStageDir, "deps"), { recursive: true });
+fs.copyFileSync(winDeps, path.join(winStageDir, "deps", "win32-site-packages.zip"));
 fs.copyFileSync(
   path.join(root, "scripts", "runner", "setup-offline.cmd"),
-  path.join(stageDir, "setup-offline.cmd")
+  path.join(winStageDir, "setup-offline.cmd")
 );
-const offlineZip = path.join(outDir, `${stageName}.zip`);
+const offlineZip = path.join(outDir, `${winStageName}.zip`);
 fs.rmSync(offlineZip, { force: true });
-execFileSync("zip", ["-qr", offlineZip, stageName], { cwd: offlineStaging, stdio: "inherit" });
-fs.rmSync(stageDir, { recursive: true, force: true });
+execFileSync("zip", ["-qr", offlineZip, winStageName], { cwd: offlineStaging, stdio: "inherit" });
+fs.rmSync(winStageDir, { recursive: true, force: true });
+
+const darwinOnlineTar = path.join(
+  outDir,
+  `aos-artemis-runner-${version}-darwin-arm64.tar.gz`
+);
+let darwinOfflineTar = null;
+const darwinDeps = findOfflineDeps("darwin-arm64", false);
+if (darwinDeps === null) {
+  console.warn(
+    "release-mcp-runner: 未提供 darwin-arm64 离线依赖（deps/darwin-arm64-site-packages.zip），跳过 macOS 离线包"
+  );
+} else if (!fs.existsSync(darwinOnlineTar)) {
+  fail(`macOS 在线包不存在：${darwinOnlineTar}`);
+} else {
+  const darwinStageName = `aos-artemis-runner-${version}-darwin-arm64-offline`;
+  const darwinStageDir = path.join(offlineStaging, darwinStageName);
+  fs.rmSync(darwinStageDir, { recursive: true, force: true });
+  fs.mkdirSync(offlineStaging, { recursive: true });
+  execFileSync("tar", ["-xzf", darwinOnlineTar, "-C", offlineStaging], {
+    stdio: "inherit",
+    env: { ...process.env, COPYFILE_DISABLE: "1" }
+  });
+  const darwinExtracted = path.join(
+    offlineStaging,
+    `aos-artemis-runner-${version}-darwin-arm64`
+  );
+  if (!fs.existsSync(darwinExtracted)) fail(`macOS 解包后目录不存在：${darwinExtracted}`);
+  fs.renameSync(darwinExtracted, darwinStageDir);
+  fs.mkdirSync(path.join(darwinStageDir, "deps"), { recursive: true });
+  fs.copyFileSync(
+    darwinDeps,
+    path.join(darwinStageDir, "deps", "darwin-arm64-site-packages.zip")
+  );
+  const darwinSetup = path.join(darwinStageDir, "setup-offline.command");
+  fs.copyFileSync(path.join(root, "scripts", "runner", "setup-offline.command"), darwinSetup);
+  fs.chmodSync(darwinSetup, 0o755);
+  darwinOfflineTar = path.join(outDir, `${darwinStageName}.tar.gz`);
+  fs.rmSync(darwinOfflineTar, { force: true });
+  execFileSync("tar", ["-czf", darwinOfflineTar, "-C", offlineStaging, darwinStageName], {
+    stdio: "inherit",
+    env: { ...process.env, COPYFILE_DISABLE: "1" }
+  });
+  fs.rmSync(darwinStageDir, { recursive: true, force: true });
+}
 
 const manifestPath = path.join(outDir, "mcp-runner-manifest.json");
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
@@ -121,6 +171,11 @@ const next = manifest.filter(
     !(
       entry.platform === "win32" &&
       entry.arch === "x64" &&
+      (entry.variant ?? "online") === "offline"
+    ) &&
+    !(
+      entry.platform === "darwin" &&
+      entry.arch === "arm64" &&
       (entry.variant ?? "online") === "offline"
     )
 );
@@ -134,6 +189,18 @@ next.push({
   includesTools: true,
   url: "/panel/runner-bundle?role=mcp-runner&platform=win32&arch=x64&variant=offline"
 });
+if (darwinOfflineTar !== null) {
+  next.push({
+    platform: "darwin",
+    arch: "arm64",
+    variant: "offline",
+    filename: path.basename(darwinOfflineTar),
+    size: fs.statSync(darwinOfflineTar).size,
+    sha256: sha256(darwinOfflineTar),
+    includesTools: true,
+    url: "/panel/runner-bundle?role=mcp-runner&platform=darwin&arch=arm64&variant=offline"
+  });
+}
 fs.writeFileSync(manifestPath, `${JSON.stringify(next, null, 2)}\n`);
 
 execFileSync("npm", ["run", "check:runner-bundle"], { cwd: root, stdio: "inherit" });
@@ -141,9 +208,10 @@ execFileSync("npm", ["run", "check:runner-bundle"], { cwd: root, stdio: "inherit
 const summary = [
   ["win32-x64 online", onlineZip],
   ["win32-x64 offline", offlineZip],
-  ["darwin-arm64 online", path.join(outDir, `aos-artemis-runner-${version}-darwin-arm64.tar.gz`)]
+  ["darwin-arm64 online", darwinOnlineTar],
+  ["darwin-arm64 offline", darwinOfflineTar]
 ]
-  .filter(([, file]) => fs.existsSync(file))
+  .filter(([, file]) => typeof file === "string" && fs.existsSync(file))
   .map(([label, file]) => `- ${label}: ${path.basename(file)}  sha256=${sha256(file)}`)
   .join("\n");
 console.log(`\nrunner bundle released at v${version}\n${summary}\n`);

@@ -348,7 +348,12 @@ export UV_SYSTEM_CERTS=1
 if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' "$ROOT/project/.env"; then
   echo "[提示] project/.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。"
 fi
-node dist/cli.js doctor --install-deps
+if [ -f "$ROOT/deps/darwin-arm64-site-packages.zip" ] && { [ ! -x "$ROOT/artemis/.venv/bin/python" ] || [ ! -f "$ROOT/artemis/.venv/.aos-deps.json" ]; }; then
+  echo "[setup] 检测到离线依赖：使用 setup-offline.command..."
+  sh "$ROOT/setup-offline.command"
+else
+  node dist/cli.js doctor --install-deps
+fi
 if [ ! -f "$ROOT/artemis/.venv/.aos-deps.json" ]; then
   echo "[setup] Artemis 依赖未就绪；检查上面的错误（网络/Python 3.12）。"
   exit 1
@@ -422,8 +427,13 @@ if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' "$ROOT/project/.env"; then
   exit 2
 fi
 if [ ! -x "$ROOT/artemis/.venv/bin/python" ] || [ ! -f "$ROOT/artemis/.venv/.aos-deps.json" ]; then
-  echo "[runner] 首次启动：安装 Artemis 依赖（可能需要几分钟）..."
-  node dist/cli.js doctor --install-deps || true
+  if [ -f "$ROOT/deps/darwin-arm64-site-packages.zip" ]; then
+    echo "[runner] 首次启动：使用离线依赖（setup-offline.command）..."
+    sh "$ROOT/setup-offline.command" || exit 2
+  else
+    echo "[runner] 首次启动：安装 Artemis 依赖（可能需要几分钟）..."
+    node dist/cli.js doctor --install-deps || true
+  fi
   if [ ! -f "$ROOT/artemis/.venv/.aos-deps.json" ]; then
     echo "[runner] Artemis 依赖未安装成功；先运行 setup.command 查看详情。"
     exit 2
@@ -440,6 +450,10 @@ node dist/cli.js suite runner --project "$AOS_PROJECT_DIR" --name "$MOBILE_TESTI
   ]) {
     fs.writeFileSync(path.join(staging, name), body, { encoding: "utf8", mode: 0o755 });
   }
+  const offlineSetup = path.join(root, "scripts", "runner", "setup-offline.command");
+  const targetPath = path.join(staging, "setup-offline.command");
+  fs.copyFileSync(offlineSetup, targetPath);
+  fs.chmodSync(targetPath, 0o755);
 }
 
 function writeBundleReadme(staging, target) {

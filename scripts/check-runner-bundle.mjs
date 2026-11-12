@@ -11,6 +11,7 @@ const WANTED = new Set([
   "setup.cmd",
   "setup.command",
   "setup-offline.cmd",
+  "setup-offline.command",
   "configure.cmd",
   "configure.command",
   "doctor.cmd",
@@ -85,8 +86,8 @@ export function checkBundleFiles(files, platform) {
   }
   const runnerName = platform === "win32" ? "runner.cmd" : "runner.command";
   const runner = text(files, runnerName);
-  if (!runner.includes("doctor --install-deps") && !runner.includes("setup-offline.cmd")) {
-    errors.push(`${runnerName} 未包含首次依赖安装（在线 doctor 或离线 setup-offline.cmd）`);
+  if (!runner.includes("doctor --install-deps") && !runner.includes("setup-offline.cmd") && !runner.includes("setup-offline.command")) {
+    errors.push(`${runnerName} 未包含首次依赖安装（在线 doctor 或离线 setup-offline）`);
   }
   if (!runner.includes("MOBILE_TESTING_RUNNER_JOB_TOKEN")) {
     errors.push(`${runnerName} 未检查 runner token`);
@@ -107,6 +108,18 @@ export function checkBundleFiles(files, platform) {
     }
     if (!setupOffline.includes("rmdir /s /q")) {
       errors.push("setup-offline.cmd 未在 Python 版本不符时重建 venv");
+    }
+  }
+  const setupOfflineMac = text(files, "setup-offline.command");
+  if (platform === "darwin" && setupOfflineMac !== "") {
+    if (!setupOfflineMac.includes("sys.version_info")) {
+      errors.push("setup-offline.command 未校验 venv Python 版本");
+    }
+    if (!setupOfflineMac.includes("darwin-arm64-site-packages.zip")) {
+      errors.push("setup-offline.command 未引用 darwin-arm64-site-packages.zip");
+    }
+    if (!setupOfflineMac.includes("unzip")) {
+      errors.push("setup-offline.command 未解压离线依赖");
     }
   }
   const configureName = platform === "win32" ? "configure.cmd" : "configure.command";

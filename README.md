@@ -397,7 +397,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.14-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.15-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -409,6 +409,8 @@ $env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 也可用阿里云 `https://mirrors.aliyun.com/pypi/simple/` 或公司内部镜像。成功标志是 `artemis\.venv\.aos-deps.json` 存在；`runner.cmd` 用它判断依赖就绪，安装失败不会启动。
 
 **Windows 离线依赖包**：公司网络完全无法访问 PyPI 时，使用 `aos-artemis-runner-<version>-win32-x64-offline.zip`（约 300MB，内置 Windows x64 / CPython 3.12 的 Artemis site-packages）。解压后跑 `configure.cmd`，再跑 `runner.cmd`；首次会自动创建 venv 并解压 `deps\win32-site-packages.zip`，不需要访问 PyPI。解压后约 850MB，需要本机有 Python 3.12。
+
+**macOS 离线依赖包**：`aos-artemis-runner-<version>-darwin-arm64-offline.tar.gz`（含 `deps/darwin-arm64-site-packages.zip`，arm64 / CPython 3.12）。解压后先跑 `./setup-offline.command`（需要 `uv` 与本机 Python 3.12），再跑 `runner.command`；不需要访问 PyPI。Xcode、Appium/xcuitest、iOS 18+ Remote XPC 隧道仍需按 macOS runner 前置安装，不在离线包内。
 
 ### Jira 接入（读取 / 回写 / CLI）
 
