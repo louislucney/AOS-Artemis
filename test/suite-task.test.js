@@ -32,12 +32,17 @@ function caseEntry(index, feature, overrides = {}) {
   };
 }
 
-async function setupTaskProject({ statuses = {}, running = true } = {}) {
+async function setupTaskProject({ statuses = {}, running = true, appiumDetector } = {}) {
   const dir = makeTempProject({ config: baseConfig() });
   const store = new MemoryStore();
   const proxy = new SuiteProxy({ statuses, running });
   const crashCollector = { collect: async () => ({ status: "skipped", reason: "disabled" }) };
-  const { runtime } = await loadTestRuntime(dir, { proxy, store, crashCollector });
+  const { runtime } = await loadTestRuntime(dir, {
+    proxy,
+    store,
+    crashCollector,
+    ...(appiumDetector === undefined ? {} : { appiumDetector })
+  });
   const archiveDir = path.join(runtime.configDirAbs, "design", "case-sets");
   fs.mkdirSync(archiveDir, { recursive: true });
   const older = path.join(archiveDir, "20261010T090000_登录.json");
@@ -859,4 +864,34 @@ test("suite run --task: 设备运行批次清单落盘并登记 manifest_path（
   assert.equal(envOff, 0);
   runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
   assert.equal(runs[0].manifestPath, null, "AOS_SUITE_RUNS=0 → null");
+});
+
+test("suite run --task: iOS 真机缺 XCUITest 驱动 → 环境预检失败 exit 2（不装包/不跑用例）", async () => {
+  const appiumDetector = async () => ({
+    appium: { found: true, path: "appium", version: "2.11.0" },
+    xcuitest: { installed: false, version: null },
+    guidance: ["xcuitest 驱动未安装：appium driver install xcuitest。"]
+  });
+  const { runtime, store } = await setupTaskProject({ appiumDetector });
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: (await store.listCaseSets(runtime.project.rootDir))[0].id, featureKey: "f-登录-aaaa1111" }],
+    platforms: ["ios"],
+    baseline: "none",
+    createdBy: "cli"
+  });
+
+  const { code, errors } = await runCli(runtime, [
+    "run",
+    "--task",
+    task.id,
+    "--device",
+    "00008110-001A2C681E22801E"
+  ]);
+  assert.equal(code, 2);
+  assert.match(errors.join("\n"), /appium driver install xcuitest/);
+  const after = await store.getRegressionTask(runtime.project.rootDir, task.id);
+  assert.equal(after.status, "failed");
+  assert.equal(after.progress?.errorCode, "appium-driver-missing");
+  assert.equal((await store.listSuiteRuns(runtime.project.rootDir, { taskId: task.id })).length, 0);
 });

@@ -397,7 +397,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.17-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.18-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -616,6 +616,7 @@ sudo appium driver run xcuitest tunnel-creation
 | WDA 会话连不上/超时 | iOS 18+ 隧道未运行 | 保持 `sudo appium driver run xcuitest tunnel-creation` |
 | `mobile_run_task` 报无 active LLM | 执行器需要 LLM | `llm_list`/`aos_status` 配置并激活 |
 | IPA 安装失败 | simulator build / 签名 / 未信任 / UDID 不在 profile | 用 device build，信任证书，检查描述文件 |
+| `Appium API 500: Could not find a driver for automationName 'XCUITest'` | 执行机 Appium 未安装 xcuitest 驱动 | 在**执行机**运行 `appium driver install xcuitest` 后重跑；`suite run --task` 现会在装包前预检并直接失败（`appium-driver-missing`） |
 | 设备日志 `ios-log-tool-missing` | 未装 `idevicesyslog` | `brew install libimobiledevice`（非阻塞，崩溃仍走 devicectl） |
 | `device_busy` | 同 UDID 会话互斥 | 等当前任务/会话结束；观测可用缓存帧 |
 

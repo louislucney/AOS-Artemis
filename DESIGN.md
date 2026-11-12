@@ -191,6 +191,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 
 - 模拟器：idb/simctl；真机：Appium + WDA。
 - 签名：`AOS_IOS_XCODE_ORG_ID` 必填；iOS 18+ 真机需保持 Remote XPC 隧道（`appium driver run xcuitest tunnel-creation`，AOS 只给指引）。
+- **执行预检**：`suite run --task` 在装包/启动前检查真机 Appium 后端；本地 Appium 已安装但缺 XCUITest 驱动时直接失败（`appium-driver-missing`，进度 5%），不下载/安装 IPA、不占用设备；`AOS_APPIUM_URL` 直连外部服务时跳过本地 CLI 探测（由会话错误兜底）。
 - 观察统一 `src/ios/observation.ts`；busy 降级含帧龄/陈旧标注；执行器为门面 + 分模块。
 - 真机崩溃：`devicectl systemCrashLogs`；设备日志：`idevicesyslog` 实时尾采样（窗口近似 + `clockWarning`）。
 - 安装：真机 `.ipa` 经 Appium `mobile: installApp`（本地路径）或 `appium:app`（URL/远程宿主下载）安装；企业证书（In-House）IPA 可直接安装，需设备先信任企业开发者证书；模拟器不支持 `app_path`，需 `simctl install` 预装后用 `locked_app_package`。

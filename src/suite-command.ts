@@ -27,6 +27,7 @@ export { adbInstallAndroidApk };
 import { createAdbAndroidDevice } from "./device/android-actions.js";
 import { proposeFieldTargets } from "./structured/field-map.js";
 import { classifyIosSerial } from "./device/ios.js";
+import { iosDriverPreflight } from "./ios/appium/preflight.js";
 import { latestFeatureRefs, type ResolvedTaskRef } from "./tasks/feature-refs.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
 import {
@@ -855,6 +856,28 @@ async function suiteRunTask(
 
   const progress = new TaskProgressReporter(runtime, task);
   await progress.report("preflight", 5, { message: "环境预检" });
+  const iosRealDevices = devices.filter((serial) => classifyIosSerial(serial) === "device");
+  if (iosRealDevices.length > 0) {
+    const detection = await runtime.iosAppiumInfo().catch(() => null);
+    const blocker = iosDriverPreflight({
+      devices: iosRealDevices,
+      detection,
+      appiumUrl: runtime.iosEnvironment().AOS_APPIUM_URL ?? null
+    });
+    if (!blocker.ok) {
+      await progress
+        .report("failed", 5, { message: blocker.message, errorCode: blocker.code })
+        .catch(() => undefined);
+      await runtime.store
+        .updateRegressionTask(runtime.project.rootDir, task.id, {
+          status: "failed",
+          expectStatuses: ["pending", "claimed", "running"]
+        })
+        .catch(() => false);
+      io.errorLog(`环境错误：${blocker.message}`);
+      return 2;
+    }
+  }
   try {
     await runtime.refreshCenterLlm();
   } catch (error) {
