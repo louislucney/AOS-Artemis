@@ -169,6 +169,103 @@ test("once：领取最旧可跑 pending → executeSuite 收到正确 argv → �
   assert.ok(logs.some((line) => line.includes("退出码 0")));
 });
 
+test("once：同平台多设备只选一台，优先真实设备", async () => {
+  const { runtime, store } = await setupFixture();
+  const inv = {
+    ...inventory(),
+    devices: [
+      {
+        serial: "SIM-IOS-1",
+        name: "iPhone 17 Pro",
+        model: "iPhone 17 Pro",
+        osVersion: "26.2",
+        platform: "ios",
+        kind: "simulator",
+        state: "Booted"
+      },
+      {
+        serial: "REAL-IOS-1",
+        name: "iPhone 10",
+        model: "iPhone10,2",
+        osVersion: "16.7.16",
+        platform: "ios",
+        kind: "device",
+        state: "device"
+      }
+    ]
+  };
+  const task = await store.createRegressionTask(
+    taskInput(runtime.project.rootDir, { platforms: ["ios"] })
+  );
+  const calls = [];
+  const { options } = makeOptions(runtime, inv, {
+    executeSuite: async (argv) => {
+      calls.push(argv);
+      await store.updateRegressionTask(runtime.project.rootDir, task.id, {
+        status: "completed"
+      });
+      return 0;
+    }
+  });
+  const code = await runRunnerAgent(options);
+  assert.equal(code, 0);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], [
+    "run",
+    "--task",
+    task.id,
+    "--project",
+    runtime.project.rootDir,
+    "--device",
+    "REAL-IOS-1"
+  ]);
+});
+
+test("once：任务显式 deviceSerial 时只使用该设备", async () => {
+  const { runtime, store } = await setupFixture();
+  const inv = {
+    ...inventory(),
+    devices: [
+      {
+        serial: "SIM-IOS-1",
+        name: "iPhone 17 Pro",
+        model: "iPhone 17 Pro",
+        osVersion: "26.2",
+        platform: "ios",
+        kind: "simulator",
+        state: "Booted"
+      },
+      {
+        serial: "REAL-IOS-1",
+        name: "iPhone 10",
+        model: "iPhone10,2",
+        osVersion: "16.7.16",
+        platform: "ios",
+        kind: "device",
+        state: "device"
+      }
+    ]
+  };
+  const task = await store.createRegressionTask(
+    taskInput(runtime.project.rootDir, {
+      platforms: ["ios"],
+      deviceSerial: "SIM-IOS-1"
+    })
+  );
+  const calls = [];
+  const { options } = makeOptions(runtime, inv, {
+    executeSuite: async (argv) => {
+      calls.push(argv);
+      await store.updateRegressionTask(runtime.project.rootDir, task.id, {
+        status: "completed"
+      });
+      return 0;
+    }
+  });
+  await runRunnerAgent(options);
+  assert.deepEqual(calls[0].slice(-2), ["--device", "SIM-IOS-1"]);
+});
+
 test("once：无 pending → 不调用 executeSuite，返回 0", async () => {
   const { runtime, inventory: inv } = await setupFixture();
   const calls = [];

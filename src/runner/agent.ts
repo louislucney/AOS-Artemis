@@ -18,6 +18,7 @@ import {
   type HostSnapshot
 } from "./host-snapshot.js";
 import { collectRunnerInventory, type RunnerInventory } from "./inventory.js";
+import { selectTaskDevices } from "./device-selection.js";
 import { fireDueSchedules } from "./schedules.js";
 import { runnerTtlFrom } from "./status.js";
 
@@ -415,9 +416,26 @@ export async function runRunnerAgent(options: RunnerAgentOptions): Promise<numbe
         }
 
         const taskPlatforms = task.platforms;
-        const devices = currentInventory.devices
-          .filter((device) => taskPlatforms.includes(device.platform))
-          .map((device) => device.serial);
+        const selectedDevices = selectTaskDevices(currentInventory.devices, task);
+        const devices = selectedDevices.map((device) => device.serial);
+        if (devices.length === 0) {
+          io.log(
+            `[runner] 任务 ${task.id} 无可用设备（platforms=${taskPlatforms.join(",")}; deviceSerial=${task.deviceSerial ?? "-"}），释放回待执行`
+          );
+          await store
+            .releaseRegressionTask({
+              rootPath,
+              runnerId: me.id,
+              taskId: task.id,
+              to: "pending"
+            })
+            .catch((error) => {
+              io.errorLog(`[runner] 无设备释放失败：${errorMessage(error)}`);
+            });
+          if (once) return 0;
+          await sleep(pollMs);
+          continue;
+        }
         const hostId = snapshot.identity.id;
         let acquired: boolean;
         try {

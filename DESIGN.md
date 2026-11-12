@@ -202,6 +202,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 鉴权：`AOS_RUNNER_HOST_TOKENS`/文件优先；全局 `MOBILE_TESTING_RUNNER_JOB_TOKEN` + `X-AOS-Host-Id` 兼容；中心侧 `AOS_RUNNER_SHARED_LLM=1` + `AOS_RUNNER_DEFAULT_PROJECT`。
 - 共享 token：全局 token 下 Host ID 仍每机唯一；仅 `/panel/api/runners/suite/llm/proxy/*` 允许不带 `X-AOS-Host-Id`（Artemis/OpenAI 客户端只带 Authorization；项目 host 校验由 `assertLlmProject` 负责），其他控制面仍强制 host。
 - 队列/租约：host 级 `queue_paused`；`claim→毒丸→devices→acquireDeviceLeases→beginExecution`；30s 续租/心跳；失联回收（超龄+离线双条件）。runner 启动脚本默认 `AOS_SUITE_CASE_TIMEOUT_MS=600000`（单用例 10 分钟，可覆盖）；超时失败提示可用该变量延长，并调用 `mobile_manage_task(action="stop")` 停止 Artemis 子任务，避免孤儿进程占用设备。
+- **设备选择**：任务显式 `deviceSerial` 时只用该串号；否则每个平台选**一台**，优先 `kind=device`（真机），再模拟器/模拟机；同平台其余设备不租用、不执行。找不到匹配设备时释放回 `pending` 并记录日志。
 - 失败证据：runner 上传到 `.artemis/remote-evidence/<taskId>/<traceId>/`（status/stderr/stdout）；`suite evidence` 在本地 traces 缺失时回退读取，不再误报 trace 缺失。
 - **测试资料占位符**：套件回归任务可挂 **secret materials**（面板「② 参数 → 测试资料」或 `suite task create --materials <id>`）；runner 通过控制面 `/tasks/:id/materials` 下载并用 `alias=value`/JSON 解析，用例 `taskDesc` 的 `<secret:alias>` 提交前替换；台账/审计保留模板、不落明文；缺 alias 按 `data-environment` 失败且不提交 Artemis。非 secret 资料不可挂。
 - **字段映射（native 确定性填写）**：secret JSON 可为每个 alias 附 `target`/`fallbackTargets`/`screen`；native `type` + `secretRef` 省略 target 时按映射定位，填写后回读 AX value/label 比对（密码跳过；不一致 `field-mismatch`，屏幕不符 `field-screen-mismatch`）。`suite field-map probe --device <serial>` 只读列出可编辑控件（不输出输入值）。taskDesc/Excel 路径仍只有文本替换，不承诺多字段位置确定性。
