@@ -8,6 +8,7 @@ import {
   isFrameStale,
   resolveCachedFrameMaxAgeMs
 } from "../dist/ios/appium/session.js";
+import { AppiumError } from "../dist/ios/appium/client.js";
 
 class FakeTimers {
   constructor() {
@@ -55,13 +56,21 @@ class FakeClient {
     this.deleted = [];
     this.counter = 0;
     this.failCreate = 0;
+    this.failError = null;
   }
 
   async createSession(capabilities) {
     this.created.push(capabilities);
     if (this.failCreate > 0) {
       this.failCreate -= 1;
-      throw new Error("create-session-failed");
+      throw (
+        this.failError ??
+        new AppiumError(
+          500,
+          "session not created",
+          "Appium API 500（http://127.0.0.1:4723）: Could not find a driver for automationName 'XCUITest'"
+        )
+      );
     }
     this.counter += 1;
     return { sessionId: `s-${this.counter}`, capabilities: {} };
@@ -172,6 +181,25 @@ test("appium session: 创建失败时触发托管恢复一次", async () => {
   assert.equal(client.created.length, 2);
   assert.equal(lease.sessionId, "s-1");
   lease.release();
+});
+
+test("appium session: 设备侧错误不触发 Appium 重启", async () => {
+  let recovered = 0;
+  const { client, manager } = makeManager({
+    recoverAppium: async () => {
+      recovered += 1;
+      return true;
+    }
+  });
+  client.failCreate = 1;
+  client.failError = new AppiumError(
+    500,
+    "session not created",
+    "Appium API 500（http://127.0.0.1:4723）: Device not found"
+  );
+  await assert.rejects(manager.acquire("U-5b", "observe"), /Device not found/);
+  assert.equal(recovered, 0, "设备错误不重建服务");
+  assert.equal(client.created.length, 1);
 });
 
 test("appium session: dispose 清理会话并拒绝排队请求", async () => {

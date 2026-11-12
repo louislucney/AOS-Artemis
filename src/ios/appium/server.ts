@@ -18,6 +18,8 @@ export interface AppiumServerOptions {
   logPath?: string | null;
   startupTimeoutMs?: number;
   probeTimeoutMs?: number;
+  /** 诊断用：记录实际使用的 Appium 地址与归属（managed/external）。 */
+  log?: (line: string) => void;
 }
 
 export const APPIUM_PORT_DEFAULT = 4723;
@@ -33,6 +35,7 @@ export class AppiumServerManager {
   private readonly logPath: string | null;
   private readonly startupTimeoutMs: number;
   private readonly probeTimeoutMs: number;
+  private readonly log: (line: string) => void;
 
   private child: ChildProcess | null = null;
   private baseUrl: string | null = null;
@@ -46,6 +49,7 @@ export class AppiumServerManager {
     this.logPath = options.logPath ?? null;
     this.startupTimeoutMs = options.startupTimeoutMs ?? APPIUM_STARTUP_TIMEOUT_MS_DEFAULT;
     this.probeTimeoutMs = options.probeTimeoutMs ?? 2_000;
+    this.log = options.log ?? (() => {});
   }
 
   current(): { state: AppiumServerState; baseUrl: string | null; managed: boolean } {
@@ -70,6 +74,7 @@ export class AppiumServerManager {
       await this.probe(baseUrl, this.probeTimeoutMs);
       this.baseUrl = baseUrl;
       this.state = "direct";
+      this.log(`Appium 直连（AOS_APPIUM_URL）：${baseUrl}`);
       return { baseUrl, managed: false };
     }
     if (this.child !== null && this.baseUrl !== null) {
@@ -84,11 +89,13 @@ export class AppiumServerManager {
       await this.probe(baseUrl, this.probeTimeoutMs);
       this.baseUrl = baseUrl;
       this.state = "running";
+      this.log(`Appium 复用已有服务（非本服务启动）：${baseUrl}`);
       return { baseUrl, managed: false };
     } catch {
       /* no existing server on the port — spawn one */
     }
     this.state = "starting";
+    this.log(`Appium 启动：appium --port ${port}`);
     const child = this.spawnImpl("appium", ["--port", String(port)], {
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -113,6 +120,7 @@ export class AppiumServerManager {
     }
     this.baseUrl = baseUrl;
     this.state = "running";
+    this.log(`Appium 就绪（managed）：${baseUrl}`);
     return { baseUrl, managed: true };
   }
 
@@ -136,5 +144,22 @@ export class AppiumServerManager {
     if (child !== null && child.exitCode === null) {
       child.kill("SIGTERM");
     }
+  }
+
+  /** 托管服务重启（先等端口释放，再按当前策略重新就绪）；外部直连不在此处理。 */
+  async restart(): Promise<AppiumServerHandle> {
+    const baseUrl = this.baseUrl;
+    await this.dispose();
+    if (baseUrl !== null) {
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        try {
+          await this.probe(baseUrl, 500);
+          await this.sleep(100);
+        } catch {
+          break;
+        }
+      }
+    }
+    return await this.ensureReady();
   }
 }

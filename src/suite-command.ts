@@ -597,6 +597,11 @@ export async function materializeTaskApp(
   };
   const appAsset = bundle?.appAsset ?? null;
   if (appAsset !== null && typeof runtime.store.downloadTaskApp === "function") {
+    const expected = (appAsset.sha256 ?? "").trim();
+    if (expected !== "") {
+      const cached = targetFor(appAsset.filename, expected);
+      if (fs.existsSync(cached)) return { ok: true, path: cached, sha256: expected };
+    }
     try {
       const downloaded = await runtime.store.downloadTaskApp(
         runtime.project.rootDir,
@@ -996,16 +1001,19 @@ async function suiteRunTask(
     runnerEnv.AOS_APP_INSTALL_POLICY ?? "skip-if-present"
   ).trim();
   const expectedAppSha = (taskApp.sha256 ?? "").trim();
-  const androidOnly =
-    devices.length > 0 && devices.every((serial) => classifyIosSerial(serial) === null);
+  const androidDevices = devices.filter((serial) => classifyIosSerial(serial) === null);
+  const iosDeviceTargets = devices.filter((serial) => classifyIosSerial(serial) === "device");
+  const iosSimulatorTargets = devices.filter(
+    (serial) => classifyIosSerial(serial) === "simulator"
+  );
   if ((runnerEnv.AOS_ANDROID_INSTALL_MODE ?? "").trim() === "artemis") {
     io.errorLog(
       "AOS_ANDROID_INSTALL_MODE=artemis 已停用：Android 安装统一走 runner 单次 adb install -r -t（Artemis 安装冲突时会卸载应用，等同清空 app 数据）"
     );
   }
-  const installedShaMatches = async (): Promise<boolean[]> =>
+  const installedShaMatches = async (serials: string[]): Promise<boolean[]> =>
     await Promise.all(
-      devices.map((serial) =>
+      serials.map((serial) =>
         androidInstalledApkMatches(runnerEnv, serial, taskAppPackage, expectedAppSha)
       )
     );
@@ -1022,42 +1030,64 @@ async function suiteRunTask(
       .catch(() => false);
     return 2;
   };
-  if (taskApp.path !== null && androidOnly) {
-    const alreadyInstalled =
-      appInstallPolicy !== "always" &&
-      expectedAppSha !== "" &&
-      taskAppPackage !== "" &&
-      (await installedShaMatches()).every(Boolean);
-    if (alreadyInstalled) {
-      say(
-        `应用 ${taskAppPackage} 已安装且 APK SHA 一致（${expectedAppSha.slice(0, 12)}）：跳过重复安装（AOS_APP_INSTALL_POLICY=always 可强制）`
-      );
-    } else {
-      for (const serial of devices) {
-        const installed = await adbInstallAndroidApk(runnerEnv, serial, taskApp.path);
-        if (!installed.ok) {
-          return await failAppInstall(`安装包安装失败（${serial}）：${installed.error}`);
-        }
-      }
-      if (
+  if (taskApp.path !== null) {
+    let handled = false;
+    if (androidDevices.length > 0) {
+      const alreadyInstalled =
+        appInstallPolicy !== "always" &&
         expectedAppSha !== "" &&
         taskAppPackage !== "" &&
-        !(await installedShaMatches()).every(Boolean)
-      ) {
-        return await failAppInstall(
-          `安装后 APK SHA 校验失败：期望 ${expectedAppSha.slice(0, 12)}，设备上的安装包与下发包不一致`
+        (await installedShaMatches(androidDevices)).every(Boolean);
+      if (alreadyInstalled) {
+        say(
+          `应用 ${taskAppPackage} 已安装且 APK SHA 一致（${expectedAppSha.slice(0, 12)}）：跳过重复安装（AOS_APP_INSTALL_POLICY=always 可强制）`
+        );
+      } else {
+        for (const serial of androidDevices) {
+          const installed = await adbInstallAndroidApk(runnerEnv, serial, taskApp.path);
+          if (!installed.ok) {
+            return await failAppInstall(`安装包安装失败（${serial}）：${installed.error}`);
+          }
+        }
+        if (
+          expectedAppSha !== "" &&
+          taskAppPackage !== "" &&
+          !(await installedShaMatches(androidDevices)).every(Boolean)
+        ) {
+          return await failAppInstall(
+            `安装后 APK SHA 校验失败：期望 ${expectedAppSha.slice(0, 12)}，设备上的安装包与下发包不一致`
+          );
+        }
+        say(
+          `任务安装包：${path.basename(taskApp.path)}（adb install -r 成功${expectedAppSha === "" ? "" : "，APK SHA 校验通过"}）`
         );
       }
+      handled = true;
+    }
+    if (iosDeviceTargets.length > 0) {
+      await progress
+        .report("app_started", 8, { message: "安装 iOS 安装包（每台设备一次）" })
+        .catch(() => undefined);
+      for (const serial of iosDeviceTargets) {
+        const installed = await runtime.iosWda().installIpa(serial, taskApp.path);
+        if (!installed.ok) {
+          return await failAppInstall(`iOS 安装包安装失败（${serial}）：${installed.error}`);
+        }
+      }
       say(
-        `任务安装包：${path.basename(taskApp.path)}（adb install -r 成功${expectedAppSha === "" ? "" : "，APK SHA 校验通过"}）`
+        `任务安装包：${path.basename(taskApp.path)}（iOS 真机安装完成；用例内不再重复安装）`
       );
+      handled = true;
+    }
+    if (iosSimulatorTargets.length > 0) {
+      say(
+        `任务安装包：${path.basename(taskApp.path)}（iOS 模拟器不支持 app_path：跳过安装，使用已安装应用）`
+      );
+      handled = true;
     }
     // 硬保险：Android 任务包绝不再交给 Artemis 安装——其 adbutils 在版本/签名冲突时
-    // 会先 pm uninstall 再重装，等于清空 app 数据。
-    baseOptions.appPath = undefined;
-  } else if (taskApp.path !== null) {
-    baseOptions.appPath = taskApp.path;
-    say(`任务安装包：${path.basename(taskApp.path)}（非 Android：执行前安装）`);
+    // 会先 pm uninstall 再重装，等于清空 app 数据；iOS 已在套件开始安装一次。
+    baseOptions.appPath = handled ? undefined : taskApp.path;
   }
   if (baseOptions.lockedAppPackage === undefined && taskAppPackage !== "") {
     baseOptions.lockedAppPackage = taskAppPackage;

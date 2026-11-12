@@ -1,4 +1,4 @@
-import type { AppiumClient } from "./client.js";
+import { AppiumError, type AppiumClient } from "./client.js";
 
 export interface CachedFrame {
   png: Buffer;
@@ -91,6 +91,19 @@ export interface AppiumSessionManagerOptions {
   observeWaitMs?: number;
   timers?: TimerApi;
   recoverAppium?: () => Promise<boolean>;
+  /** 只在服务级故障（网络/驱动缺失等）触发重建；设备侧错误不重启服务。 */
+  shouldRecover?: (error: unknown) => boolean;
+}
+
+const RECOVERABLE_MESSAGE_RE =
+  /Could not find a driver|driver.*not.*installed|ECONNREFUSED|ECONNRESET|socket hang up|Appium 请求失败/i;
+
+/** 默认判定：连接层失败或驱动缺失/服务 5xx；用例/设备错误不重建 Appium。 */
+export function defaultShouldRecover(error: unknown): boolean {
+  if (!(error instanceof AppiumError)) return false;
+  if (error.status === null) return true;
+  if (error.status === 500 && RECOVERABLE_MESSAGE_RE.test(error.message)) return true;
+  return RECOVERABLE_MESSAGE_RE.test(error.message);
 }
 
 export const SESSION_IDLE_MS_DEFAULT = 30 * 60_000;
@@ -100,12 +113,13 @@ export const OBSERVE_WAIT_MS_DEFAULT = 5_000;
  * recycling, self-heal (cleanup -> recreate -> optional managed restart) and a
  * last-frame cache for busy observation requests. */
 export class AppiumSessionManager {
-  private readonly client: AppiumClient;
+  private client: AppiumClient;
   private readonly capabilitiesFor: (udid: string) => Record<string, unknown>;
   private readonly idleMs: number;
   private readonly observeWaitMs: number;
   private readonly timers: TimerApi;
   private readonly recoverAppium: (() => Promise<boolean>) | null;
+  private readonly shouldRecover: (error: unknown) => boolean;
   private readonly states = new Map<string, DeviceState>();
 
   constructor(options: AppiumSessionManagerOptions) {
@@ -115,6 +129,12 @@ export class AppiumSessionManager {
     this.observeWaitMs = options.observeWaitMs ?? OBSERVE_WAIT_MS_DEFAULT;
     this.timers = options.timers ?? defaultTimers;
     this.recoverAppium = options.recoverAppium ?? null;
+    this.shouldRecover = options.shouldRecover ?? defaultShouldRecover;
+  }
+
+  /** Appium 服务重建后替换客户端（baseUrl 可能变化）。 */
+  updateClient(client: AppiumClient): void {
+    this.client = client;
   }
 
   private stateFor(udid: string): DeviceState {
@@ -193,7 +213,7 @@ export class AppiumSessionManager {
     try {
       created = (await this.client.createSession(capabilities)).sessionId;
     } catch (error) {
-      if (this.recoverAppium === null) throw error;
+      if (this.recoverAppium === null || !this.shouldRecover(error)) throw error;
       const recovered = await this.recoverAppium().catch(() => false);
       if (!recovered) throw error;
       created = (await this.client.createSession(capabilities)).sessionId;

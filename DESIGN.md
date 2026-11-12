@@ -195,6 +195,8 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 观察统一 `src/ios/observation.ts`；busy 降级含帧龄/陈旧标注；执行器为门面 + 分模块。
 - 真机崩溃：`devicectl systemCrashLogs`；设备日志：`idevicesyslog` 实时尾采样（窗口近似 + `clockWarning`）。
 - 安装：真机 `.ipa` 经 Appium `mobile: installApp`（本地路径）或 `appium:app`（URL/远程宿主下载）安装；企业证书（In-House）IPA 可直接安装，需设备先信任企业开发者证书；模拟器不支持 `app_path`，需 `simctl install` 预装后用 `locked_app_package`。
+- **套件安装节奏**：`suite run` 对真机 IPA 只在套件开始前**每设备安装一次**，后续用例不再携带 `app_path`（避免逐例重装 74MB 级 IPA）；模拟器忽略 `app_path` 并告警。任务模式同一任务的多份用例集共享这次安装。
+- **Appium 归属与自愈**：托管启动/复用外部服务时记录实际 `baseUrl` 与 `managed|external`；会话创建遇到驱动缺失/连接断开时，托管服务自动重启并重试一次，外部服务（`AOS_APPIUM_URL` 或端口上已有实例）不自动重启，错误信息带实际地址与排查指引。
 
 ### 5.3 runner / 多主机
 

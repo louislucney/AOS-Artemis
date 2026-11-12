@@ -1135,3 +1135,34 @@ test("SuiteStoreClient: 网络失败包含中心地址与排查提示", async ()
     }
   );
 });
+
+test("materializeTaskApp: 本地缓存命中（SHA 一致）不再从中心下载", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-app-cache-"));
+  const sha = "c".repeat(64);
+  const cacheDir = path.join(dir, ".artemis", "cache", "apps");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const cached = path.join(cacheDir, `${sha}.apk`);
+  fs.writeFileSync(cached, "apk");
+  let downloads = 0;
+  const runtime = {
+    project: { rootDir: dir },
+    store: {
+      downloadTaskApp: async () => {
+        downloads += 1;
+        return { filename: "app.apk", sha256: sha, size: 3, buffer: Buffer.from("apk") };
+      }
+    }
+  };
+  try {
+    const result = await materializeTaskApp(
+      runtime,
+      { id: "task-2", appAssetId: "asset-2" },
+      { appAsset: { id: "asset-2", filename: "app.apk", sha256: sha, size: 3 } }
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.path, cached);
+    assert.equal(downloads, 0, "缓存命中的任务不再下载安装包");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

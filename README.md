@@ -397,7 +397,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.18-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.19-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -587,6 +587,7 @@ sudo appium driver run xcuitest tunnel-creation
 
    - 本地 `.ipa` 或 `http(s)://` URL 均可；真机必须是 **device build**（含 `iOS, arm64`，不是 simulator slice）。
    - 已预装应用：不要传 `app_path`，用 `locked_app_package` 指向 bundle id。
+   - `suite run`：真机 IPA 在套件开始前每台设备只安装一次，用例内不再逐例重装；模拟器忽略 `app_path`（需先用 `simctl install` 预装）。
    - 安装失败优先检查：签名/描述文件、设备 UDID 是否在该 profile、企业证书是否已信任、IPA 是否 simulator-only。
 
 4. **轮询/停止/取证**

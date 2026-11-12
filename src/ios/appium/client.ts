@@ -90,7 +90,12 @@ export class AppiumClient {
     }
     if (!res.ok) {
       const { wdError, message } = extractWdError(parsed);
-      throw new AppiumError(res.status, wdError, `Appium API ${res.status}: ${message}`, parsed);
+      throw new AppiumError(
+        res.status,
+        wdError,
+        `Appium API ${res.status}（${this.baseUrl}）: ${message}`,
+        parsed
+      );
     }
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && "value" in parsed) {
       return (parsed as Record<string, unknown>).value as T;

@@ -132,7 +132,8 @@ export interface SuiteRunOptions {
   lockedAppPackage?: string;
   /** 可选：Android APK/iOS IPA 的本地路径或 URL。
    * Android：套件开始前只安装一次（adb install -r -t），不再透传给 Artemis（其安装冲突会卸载清数据）；
-   * iOS：透传 `mobile_run_task.app_path`，由 Artemis 安装。 */
+   * iOS 真机：套件开始前安装一次（Appium installApp），用例内不再重复安装；
+   * iOS 模拟器：不支持 app_path，跳过并告警（使用已安装应用）。 */
   appPath?: string;
   /** 测试注入：Android 安装函数；默认 adb install -r -t，失败即中止（绝不卸载/清数据）。 */
   installAndroidApp?: (
@@ -140,6 +141,11 @@ export interface SuiteRunOptions {
     serial: string,
     apkPath: string
   ) => Promise<{ ok: true; output?: string } | { ok: false; error: string }>;
+  /** 测试注入：iOS 真机 IPA 安装函数；默认 Appium `mobile: installApp`。 */
+  installIosApp?: (
+    udid: string,
+    ipaPath: string
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** secret 测试资料（alias→value）；用例 taskDesc/actions 中的 `<secret:alias>` 执行前替换。 */
   secrets?: SecretEntry[];
   regressionTaskId?: string | null;
@@ -585,6 +591,22 @@ export async function runGeneratedTests(
         `Android 安装失败（不会卸载/清空应用数据）：${installed.error}`
       );
     }
+    caseAppPath = null;
+  }
+
+  // iOS 真机：IPA 只在套件开始前安装一次；逐例重新安装 76MB 级 IPA 会让套件不可用。
+  if (caseAppPath !== null && serial !== null && serialKind === "device") {
+    const install =
+      options.installIosApp ?? ((udid: string, ipa: string) => runtime.iosWda().installIpa(udid, ipa));
+    const installed = await install(serial, caseAppPath);
+    if (!installed.ok) {
+      return emptySuiteReport(testsPath, `iOS 安装失败（${serial}）：${installed.error}`);
+    }
+    caseAppPath = null;
+  }
+  // iOS 模拟器不支持 app_path（tool-entry 会拒绝）；按已安装应用执行。
+  if (caseAppPath !== null && serialKind === "simulator") {
+    logWarn(`iOS 模拟器不支持 app_path，已跳过安装：${caseAppPath}`);
     caseAppPath = null;
   }
 

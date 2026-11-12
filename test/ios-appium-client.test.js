@@ -172,3 +172,24 @@ test("appium client: 网络错误与超时映射为 AppiumError", async () => {
     return true;
   });
 });
+
+test("appium client: 服务端错误带实际 Appium 地址（便于定位是哪个实例）", async () => {
+  const fetchImpl = fakeFetch(async () =>
+    jsonResponse(
+      {
+        value: {
+          error: "session not created",
+          message: "Could not find a driver for automationName 'XCUITest'"
+        }
+      },
+      500
+    )
+  );
+  const client = clientWith(fetchImpl);
+  await assert.rejects(client.createSession({ platformName: "iOS" }), (error) => {
+    assert.ok(error instanceof AppiumError);
+    assert.match(error.message, /127\.0\.0\.1:4723/);
+    assert.match(error.message, /Could not find a driver/);
+    return true;
+  });
+});

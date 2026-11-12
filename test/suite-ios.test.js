@@ -311,3 +311,75 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
   assert.equal(reverse.to, "首頁");
   assert.equal(reverse.status, "pending");
 });
+
+test("suite runner: iOS 真机 IPA 只在套件开始安装一次，用例内不再带 app_path", async () => {
+  __resetIosTasks();
+  const REAL = "00008110-001A2C681E22801E";
+  const { dir, proxy, runtime } = await setupIos();
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "tests.json"),
+    JSON.stringify({ flows: [caseEntry(1), caseEntry(2)] })
+  );
+  writeStatus(dir, "trace-1", { trace_id: "trace-1", status: "completed", device_serial: REAL });
+  writeStatus(dir, "trace-2", { trace_id: "trace-2", status: "completed", device_serial: REAL });
+
+  const installs = [];
+  const report = await runGeneratedTests(runtime, {
+    deviceSerial: REAL,
+    lockedAppPackage: "com.apple.Preferences",
+    appPath: "/tmp/GUUAT.ipa",
+    installIosApp: async (udid, ipa) => {
+      installs.push([udid, ipa]);
+      return { ok: true };
+    },
+    reset: async (request) => ({
+      ok: true,
+      serial: request.serial ?? null,
+      adb: { path: null, source: "missing" },
+      commands: []
+    }),
+    sleep: async () => {},
+    pollIntervalMs: 0,
+    apiErrors: true,
+    iosLogCollector: async () => ({ status: "skipped", reason: "ios-log-unsupported" })
+  });
+
+  assert.equal(report.cases.length, 2);
+  assert.deepEqual(installs, [[REAL, "/tmp/GUUAT.ipa"]], "每台设备只安装一次");
+  const submits = proxy.calls.filter((call) => call.name === "mobile_run_task");
+  assert.equal(submits.length, 2);
+  assert.ok(
+    submits.every((call) => call.args.app_path === undefined),
+    "安装后用例不再携带 app_path（避免逐例重装）"
+  );
+});
+
+test("suite runner: iOS 模拟器忽略 app_path（不使用 Appium 安装）", async () => {
+  __resetIosTasks();
+  const { dir, proxy, runtime } = await setupIos();
+  writeStatus(dir, "trace-1", { trace_id: "trace-1", status: "completed", device_serial: UDID });
+  const installs = [];
+  const report = await runGeneratedTests(runtime, {
+    deviceSerial: UDID,
+    lockedAppPackage: "com.apple.Preferences",
+    appPath: "/tmp/sim.ipa",
+    installIosApp: async (udid, ipa) => {
+      installs.push([udid, ipa]);
+      return { ok: true };
+    },
+    reset: async (request) => ({
+      ok: true,
+      serial: request.serial ?? null,
+      adb: { path: null, source: "missing" },
+      commands: []
+    }),
+    sleep: async () => {},
+    pollIntervalMs: 0,
+    iosLogCollector: async () => ({ status: "skipped", reason: "ios-log-unsupported" })
+  });
+  assert.equal(report.cases.length, 1);
+  assert.equal(installs.length, 0, "模拟器不走 Appium 安装");
+  const submits = proxy.calls.filter((call) => call.name === "mobile_run_task");
+  assert.equal(submits.length, 1);
+  assert.equal(submits[0].args.app_path, undefined);
+});

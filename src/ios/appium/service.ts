@@ -2,7 +2,7 @@ import { spawn as defaultSpawn } from "node:child_process";
 
 import type { IosDevice } from "../../device/ios-actions.js";
 import { resolveObserveRetry, type IosUiNode } from "../../device/ios.js";
-import { errorMessage, sleep } from "../../util.js";
+import { errorMessage, logWarn, sleep } from "../../util.js";
 import { buildIosCapabilities } from "./capabilities.js";
 import { AppiumClient } from "./client.js";
 import { IosHierarchyParseError, makeWdaDevice } from "./facade.js";
@@ -27,6 +27,8 @@ export interface IosWdaServiceOptions {
   spawnImpl?: typeof defaultSpawn;
   sleep?: (ms: number) => Promise<void>;
   logPath?: string | null;
+  /** 诊断输出（默认 stderr）：Appium 地址、归属、重建。 */
+  log?: (line: string) => void;
 }
 
 function envNumber(env: NodeJS.ProcessEnv, key: string, fallback: number, allowZero = false): number {
@@ -45,6 +47,7 @@ export class IosWdaService {
   private readonly spawnImpl: typeof defaultSpawn | undefined;
   private readonly sleep: ((ms: number) => Promise<void>) | undefined;
   private readonly logPath: string | null;
+  private readonly log: (line: string) => void;
   private readonly server: AppiumServerManager;
   private client: AppiumClient | null = null;
   private sessions: AppiumSessionManager | null = null;
@@ -55,12 +58,14 @@ export class IosWdaService {
     this.spawnImpl = options.spawnImpl;
     this.sleep = options.sleep;
     this.logPath = options.logPath ?? null;
+    this.log = options.log ?? logWarn;
     this.server = new AppiumServerManager({
       env: this.env,
       ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
       ...(this.spawnImpl ? { spawnImpl: this.spawnImpl } : {}),
       ...(this.sleep ? { sleep: this.sleep } : {}),
-      logPath: this.logPath
+      logPath: this.logPath,
+      log: this.log
     });
   }
 
@@ -75,6 +80,24 @@ export class IosWdaService {
     return this.client;
   }
 
+  /** 会话创建遇到服务级故障（驱动缺失/连接断开）时重建托管 Appium；
+   * 外部服务（AOS_APPIUM_URL 或端口上已有服务）不自动重启，只回报地址。 */
+  private async recoverAppium(): Promise<boolean> {
+    const current = this.server.current();
+    if (!current.managed) {
+      this.log(
+        `Appium 会话创建失败：当前服务非托管（${current.baseUrl ?? "unknown"}），不自动重启；请检查该实例的 XCUITest 驱动/APPIUM_HOME`
+      );
+      return false;
+    }
+    this.log(`Appium 会话创建失败：重启托管服务后重试（${current.baseUrl ?? "unknown"}）`);
+    await this.server.restart();
+    this.client = null;
+    const client = await this.ensureClient();
+    this.sessions?.updateClient(client);
+    return true;
+  }
+
   async device(udid: string): Promise<IosDevice> {
     const client = await this.ensureClient();
     if (this.sessions === null) {
@@ -82,7 +105,8 @@ export class IosWdaService {
         client,
         capabilitiesFor: (id) => buildIosCapabilities({ udid: id, env: this.env }),
         idleMs: envNumber(this.env, "AOS_IOS_SESSION_IDLE_MS", SESSION_IDLE_MS_DEFAULT, true),
-        observeWaitMs: envNumber(this.env, "AOS_IOS_OBSERVE_WAIT_MS", OBSERVE_WAIT_MS_DEFAULT)
+        observeWaitMs: envNumber(this.env, "AOS_IOS_OBSERVE_WAIT_MS", OBSERVE_WAIT_MS_DEFAULT),
+        recoverAppium: () => this.recoverAppium()
       });
     }
     return makeWdaDevice({ udid, manager: this.sessions, client, leaseMode: "observe" });
