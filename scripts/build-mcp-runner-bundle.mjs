@@ -456,6 +456,12 @@ if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' "$ROOT/project/.env"; then
   echo "[runner] project/.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；先运行 configure.command。"
   exit 2
 fi
+EXISTING_RUNNER="$(pgrep -f "dist/cli.js suite runner.*--name $MOBILE_TESTING_HOST_ID" 2>/dev/null | head -1 || true)"
+if [ -n "$EXISTING_RUNNER" ]; then
+  echo "[runner] 已有一个 runner 在运行（host=$MOBILE_TESTING_HOST_ID，PID $EXISTING_RUNNER），无需重复启动。"
+  echo "[runner] 如需替换：先 kill -TERM $EXISTING_RUNNER，等它退出后再执行 ./runner.command。"
+  exit 0
+fi
 if [ ! -x "$ROOT/artemis/.venv/bin/python" ] || [ ! -f "$ROOT/artemis/.venv/.aos-deps.json" ]; then
   if [ -f "$ROOT/deps/darwin-arm64-site-packages.zip" ]; then
     echo "[runner] 首次启动：使用离线依赖（setup-offline.command）..."
