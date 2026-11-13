@@ -476,6 +476,12 @@ export class MemoryStore implements ProjectStore {
       deviceLeaseId: input.deviceLeaseId ?? null,
       appAssetId: input.appAssetId ?? null,
       appPackage: input.appPackage ?? null,
+      appInstallMode: input.appInstallMode ?? null,
+      appVersionExpected: input.appVersionExpected ?? null,
+      appVersionActual: input.appVersionActual ?? null,
+      appVersionCheck: input.appVersionCheck ?? null,
+      appVersionCheckedAt: input.appVersionCheckedAt ?? null,
+      finishedAt: input.finishedAt ?? null,
       materialsAssetId: input.materialsAssetId ?? null,
       caseIds: [...(input.caseIds ?? [])],
       progress: input.progress ?? null
@@ -541,6 +547,12 @@ export class MemoryStore implements ProjectStore {
       claimedHostId?: string | null;
       claimedInstanceId?: string | null;
       startedAt?: string | null;
+      finishedAt?: string | null;
+      appInstallMode?: RegressionTaskRecord["appInstallMode"];
+      appVersionExpected?: string | null;
+      appVersionActual?: string | null;
+      appVersionCheck?: RegressionTaskRecord["appVersionCheck"];
+      appVersionCheckedAt?: string | null;
       progress?: import("./types.js").TaskProgress | null;
       expectDeviceSerialEmpty?: boolean;
       expectStatuses?: RegressionTaskStatus[];
@@ -571,6 +583,14 @@ export class MemoryStore implements ProjectStore {
     if (patch.claimedHostId !== undefined) task.claimedHostId = patch.claimedHostId;
     if (patch.claimedInstanceId !== undefined) task.claimedInstanceId = patch.claimedInstanceId;
     if (patch.startedAt !== undefined) task.startedAt = patch.startedAt;
+    if (patch.finishedAt !== undefined) task.finishedAt = patch.finishedAt;
+    if (patch.appInstallMode !== undefined) task.appInstallMode = patch.appInstallMode;
+    if (patch.appVersionExpected !== undefined) task.appVersionExpected = patch.appVersionExpected;
+    if (patch.appVersionActual !== undefined) task.appVersionActual = patch.appVersionActual;
+    if (patch.appVersionCheck !== undefined) task.appVersionCheck = patch.appVersionCheck;
+    if (patch.appVersionCheckedAt !== undefined) {
+      task.appVersionCheckedAt = patch.appVersionCheckedAt;
+    }
     if (patch.progress !== undefined) {
       const next = patch.progress;
       if (next === null || task.progress === null || next.seq >= task.progress.seq) {

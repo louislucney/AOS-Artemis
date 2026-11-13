@@ -32,6 +32,18 @@ test("TaskProgressReporter: persists monotonic progress snapshots", async () => 
   assert.equal(saved.progress.caseId, "case-1");
 });
 
+test("TaskProgressReporter: first report sets startedAt; done sets finishedAt", async () => {
+  const { dir, store, task } = await taskFixture();
+  const reporter = new TaskProgressReporter({ store, project: { rootDir: dir } }, task);
+  await reporter.report("preflight", 5);
+  await reporter.report("done", 100);
+  const saved = await store.getRegressionTask(dir, task.id);
+  assert.ok(saved.startedAt, "first progress writes test start time");
+  assert.ok(saved.finishedAt, "done writes test end time");
+  assert.equal(saved.startedAt, reporter.startedAtIso());
+  assert.ok(saved.finishedAt >= saved.startedAt);
+});
+
 test("TaskProgressReporter: center failure does not throw", async () => {
   const { dir, task } = await taskFixture();
   const store = {

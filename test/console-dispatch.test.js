@@ -471,6 +471,52 @@ test("dispatch preview: 可选安装包并进入表单/签名", async () => {
   assert.match(dispatchFormSignature(params), /com\.example\.app/);
 });
 
+test("dispatch preview: iOS 不下发 IPA → installed + 期望版本 + 忽略 IPA", async () => {
+  const { store, setA } = await seed();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-ipa-"));
+  const ipaPath = path.join(dir, "app.ipa");
+  fs.writeFileSync(ipaPath, "fake");
+  const ipa = await store.createWebAsset({
+    rootPath: ROOT,
+    kind: "package",
+    filename: "app.ipa",
+    sha256: "f".repeat(64),
+    size: fs.statSync(ipaPath).size,
+    storagePath: ipaPath
+  });
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: setA.id,
+    platforms: "ios",
+    appPackage: "com.example.app",
+    skipIosInstall: "1",
+    appVersionExpected: "2.0.0"
+  });
+  const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
+  assert.equal(preview.skipIosInstall, true);
+  assert.equal(preview.appInstallMode, "installed");
+  assert.equal(preview.appVersionExpected, "2.0.0");
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId: dispatchPreviewId(preview, dispatchFormSignature(params), ROOT),
+    formSignature: dispatchFormSignature(params),
+    query: Object.fromEntries(params)
+  });
+  assert.match(html, /不下发 iOS 安装包/);
+  assert.match(html, /期望版本/);
+  assert.match(html, /name="iosInstalledConfirmed"/);
+  assert.match(html, /name="appVersionExpected"/);
+
+  const withIpa = new URLSearchParams(params);
+  withIpa.set("appAssetId", ipa.id);
+  const ignored = await computeDispatchPreview({ store, env: {} }, ROOT, withIpa);
+  assert.equal(ignored.appAssetId, null);
+  assert.match(ignored.warnings.join(" "), /忽略所选 IPA/);
+  assert.notEqual(dispatchFormSignature(params), dispatchFormSignature(withIpa));
+});
+
 test("dispatch preview: 可选 secret 测试资料并进入表单/签名", async () => {
   const { store, setA } = await seed();
   const mat = await store.createWebAsset({

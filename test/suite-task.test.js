@@ -8,13 +8,14 @@ import { MemoryStore } from "../dist/db/memory.js";
 import { runSuiteCommand } from "../dist/suite-command.js";
 import { baseConfig, loadTestRuntime, makeTempProject, SuiteProxy } from "./helpers.js";
 
-async function runCli(runtime, args) {
+async function runCli(runtime, args, deps = {}) {
   const logs = [];
   const errors = [];
   const code = await runSuiteCommand(args, {
     buildRuntime: async () => ({ runtime, dispose: async () => {} }),
     log: (line) => logs.push(line),
-    errorLog: (line) => errors.push(line)
+    errorLog: (line) => errors.push(line),
+    ...deps
   });
   return { code, logs, errors };
 }
@@ -32,8 +33,8 @@ function caseEntry(index, feature, overrides = {}) {
   };
 }
 
-async function setupTaskProject({ statuses = {}, running = true, appiumDetector } = {}) {
-  const dir = makeTempProject({ config: baseConfig() });
+async function setupTaskProject({ statuses = {}, running = true, appiumDetector, dotenv = "" } = {}) {
+  const dir = makeTempProject({ config: baseConfig(), dotenv });
   const store = new MemoryStore();
   const proxy = new SuiteProxy({ statuses, running });
   const crashCollector = { collect: async () => ({ status: "skipped", reason: "disabled" }) };
@@ -108,6 +109,74 @@ test("suite task create: 解析最新份并落库", async () => {
   assert.deepEqual(tasks[0].refs, [{ caseSetId: newSet.id, featureKey: "f-登录-aaaa1111" }]);
   assert.ok(logs.some((line) => line.includes("登录流程")));
   assert.ok(logs.some((line) => line.includes(newer)));
+});
+
+test("suite task create: --skip-ios-install + --expect-version 落库", async () => {
+  const { runtime, store } = await setupTaskProject();
+  const { code } = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--platform",
+    "ios",
+    "--app",
+    "com.example.app",
+    "--skip-ios-install",
+    "--expect-version",
+    "2.0.0"
+  ]);
+  assert.equal(code, 0);
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].appInstallMode, "installed");
+  assert.equal(tasks[0].appVersionExpected, "2.0.0");
+  assert.equal(tasks[0].appVersionCheck, null);
+});
+
+test("suite task create: iOS 未选 IPA → 兼容为设备已安装并告警", async () => {
+  const { runtime, store } = await setupTaskProject();
+  const { code, logs } = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--platform",
+    "ios",
+    "--app",
+    "com.example.app"
+  ]);
+  assert.equal(code, 0);
+  const task = (await store.listRegressionTasks(runtime.project.rootDir))[0];
+  assert.equal(task.appInstallMode, "installed");
+  assert.equal(task.appVersionExpected, null);
+  assert.ok(logs.some((line) => line.includes("未选择 iOS IPA")));
+});
+
+test("suite task create: APK 资产 + iOS-only → exit 2", async () => {
+  const { runtime, store, dir } = await setupTaskProject();
+  const apkPath = path.join(dir, "app.apk");
+  fs.writeFileSync(apkPath, "apk");
+  const apk = await store.createWebAsset({
+    rootPath: runtime.project.rootDir,
+    kind: "package",
+    filename: "app.apk",
+    sha256: "a".repeat(64),
+    size: 3,
+    storagePath: apkPath
+  });
+  const { code, errors } = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-登录-aaaa1111",
+    "--platform",
+    "ios",
+    "--app-asset",
+    apk.id
+  ]);
+  assert.equal(code, 2);
+  assert.match(errors.join(" "), /APK 与目标端不匹配/);
 });
 
 test("suite run --task: secret 测试资料解析为占位符，台账保留模板", async () => {
@@ -864,6 +933,48 @@ test("suite run --task: 设备运行批次清单落盘并登记 manifest_path（
   assert.equal(envOff, 0);
   runs = await store.listSuiteRuns(runtime.project.rootDir, { taskId: tasks[0].id });
   assert.equal(runs[0].manifestPath, null, "AOS_SUITE_RUNS=0 → null");
+});
+
+test("suite run --task: 设备已安装模式版本不一致 → 执行前失败并记录实际版本", async () => {
+  const appiumDetector = async () => ({
+    appium: { found: true, path: "appium", version: "2.11.0" },
+    xcuitest: { installed: true, version: "7.0.0" },
+    guidance: []
+  });
+  const { runtime, store } = await setupTaskProject({
+    appiumDetector,
+    dotenv: "AOS_IOS_XCODE_ORG_ID=TEAMID\n"
+  });
+  const sets = await store.listCaseSets(runtime.project.rootDir);
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: sets[0].id, featureKey: "f-登录-aaaa1111" }],
+    platforms: ["ios"],
+    baseline: "none",
+    createdBy: "cli",
+    appPackage: "com.example.app",
+    appInstallMode: "installed",
+    appVersionExpected: "2.0.0",
+    appVersionCheck: null
+  });
+  const { code, errors } = await runCli(
+    runtime,
+    ["run", "--task", task.id, "--device", "00008110-001A2C681E22801E"],
+    {
+      iosAppVersionReader: async () => ({
+        ok: true,
+        version: { version: "1.9.0", build: "19", source: "devicectl" }
+      })
+    }
+  );
+  assert.equal(code, 2);
+  assert.match(errors.join("\n"), /版本不一致/);
+  const after = await store.getRegressionTask(runtime.project.rootDir, task.id);
+  assert.equal(after.status, "failed");
+  assert.equal(after.appVersionCheck, "mismatched");
+  assert.equal(after.appVersionActual, "1.9.0 (19)");
+  assert.ok(after.finishedAt, "终态写入测试结束时间");
+  assert.equal((await store.listSuiteRuns(runtime.project.rootDir, { taskId: task.id })).length, 0);
 });
 
 test("suite run --task: iOS 真机缺 XCUITest 驱动 → 环境预检失败 exit 2（不装包/不跑用例）", async () => {

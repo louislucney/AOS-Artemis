@@ -78,6 +78,7 @@ import {
   precheckTask
 } from "../console/dispatch.js";
 import { auditActionLabel } from "../console/vocab.js";
+import { resolveAppInstallPlan } from "../tasks/app-install.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 import {
   panelRequiredRoleForPath,
@@ -1733,6 +1734,10 @@ async function checkDispatchPreviewFreshness(
   if (typeof payload.appPackage === "string" && payload.appPackage.trim() !== "") {
     params.set("appPackage", payload.appPackage.trim());
   }
+  params.set("skipIosInstall", payload.skipIosInstall === true ? "1" : "0");
+  if (typeof payload.appVersionExpected === "string" && payload.appVersionExpected.trim() !== "") {
+    params.set("appVersionExpected", payload.appVersionExpected.trim());
+  }
   const host = typeof payload.host === "string" ? payload.host.trim() : "";
   if (host !== "") params.set("host", host);
   const preview = await computeDispatchPreview(
@@ -1908,6 +1913,7 @@ async function createTask(
   const rawAppAssetId =
     typeof payload.appAssetId === "string" ? payload.appAssetId.trim() : "";
   let appAssetId: string | null = null;
+  let appAssetFilename: string | null = null;
   if (rawAppAssetId !== "") {
     const asset = await taskStore.getWebAsset(rootPath, rawAppAssetId).catch(() => null);
     if (asset === null || asset.kind !== "package" || asset.archivedAt) {
@@ -1930,7 +1936,34 @@ async function createTask(
       /* 读不到安装包时保留手填值/空；执行机会沿用设备当前应用 */
     }
     appAssetId = rawAppAssetId;
+    appAssetFilename = asset.filename;
   }
+  const skipIosInstall = payload.skipIosInstall === true;
+  const iosInstalledConfirmed = payload.iosInstalledConfirmed === true;
+  const appVersionExpected =
+    typeof payload.appVersionExpected === "string" ? payload.appVersionExpected.trim() : null;
+  // 面板表单总会显式发送 skipIosInstall；旧 API/legacy 调用不发送，保留“设备已安装”兼容行为。
+  if (
+    typeof payload.skipIosInstall === "boolean" &&
+    uniquePlatforms.includes("ios") &&
+    appAssetId === null &&
+    !skipIosInstall
+  ) {
+    return json(400, {
+      error:
+        "iOS 任务未选择 IPA：请选择 IPA，或勾选「不下发 iOS 安装包」并确认设备已通过 TestFlight 安装"
+    });
+  }
+  const installPlan = resolveAppInstallPlan({
+    platforms: uniquePlatforms,
+    appAssetFilename,
+    appPackage,
+    skipIosInstall,
+    iosInstallConfirmed: iosInstalledConfirmed,
+    appVersionExpected
+  });
+  if (!installPlan.ok) return json(400, { error: installPlan.error });
+  const installWarnings = installPlan.plan.warnings;
   const rawMaterialsAssetId =
     typeof payload.materialsAssetId === "string" ? payload.materialsAssetId.trim() : "";
   let materialsAssetId: string | null = null;
@@ -1947,7 +1980,7 @@ async function createTask(
     materialsAssetId = rawMaterialsAssetId;
   }
 
-  let warnings: string[] = [];
+  let warnings: string[] = [...installWarnings];
   if (targetHost !== null) {
     const precheck = precheckTask(
       {
@@ -1966,7 +1999,7 @@ async function createTask(
         reasons: precheck.reasons
       });
     }
-    warnings = precheck.reasons;
+    warnings = [...installWarnings, ...precheck.reasons];
   }
 
   const targetHostId =
@@ -1984,6 +2017,9 @@ async function createTask(
     priority,
     appAssetId,
     appPackage,
+    appInstallMode: installPlan.plan.appInstallMode,
+    appVersionExpected: installPlan.plan.appVersionExpected,
+    appVersionCheck: installPlan.plan.appVersionCheck,
     materialsAssetId,
     caseIds
   });

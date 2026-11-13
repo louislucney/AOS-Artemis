@@ -129,12 +129,14 @@ import { startRunnerArtifactServer, type RunnerArtifactServer } from "./runner/a
 import type { HostSnapshot } from "./runner/host-snapshot.js";
 import type { RunnerInventory } from "./runner/inventory.js";
 import { TaskProgressReporter } from "./runner/progress.js";
+import { evaluateIosVersionChecks, readIosInstalledAppVersion } from "./ios/app-version.js";
 import { isRunnerOnline, runnerTtlFrom } from "./runner/status.js";
 import { logWarn } from "./log.js";
 import { errorMessage, writeFileAtomic } from "./util.js";
 import { baselineFor, platformOf, registerSuiteRun } from "./tasks/run-registry.js";
 import { runBackfill } from "./tasks/backfill.js";
 import { compareRuns, crossPlatformDeltas, type CompareCaseInput } from "./tasks/run-compare.js";
+import { resolveAppInstallPlan } from "./tasks/app-install.js";
 
 type LogcatCollector = (request: {
   serial: string | null;
@@ -164,6 +166,8 @@ export interface SuiteCliDeps {
   env?: NodeJS.ProcessEnv;
   logcatCollector?: LogcatCollector;
   iosLogCollector?: IosLogCollectorFn;
+  /** Injected for tests; defaults to `readIosInstalledAppVersion`. */
+  iosAppVersionReader?: typeof readIosInstalledAppVersion;
   /** Injected for tests; defaults to `xcrun xcresulttool get test-results tests`. */
   xcresultReader?: (xcresultPath: string) => Promise<unknown>;
   /** runner 子命令注入缝（测试）。 */
@@ -381,6 +385,8 @@ type SuiteIo = {
   /** runner 已持有本任务设备租约（内嵌 `suite run --task` 不再重复获取/释放；缺省 CLI 自行管理）。 */
   leasesHeld?: boolean;
   leaseTimers?: ManualLeaseTimers;
+  /** 测试注入：读取真机已安装版本（默认 readIosInstalledAppVersion）。 */
+  iosAppVersionReader?: typeof readIosInstalledAppVersion;
 };
 
 export function printSuiteUsage(log: (line: string) => void): void {
@@ -406,7 +412,7 @@ Usage:
   mobile-testing-mcp suite reconcile list|confirm|reject [options]
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
   mobile-testing-mcp suite task create|list|show|release|cancel [options]
-                                     回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none] [--app-asset <id>]（引用取该功能最新用例集；--app-asset 执行前安装）
+                                     回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--skip-ios-install --expect-version <v>]（引用取该功能最新用例集；--app-asset 执行前安装；--skip-ios-install 使用设备已安装应用）
                                      中心模式：create|list|cancel --host <id|hostname> [--project <rootPath>]（只连 PG，不构建本机 Runtime）
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
                                      cancel <taskId> [--note <text>]：取消任务（pending → 已取消；执行中 → 停止中，待执行机确认）
@@ -543,6 +549,24 @@ function writeFileAtomicBuffer(target: string, buffer: Buffer): void {
 
 function taskCaseIdsForProgress(task: { caseIds: string[] }): boolean {
   return task.caseIds.length > 0;
+}
+
+function validateAppAssetPlatform(
+  filename: string | null,
+  platforms: string[],
+  io: { errorLog: (line: string) => void }
+): boolean {
+  if (filename === null) return true;
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".apk") && !platforms.includes("android")) {
+    io.errorLog("所选 APK 与目标端不匹配：需要勾选 Android");
+    return false;
+  }
+  if (lower.endsWith(".ipa") && !platforms.includes("ios")) {
+    io.errorLog("所选 IPA 与目标端不匹配：需要勾选 iOS");
+    return false;
+  }
+  return true;
 }
 
 /** 设备上已安装的 APK 是否与任务下发的 APK 完全一致（按 sha256）。
@@ -1021,20 +1045,98 @@ async function suiteRunTask(
     );
   const failAppInstall = async (message: string): Promise<number> => {
     io.errorLog(message);
+    const at = new Date().toISOString();
     await progress
       .report("failed", 10, { message, errorCode: "app-install-failed" })
       .catch(() => undefined);
     await runtime.store
       .updateRegressionTask(runtime.project.rootDir, task.id, {
         status: "failed",
+        startedAt: task.startedAt ?? at,
+        finishedAt: at,
         expectStatuses: ["pending", "claimed", "running"]
       })
       .catch(() => false);
     return 2;
   };
+  const failAppVersion = async (
+    message: string,
+    errorCode: "app-not-installed" | "app-version-mismatch" | "app-version-unavailable",
+    actual: string | null
+  ): Promise<number> => {
+    io.errorLog(message);
+    const at = new Date().toISOString();
+    await progress
+      .report("failed", 10, { message, errorCode })
+      .catch(() => undefined);
+    await runtime.store
+      .updateRegressionTask(runtime.project.rootDir, task.id, {
+        status: "failed",
+        startedAt: task.startedAt ?? at,
+        finishedAt: at,
+        appVersionActual: actual,
+        appVersionCheck: errorCode === "app-version-mismatch" ? "mismatched" : "unavailable",
+        appVersionCheckedAt: at,
+        expectStatuses: ["pending", "claimed", "running"]
+      })
+      .catch(() => false);
+    return 2;
+  };
+  const iosInstallMode = task.appInstallMode ?? (task.appAssetId === null ? "installed" : "asset");
+  const expectedIosVersion = (task.appVersionExpected ?? "").trim();
+  if (iosInstallMode === "installed" && iosDeviceTargets.length > 0) {
+    if (taskAppPackage === "") {
+      return await failAppVersion(
+        "设备已安装模式需要应用包名（bundle ID）；请在任务里填写应用包名后重跑",
+        "app-not-installed",
+        null
+      );
+    }
+    await progress
+      .report("app_started", 8, { message: "校验 iOS 已安装应用版本" })
+      .catch(() => undefined);
+    const checkedAt = new Date().toISOString();
+    const readVersion = io.iosAppVersionReader ?? readIosInstalledAppVersion;
+    const checks: Array<{
+      serial: string;
+      read: Awaited<ReturnType<typeof readIosInstalledAppVersion>>;
+    }> = [];
+    for (const serial of iosDeviceTargets) {
+      const read = await readVersion({
+        udid: serial,
+        bundleId: taskAppPackage,
+        env: runnerEnv
+      });
+      checks.push({ serial, read });
+    }
+    const verdict = evaluateIosVersionChecks({
+      bundleId: taskAppPackage,
+      expected: expectedIosVersion,
+      checks
+    });
+    if (!verdict.ok) {
+      return await failAppVersion(verdict.message, verdict.code, verdict.actual);
+    }
+    await runtime.store
+      .updateRegressionTask(runtime.project.rootDir, task.id, {
+        appVersionActual: verdict.actual,
+        appVersionCheck: verdict.check,
+        appVersionCheckedAt: checkedAt
+      })
+      .catch(() => false);
+    say(
+      expectedIosVersion === ""
+        ? `设备已安装版本：${verdict.actual ?? "未知"}（未填期望版本，跳过校验）`
+        : `设备已安装版本：${verdict.actual ?? "未知"}（期望 ${expectedIosVersion}，校验通过）`
+    );
+  }
   if (taskApp.path !== null) {
     let handled = false;
-    if (androidDevices.length > 0) {
+    if (iosInstallMode === "installed" && taskApp.path.toLowerCase().endsWith(".ipa")) {
+      say("任务安装方式为设备已安装：忽略 IPA 资产（不重复安装）");
+      handled = true;
+    }
+    if (androidDevices.length > 0 && taskApp.path.toLowerCase().endsWith(".apk")) {
       const alreadyInstalled =
         appInstallPolicy !== "always" &&
         expectedAppSha !== "" &&
@@ -1066,7 +1168,11 @@ async function suiteRunTask(
       }
       handled = true;
     }
-    if (iosDeviceTargets.length > 0) {
+    if (
+      iosDeviceTargets.length > 0 &&
+      iosInstallMode === "asset" &&
+      taskApp.path.toLowerCase().endsWith(".ipa")
+    ) {
       await progress
         .report("app_started", 8, { message: "安装 iOS 安装包（每台设备一次）" })
         .catch(() => undefined);
@@ -3050,11 +3156,12 @@ async function suiteTaskCreate(
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--materials <id>]"
+      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--skip-ios-install] [--expect-version <v>] [--materials <id>]"
     );
     return 2;
   }
   const appAssetId = (flags.get("app-asset") ?? "").trim() || null;
+  let appAssetFilename: string | null = null;
   if (appAssetId !== null) {
     const asset = await runtime.store
       .getWebAsset(runtime.project.rootDir, appAssetId)
@@ -3063,6 +3170,7 @@ async function suiteTaskCreate(
       io.errorLog(`未知安装包资产 "${appAssetId}"（需先上传 package 资产）`);
       return 2;
     }
+    appAssetFilename = asset.filename;
   }
   const appPackage = (flags.get("app") ?? "").trim() || null;
   const materialsAssetId = (flags.get("materials") ?? "").trim() || null;
@@ -3088,6 +3196,22 @@ async function suiteTaskCreate(
   const priority = parseTaskPriority(flags, io);
   if (priority === null) return 2;
   const { platforms: uniquePlatforms, baseline } = targeting;
+  if (!validateAppAssetPlatform(appAssetFilename, uniquePlatforms, io)) return 2;
+  const skipIosInstall = flags.bool("skip-ios-install");
+  const appVersionExpected = (flags.get("expect-version") ?? "").trim() || null;
+  const installPlan = resolveAppInstallPlan({
+    platforms: uniquePlatforms,
+    appAssetFilename,
+    appPackage,
+    skipIosInstall,
+    iosInstallConfirmed: skipIosInstall,
+    appVersionExpected
+  });
+  if (!installPlan.ok) {
+    io.errorLog(installPlan.error);
+    return 2;
+  }
+  for (const warning of installPlan.plan.warnings) io.log(`警告：${warning}`);
   const projectRecord = runtime.projectSummary();
   const localHostId = runtime.store.localHostId ?? null;
   const task = await runtime.store.createRegressionTask({
@@ -3101,6 +3225,9 @@ async function suiteTaskCreate(
     priority,
     appAssetId,
     appPackage,
+    appInstallMode: installPlan.plan.appInstallMode,
+    appVersionExpected: installPlan.plan.appVersionExpected,
+    appVersionCheck: installPlan.plan.appVersionCheck,
     materialsAssetId
   });
   if (flags.bool("json")) {
@@ -3457,14 +3584,14 @@ async function suiteTaskCreateOnHost(
   const rootPath = rawProject === null ? null : normalizeRootPath(rawProject);
   if (rootPath === null || rootPath === "") {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--materials <id>]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--skip-ios-install] [--expect-version <v>] [--materials <id>]"
     );
     return 2;
   }
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--materials <id>]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--skip-ios-install] [--expect-version <v>] [--materials <id>]"
     );
     return 2;
   }
@@ -3495,12 +3622,14 @@ async function suiteTaskCreateOnHost(
   const priority = parseTaskPriority(flags, io);
   if (priority === null) return 2;
   const appAssetId = (flags.get("app-asset") ?? "").trim() || null;
+  let appAssetFilename: string | null = null;
   if (appAssetId !== null) {
     const asset = await taskStore.getWebAsset(rootPath, appAssetId).catch(() => null);
     if (asset === null || asset.kind !== "package" || asset.archivedAt) {
       io.errorLog(`未知安装包资产 "${appAssetId}"（需先在目标项目上传 package 资产）`);
       return 2;
     }
+    appAssetFilename = asset.filename;
   }
   const appPackage = (flags.get("app") ?? "").trim() || null;
   const materialsAssetId = (flags.get("materials") ?? "").trim() || null;
@@ -3528,6 +3657,22 @@ async function suiteTaskCreateOnHost(
     return 2;
   }
   for (const reason of precheck.reasons) io.log(`警告：${reason}`);
+  if (!validateAppAssetPlatform(appAssetFilename, targeting.platforms, io)) return 2;
+  const skipIosInstall = flags.bool("skip-ios-install");
+  const appVersionExpected = (flags.get("expect-version") ?? "").trim() || null;
+  const installPlan = resolveAppInstallPlan({
+    platforms: targeting.platforms,
+    appAssetFilename,
+    appPackage,
+    skipIosInstall,
+    iosInstallConfirmed: skipIosInstall,
+    appVersionExpected
+  });
+  if (!installPlan.ok) {
+    io.errorLog(installPlan.error);
+    return 2;
+  }
+  for (const warning of installPlan.plan.warnings) io.log(`警告：${warning}`);
   const task = await taskStore.createRegressionTask({
     rootPath,
     refs: resolved.map((entry) => ({ caseSetId: entry.caseSetId, featureKey: entry.featureKey })),
@@ -3539,6 +3684,9 @@ async function suiteTaskCreateOnHost(
     priority,
     appAssetId,
     appPackage,
+    appInstallMode: installPlan.plan.appInstallMode,
+    appVersionExpected: installPlan.plan.appVersionExpected,
+    appVersionCheck: installPlan.plan.appVersionCheck,
     materialsAssetId
   });
   if (flags.bool("json")) {
@@ -4966,7 +5114,16 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
       return await suiteRun(
         built.runtime,
         flags,
-        { log, errorLog, env: deps.env ?? process.env, runnerName: deps.runnerName ?? null, shouldAbort: deps.shouldAbort, leasesHeld: deps.leasesHeld === true, leaseTimers: deps.leaseTimers },
+        {
+          log,
+          errorLog,
+          env: deps.env ?? process.env,
+          runnerName: deps.runnerName ?? null,
+          shouldAbort: deps.shouldAbort,
+          leasesHeld: deps.leasesHeld === true,
+          leaseTimers: deps.leaseTimers,
+          iosAppVersionReader: deps.iosAppVersionReader
+        },
         deps.logcatCollector,
         deps.iosLogCollector
       );

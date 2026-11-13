@@ -9,14 +9,15 @@ export interface ProgressRuntime {
 export class TaskProgressReporter {
   private seq: number;
   private percent = 0;
-  private readonly startedAt = new Date().toISOString();
+  private readonly startedAt: string;
 
   constructor(
     private readonly runtime: ProgressRuntime,
-    private readonly task: Pick<RegressionTaskRecord, "id" | "progress">
+    private readonly task: Pick<RegressionTaskRecord, "id" | "progress" | "startedAt">
   ) {
     this.seq = task.progress?.seq ?? 0;
     this.percent = task.progress?.percent ?? 0;
+    this.startedAt = task.startedAt ?? new Date().toISOString();
   }
 
   async report(
@@ -40,7 +41,9 @@ export class TaskProgressReporter {
     try {
       await this.runtime.store.updateRegressionTask(this.runtime.project.rootDir, this.task.id, {
         progress,
-        lastProgressAt: progress.at
+        lastProgressAt: progress.at,
+        startedAt: this.startedAt,
+        ...(phase === "done" || phase === "failed" ? { finishedAt: progress.at } : {})
       });
     } catch {
       /* 控制面短暂不可达不阻断设备执行；下一条进度会携带更新后的快照。 */

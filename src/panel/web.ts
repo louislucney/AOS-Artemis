@@ -3019,6 +3019,58 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
                     : ` <span class="muted">（build ${escapeHtml(detail.runtime.appBuild)}）</span>`
                 }`
           ],
+          ...(task.platforms.includes("ios")
+            ? [
+                [
+                  "iOS 安装方式",
+                  task.appInstallMode === "installed"
+                    ? "设备已安装（TestFlight）"
+                    : task.appInstallMode === "asset"
+                      ? "下发 IPA"
+                      : "-"
+                ],
+                [
+                  "期望版本",
+                  task.appVersionExpected === null || task.appVersionExpected === ""
+                    ? "-"
+                    : `<code>${escapeHtml(task.appVersionExpected)}</code>`
+                ],
+                [
+                  "实际版本",
+                  task.appVersionActual === null
+                    ? "-"
+                    : `<code>${escapeHtml(task.appVersionActual)}</code>`
+                ],
+                [
+                  "版本校验",
+                  task.appVersionCheck === "matched"
+                    ? "通过"
+                    : task.appVersionCheck === "mismatched"
+                      ? "不一致"
+                      : task.appVersionCheck === "unavailable"
+                        ? "无法读取"
+                        : task.appVersionCheck === "skipped"
+                          ? "未校验（未填期望版本）"
+                          : task.appVersionCheck === null && task.appVersionExpected !== null
+                            ? "待校验"
+                            : "-"
+                ],
+                [
+                  "版本读取时间",
+                  task.appVersionCheckedAt === null
+                    ? "-"
+                    : escapeHtml(task.appVersionCheckedAt)
+                ],
+                [
+                  "测试时间",
+                  task.startedAt === null
+                    ? "-"
+                    : `${escapeHtml(task.startedAt)}${
+                        task.finishedAt === null ? " ~ 进行中" : ` ~ ${escapeHtml(task.finishedAt)}`
+                      }`
+                ]
+              ]
+            : []),
           [
             "执行机",
             detail.runtime.runnerName === null

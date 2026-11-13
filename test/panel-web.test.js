@@ -804,6 +804,61 @@ test("panel web: 旧 Web 任务不再提供详情页", async () => {
   assert.doesNotMatch(html.body, /网页任务详情/);
 });
 
+test("panel web: 任务详情展示 iOS 安装方式/期望版本/实际版本/校验/测试时间", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const set = await store.recordCaseSet({
+    rootPath: projectDir,
+    source: "pen:a.pen",
+    basename: "tests",
+    features: [
+      {
+        key: "f-1",
+        name: "登录流程",
+        caseCount: 1,
+        screens: ["Home"],
+        jsonPath: "/x/a.json",
+        mdPath: "/x/a.md",
+        xlsxPath: "/x/a.xlsx"
+      }
+    ]
+  });
+  const task = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: set.id, featureKey: "f-1" }],
+    platforms: ["ios"],
+    baseline: "latest",
+    createdBy: "panel",
+    appPackage: "com.example.app",
+    appInstallMode: "installed",
+    appVersionExpected: "2.0.0",
+    appVersionCheck: "matched",
+    appVersionActual: "2.0.0 (2)",
+    appVersionCheckedAt: "2026-11-13T10:00:00.000Z",
+    finishedAt: "2026-11-13T10:05:00.000Z"
+  });
+  await store.updateRegressionTask(projectDir, task.id, {
+    startedAt: "2026-11-13T10:01:00.000Z"
+  });
+  const html = await handlePanelRequest(
+    new URL(
+      `http://x/panel?project=${encodeURIComponent(projectDir)}&section=tasks&task=${encodeURIComponent(task.id)}`
+    ),
+    deps
+  );
+  assert.equal(html.status, 200);
+  assert.match(html.body, /iOS 安装方式/);
+  assert.match(html.body, /设备已安装（TestFlight）/);
+  assert.match(html.body, /期望版本/);
+  assert.match(html.body, /2\.0\.0/);
+  assert.match(html.body, /实际版本/);
+  assert.match(html.body, /2\.0\.0 \(2\)/);
+  assert.match(html.body, /版本校验/);
+  assert.match(html.body, /通过/);
+  assert.match(html.body, /测试时间/);
+  assert.match(html.body, /2026-11-13T10:01:00\.000Z/);
+  assert.match(html.body, /2026-11-13T10:05:00\.000Z/);
+});
+
 test("panel web: no-cache 请求头识别（reload / 轮询）", () => {
   assert.equal(panelRequestNoCache({ "cache-control": "max-age=0" }), true);
   assert.equal(panelRequestNoCache({ "cache-control": "no-cache" }), true);

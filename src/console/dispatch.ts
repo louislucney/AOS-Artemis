@@ -75,6 +75,12 @@ export interface DispatchPreview {
   /** 可选应用包名（Android package / iOS bundle id）；执行机锁定并启动被测应用。 */
   appPackage: string;
   appPackages: Array<{ id: string; filename: string; label: string; platform: "android" | "ios" | null }>;
+  /** 是否不下发 iOS 安装包（使用设备已安装应用）。 */
+  skipIosInstall: boolean;
+  /** 不下发 IPA 时的期望版本；空＝不校验。 */
+  appVersionExpected: string | null;
+  /** iOS 安装方式（asset=下发 IPA / installed=设备已安装）；非 iOS 为 null。 */
+  appInstallMode: "asset" | "installed" | null;
   /** 可选测试资料资产（materials）；secret=true 时解析为占位符。 */
   materialsAssetId: string | null;
   materials: Array<{ id: string; filename: string; version: number; secret: boolean }>;
@@ -138,7 +144,19 @@ export function dispatchFormSignature(
     resolvedAppPackage !== undefined
       ? resolvedAppPackage.trim()
       : (params.get("appPackage") ?? "").trim();
-  return [mode, refOrKeyword, platforms, baseline, appAssetId, materialsAssetId, appPackage].join("|");
+  const skipIosInstall = params.get("skipIosInstall") === "1" ? "1" : "0";
+  const appVersionExpected = (params.get("appVersionExpected") ?? "").trim();
+  return [
+    mode,
+    refOrKeyword,
+    platforms,
+    baseline,
+    appAssetId,
+    materialsAssetId,
+    skipIosInstall,
+    appVersionExpected,
+    appPackage
+  ].join("|");
 }
 
 /** 预览 ID＝表单签名＋目标主机/项目＋服务端解析结果（用例集集合/用例数）短哈希；服务端复算不一致即视为过期。 */
@@ -541,13 +559,35 @@ export async function computeDispatchPreview(
           : null
     }));
   const appPackage = (params.get("appPackage") ?? "").trim();
+  const skipIosInstall = params.get("skipIosInstall") === "1";
+  const appVersionExpected = (params.get("appVersionExpected") ?? "").trim() || null;
   const requestedAppAssetId = (params.get("appAssetId") ?? "").trim();
-  const appAssetId =
+  let appAssetId =
     requestedAppAssetId !== "" && appPackages.some((asset) => asset.id === requestedAppAssetId)
       ? requestedAppAssetId
       : null;
   if (requestedAppAssetId !== "" && appAssetId === null) {
     warnings.push("所选安装包不存在或已删除：请重新选择（本次不会安装）");
+  }
+  if (appAssetId !== null) {
+    const selected = packageAssets.find((asset) => asset.id === appAssetId);
+    if (skipIosInstall && selected?.filename.toLowerCase().endsWith(".ipa")) {
+      appAssetId = null;
+      warnings.push("已选择不下发 iOS 安装包：忽略所选 IPA（执行机使用设备已安装应用）");
+    }
+  }
+  if (skipIosInstall && platforms.includes("ios") && appPackage === "") {
+    warnings.push("不下发 iOS 安装包时必须填写应用包名（bundle ID）");
+  }
+  if (!skipIosInstall && platforms.includes("ios") && appAssetId === null) {
+    warnings.push(
+      platforms.length === 1
+        ? "已勾选下发 iOS 安装包：请选择 IPA；如果设备已安装请取消勾选并确认"
+        : "混合端任务未选择 IPA：iOS 将使用设备已安装应用"
+    );
+  }
+  if (appVersionExpected !== null && (appVersionExpected.length > 64 || /[\r\n\t]/.test(appVersionExpected))) {
+    warnings.push("期望版本过长或包含换行/制表符（最多 64 字符）");
   }
   const materialAssets =
     sourceStore === null || rootPath === ""
@@ -584,6 +624,15 @@ export async function computeDispatchPreview(
       }
     }
   }
+
+  const selectedAppAsset =
+    appAssetId === null ? null : (packageAssets.find((asset) => asset.id === appAssetId) ?? null);
+  const appInstallMode =
+    platforms.includes("ios")
+      ? selectedAppAsset?.filename.toLowerCase().endsWith(".ipa")
+        ? ("asset" as const)
+        : ("installed" as const)
+      : null;
 
   let label = "";
   let caseCount = 0;
@@ -663,6 +712,9 @@ export async function computeDispatchPreview(
     appAssetId,
     appPackage: resolvedAppPackage,
     appPackages,
+    skipIosInstall,
+    appVersionExpected,
+    appInstallMode,
     materialsAssetId,
     materials,
     hostBlocked,
@@ -851,11 +903,31 @@ export function renderDispatchPage(view: DispatchView): string {
       ? `<p><label>安装包（可选） <select name="appAssetId" aria-label="安装包" disabled><option>暂无安装包</option></select></label> <a class="c-button" href="${escapeHtml(packageHref)}" target="_blank" rel="noopener">上传 APK/IPA</a> <span class="muted">上传后回到本页点「刷新预览」；设备已安装可跳过。</span></p>`
       : `<p><label>安装包（可选） <select name="appAssetId" aria-label="安装包"><option value="">不安装（设备需已安装）</option>${appPackageOptions}</select></label> <span class="muted">选择后执行机在跑用例前安装；不选则要求设备已安装。</span></p>`;
   const appPackageField =
-    preview.appPackage === ""
-      ? `<input type="hidden" name="appPackage" value="">`
-      : `<p class="muted">应用包名：<code>${escapeHtml(preview.appPackage)}</code>${
+    preview.appPackage !== "" && !preview.skipIosInstall
+      ? `<p class="muted">应用包名：<code>${escapeHtml(preview.appPackage)}</code>${
           preview.appAssetId === null ? "" : "（从安装包自动识别）"
-        }</p><input type="hidden" name="appPackage" value="${escapeHtml(preview.appPackage)}">`;
+        }</p><input type="hidden" name="appPackage" value="${escapeHtml(preview.appPackage)}">`
+      : `<p><label>应用包名（bundle ID） <input type="text" name="appPackage" value="${escapeHtml(
+          preview.appPackage
+        )}" placeholder="com.example.app" aria-label="应用包名"></label>${
+          preview.appAssetId === null ? "" : ' <span class="muted">（从安装包自动识别）</span>'
+        }</p>`;
+  const iosInstallField = `<div id="dispatch-ios-install"${
+    preview.platforms.includes("ios") ? "" : " hidden"
+  }>
+    <p><label><input type="checkbox" name="skipIosInstall" value="1"${
+      preview.skipIosInstall ? " checked" : ""
+    }> 不下发 iOS 安装包（使用设备已安装应用）</label></p>
+    <div id="dispatch-ios-installed"${preview.skipIosInstall ? "" : " hidden"}>
+      <p class="note">请先在设备上通过 TestFlight 安装目标 App；未安装将无法锁定/启动。</p>
+      <p><label><input type="checkbox" name="iosInstalledConfirmed" value="1"${
+        view.query.iosInstalledConfirmed === "1" ? " checked" : ""
+      }> 我已确认设备已通过 TestFlight 安装该 App</label></p>
+      <p><label>期望版本（可选） <input type="text" name="appVersionExpected" value="${escapeHtml(
+        preview.appVersionExpected ?? ""
+      )}" placeholder="例如 2.0.0 或 2" aria-label="期望版本"></label> <span class="muted">不填则跳过版本校验；填了执行机会在真机运行前比对设备实际版本（模拟器不校验）。</span></p>
+    </div>
+  </div>`;
   const materialsOptions = preview.materials
     .map(
       (asset) =>
@@ -872,6 +944,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const paramsBody = [
     `<fieldset class="c-fieldset"><legend>目标端</legend>${platformChecks}</fieldset>`,
     `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本用例集最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`,
+    iosInstallField,
     appAssetField,
     appPackageField,
     materialsField,
@@ -925,6 +998,23 @@ export function renderDispatchPage(view: DispatchView): string {
       label: "目标端",
       value: preview.platforms.map((platform) => platformLabel(platform)).join("、") || "—"
     }),
+    ...(preview.platforms.includes("ios")
+      ? [
+          cStat({
+            label: "iOS 安装",
+            value:
+              preview.appInstallMode === "installed"
+                ? "设备已安装（TestFlight）"
+                : preview.appInstallMode === "asset"
+                  ? "下发 IPA"
+                  : "—"
+          }),
+          cStat({
+            label: "期望版本",
+            value: preview.appVersionExpected ?? "-"
+          })
+        ]
+      : []),
     cStat({
       label: "安装包",
       value:
@@ -984,13 +1074,27 @@ function showErr(m){err.textContent=m;err.hidden=false;}
 function syncAppAssets(){
   var sel=form.querySelector('select[name="appAssetId"]');if(!sel)return;
   var picked=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
+  var skip=!!(form.querySelector('input[name="skipIosInstall"]')||{}).checked;
   Array.prototype.forEach.call(sel.options,function(opt){
     var p=opt.getAttribute('data-platform');
     var ok=!p||picked.indexOf(p)>=0;
+    if(skip&&p==='ios')ok=false;
     opt.hidden=!ok;opt.disabled=!ok;
   });
   var current=sel.selectedIndex>=0?sel.options[sel.selectedIndex]:null;
   if(current&&current.disabled){sel.value='';}
+}
+function syncIosInstall(){
+  var skip=!!(form.querySelector('input[name="skipIosInstall"]')||{}).checked;
+  var ios=Array.prototype.some.call(form.querySelectorAll('input[name="platforms"]:checked'),function(i){return i.value==='ios';});
+  var wrap=document.getElementById('dispatch-ios-install');
+  var installed=document.getElementById('dispatch-ios-installed');
+  if(wrap)wrap.hidden=!ios;
+  if(installed)installed.hidden=!skip;
+  var confirm=form.querySelector('input[name="iosInstalledConfirmed"]');
+  if(confirm)confirm.disabled=!skip;
+  var version=form.querySelector('input[name="appVersionExpected"]');
+  if(version)version.disabled=!skip;
 }
 ${priorityReadScript}
 function formSignature(){
@@ -1001,7 +1105,9 @@ function formSignature(){
   var appAssetId=(form.querySelector('select[name="appAssetId"]')||{value:''}).value;
   var materialsAssetId=(form.querySelector('select[name="materialsAssetId"]')||{value:''}).value;
   var appPackage=((form.querySelector('input[name="appPackage"]')||{value:''}).value||'').trim();
-  return [mode,refOrKeyword,platforms,baseline,appAssetId,materialsAssetId,appPackage].join('|');
+  var skipIosInstall=(form.querySelector('input[name="skipIosInstall"]')||{checked:false}).checked?'1':'0';
+  var appVersionExpected=((form.querySelector('input[name="appVersionExpected"]')||{value:''}).value||'').trim();
+  return [mode,refOrKeyword,platforms,baseline,appAssetId,materialsAssetId,skipIosInstall,appVersionExpected,appPackage].join('|');
 }
 function refreshStale(){
   var host=(form.querySelector('select[name="host"]')||{value:''}).value;
@@ -1023,7 +1129,8 @@ function refreshStale(){
 }
 form.addEventListener('input',refreshStale);
 form.addEventListener('change',refreshStale);
-form.addEventListener('change',syncAppAssets);
+form.addEventListener('change',function(){syncIosInstall();syncAppAssets();});
+syncIosInstall();
 syncAppAssets();
 refreshStale();
 go.addEventListener('click',function(){
@@ -1035,6 +1142,12 @@ go.addEventListener('click',function(){
     showErr(island.ready?'预览已过期：请先点「刷新预览」':'预览为空：先选择用例集或输入关键词，再点「刷新预览」');return;
   }
   if(form.querySelectorAll('input[name="platforms"]:checked').length===0){showErr('请至少选择目标端（iOS/Android）');return;}
+  var selectedPlatforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
+  var iosSelected=selectedPlatforms.indexOf('ios')>=0;
+  var skipIos=iosSelected&&!!(form.querySelector('input[name="skipIosInstall"]')||{}).checked;
+  var confirmed=!!(form.querySelector('input[name="iosInstalledConfirmed"]')||{}).checked;
+  if(skipIos&&!confirmed){showErr('请先勾选确认：设备已通过 TestFlight 安装该 App');return;}
+  var appVersionExpected=skipIos?(((form.querySelector('input[name="appVersionExpected"]')||{value:''}).value||'').trim()):'';
   var priority=readPriority();
   if(priority===null){return;}
   var s=island.summary||{};
@@ -1045,7 +1158,9 @@ go.addEventListener('click',function(){
   var appSel=form.querySelector('select[name="appAssetId"]');
   var appAssetId=appSel?appSel.value:'';
   var appLabel=appSel&&appSel.selectedIndex>=0?appSel.options[appSel.selectedIndex].text:'';
-  var appText=appAssetId===''?'不安装（设备需已安装）':('安装 '+appLabel);
+  var appText=skipIos
+    ? ('iOS 设备已安装（TestFlight）'+(appVersionExpected===''?'':(' · 期望版本 '+appVersionExpected)))
+    : (appAssetId===''?'不安装（设备需已安装）':('安装 '+appLabel));
   var matSel=form.querySelector('select[name="materialsAssetId"]');
   var materialsAssetId=matSel?matSel.value:'';
   var matLabel=matSel&&matSel.selectedIndex>=0?matSel.options[matSel.selectedIndex].text:'';
@@ -1065,6 +1180,9 @@ go.addEventListener('click',function(){
     payload.appAssetId=appAssetId;
     payload.materialsAssetId=materialsAssetId;
     payload.appPackage=appPackage;
+    payload.skipIosInstall=skipIos;
+    payload.iosInstalledConfirmed=skipIos?confirmed:false;
+    payload.appVersionExpected=appVersionExpected;
     payload.priority=priority;
     go.disabled=true;if(status)status.textContent='提交中…';
     fetch('/panel/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
@@ -1114,13 +1232,13 @@ go.addEventListener('click',function(){
               : preview.hostBlocked
                 ? `<p class="note">目标主机无法满足所选平台：请调整目标端或更换主机，刷新预览后再试。</p>`
                 : "",
-        `<p class="note">安装包在「② 参数」选择；执行机领取后先安装再跑用例。Excel 用例先在用例库导入。</p>`,
+        `<p class="note">安装包在「② 参数」选择；执行机领取后先安装再跑用例。iOS 不下发 IPA 时，请先通过 TestFlight 安装并勾选确认，执行机会跳过安装、只锁定并启动已安装应用。Excel 用例先在用例库导入。</p>`,
         `<p id="dispatch-status" role="status" class="muted"></p>`,
         `<p id="dispatch-error" role="alert" class="c-banner c-banner-warn" hidden></p>`,
         `<script type="application/json" id="dispatch-preview-data">${JSON.stringify({ previewId: view.previewId, formSignature: view.formSignature, project: view.rootPath, hostId: preview.selectedHostId, hostLabel:
           preview.hosts.find((host) => host.id === preview.selectedHostId)?.label ??
           preview.hosts.find((host) => host.id === preview.selectedHostId)?.hostname ??
-          null, hostRequired: preview.hosts.length > 0, hostBlocked: preview.hostBlocked, legacyHostless, priority: preview.priority, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline } }).replace(/</g, "\\u003c")}</script>`,
+          null, hostRequired: preview.hosts.length > 0, hostBlocked: preview.hostBlocked, legacyHostless, priority: preview.priority, ready: preview.refs.length > 0, runnerOnline, runnerOnlineCount, refsDetail: preview.refDetails.map((detail) => ({ label: detail.label, caseCount: detail.caseCount })), summary: { label: preview.source.label, caseCount: preview.source.caseCount, platforms: preview.platforms, baseline: preview.baseline, skipIosInstall: preview.skipIosInstall, appVersionExpected: preview.appVersionExpected, appInstallMode: preview.appInstallMode } }).replace(/</g, "\\u003c")}</script>`,
         dispatchConfirmScript,
       ].filter((part) => part !== "").join("\n");
 
@@ -1135,7 +1253,7 @@ go.addEventListener('click',function(){
         webJobsHref
       )}">MCP 原生接入</a></nav>`
     : `<nav class="c-flow-switch" aria-label="下发类型"><span class="c-flow-option is-active" aria-current="page">套件回归</span><a class="c-flow-option" href="${escapeHtml(webJobsHref)}">MCP 原生接入</a></nav>`;
-  const installCallout = `<div class="c-flow-callout"><div><strong>要下发安装包（APK/IPA）？</strong><p>在「② 参数」选择安装包即可：执行机领取任务后先安装再跑用例，不要求设备预装；不选时仍按设备已安装处理。</p></div></div>`;
+  const installCallout = `<div class="c-flow-callout"><div><strong>要下发安装包（APK/IPA）？</strong><p>在「② 参数」选择安装包即可：执行机领取任务后先安装再跑用例，不要求设备预装。iOS 也可以勾选「不下发 iOS 安装包」，改用设备上通过 TestFlight 安装的版本，并在确认后下发；此时可填期望版本做运行前校验。</p></div></div>`;
   const hostNavScript = `<script id="dispatch-host-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="host"]');if(!select)return;select.addEventListener('change',function(){var project=form.querySelector('select[name="project"]');var params=new URLSearchParams(new FormData(form));params.set('section','create');params.set('type','suite');if(select.value)params.set('host',select.value);else params.delete('host');if(project&&project.value)params.set('project',project.value);location.href='/panel?'+params.toString();});})();</script>`;
   const projectNavScript = `<script id="dispatch-project-nav">(function(){var form=document.getElementById('dispatch-form');if(!form)return;var select=form.querySelector('select[name="project"]');if(!select)return;select.addEventListener('change',function(){var host=form.querySelector('select[name="host"]');var params=new URLSearchParams(new FormData(form));params.set('section','create');params.set('type','suite');if(select.value)params.set('project',select.value);if(host&&host.value)params.set('host',host.value);else params.delete('host');location.href='/panel?'+params.toString();});})();</script>`;
 

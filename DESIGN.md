@@ -196,6 +196,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 真机崩溃：`devicectl systemCrashLogs`；设备日志：`idevicesyslog` 实时尾采样（窗口近似 + `clockWarning`）。
 - 安装：真机 `.ipa` 经 Appium `mobile: installApp`（本地路径）或 `appium:app`（URL/远程宿主下载）安装；企业证书（In-House）IPA 可直接安装，需设备先信任企业开发者证书；模拟器不支持 `app_path`，需 `simctl install` 预装后用 `locked_app_package`。
 - **套件安装节奏**：`suite run` 对真机 IPA 只在套件开始前**每设备安装一次**，后续用例不再携带 `app_path`（避免逐例重装 74MB 级 IPA）；模拟器忽略 `app_path` 并告警。任务模式同一任务的多份用例集共享这次安装。 真机默认 `appium:showXcodeLog=true`（`AOS_IOS_SHOW_XCODE_LOG=0` 关闭），Appium/xcodebuild 输出落 `<项目>/.artemis/logs/appium.log`；`xcodebuild failed` 的失败信息会附带该日志位置。
+- **不下发 IPA（TestFlight 已安装）**：面板「② 参数」可勾选「不下发 iOS 安装包」，此时不选 IPA，必须勾选确认设备已通过 TestFlight 安装；`suite task create --skip-ios-install [--expect-version <v>]` 为 CLI 等价入口。任务记录 `appInstallMode=installed`，可选 `appVersionExpected`；runner 在创建 Appium session/WDA 之前读取**真机**上已安装版本的 `CFBundleShortVersionString`/`CFBundleVersion`（iOS 17+ `xcrun devicectl device info apps --json-output -`，旧系统回退 `ideviceinstaller --format json`；模拟器不校验）。期望版本为空时只记录实际版本（显示 `-`，不阻断）；非空时逐台精确匹配（兼容 `2.0.0`、`2`、`2.0.0 (2)`），不一致/读不到/未安装分别以 `app-version-mismatch`/`app-version-unavailable`/`app-not-installed` 在跑用例前失败。任务详情显示安装方式、期望/实际版本、校验结果、版本读取时间与测试时间（`startedAt`~`finishedAt`）。
 - **Appium 归属与自愈**：默认只使用托管实例（`appium --port`）；端口已被其他实例占用时**不静默复用**，自动改用后续空闲端口并在日志标注（旧实例的驱动/`APPIUM_HOME` 可能与当前 CLI 不一致）。显式 `AOS_APPIUM_URL` 或 `AOS_APPIUM_REUSE_EXISTING=1` 才复用外部实例。会话创建遇到驱动缺失/连接断开时，托管服务自动重启并重试一次；外部服务不自动重启，错误信息带实际地址与排查指引。
 
 ### 5.3 runner / 多主机
@@ -222,7 +223,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 主机/执行机：`hosts`、`runners`、`device_leases`、`host_addresses`/`host_sessions`；面板设备/执行机区块。
 - 任务：任务台账、实时进度、取消/释放/重跑、队列暂停；产物只读服务（`.artemis` 范围，可选令牌）。
 - 产物浏览：浏览器（`Accept: text/html`）打开日志/文本/JSON/Markdown/目录得到带返回导航的只读查看器（复制/原始/上级/返回任务）；**所有错误也渲染 HTML 错误页**（文件缺失、越权、类型不支持），非浏览器请求仍保持 JSON/原始内容；任务页仅在证据目录实际存在时显示「查看失败证据」，否则标注「失败证据未上传」，不再产生 404 死链。
-- 下发向导：安装包下拉始终列出该项目的全部 `package` 资产（选项带 `data-platform` 与 `（ios/android）` 标注），勾选目标端时前端**即时**隐藏/禁用不匹配项，不需要先点「刷新预览」；创建任务时后端仍校验 APK↔Android、IPA↔iOS，防止绕过。
+- 下发向导：安装包下拉始终列出该项目的全部 `package` 资产（选项带 `data-platform` 与 `（ios/android）` 标注），勾选目标端时前端**即时**隐藏/禁用不匹配项，不需要先点「刷新预览」；创建任务时后端仍校验 APK↔Android、IPA↔iOS，防止绕过。iOS 增加「不下发 iOS 安装包」勾选：选中后隐藏/清空 IPA、显示 TestFlight 提示与必选确认、可选期望版本；未勾选且未选 IPA 时后端拒绝（CLI 保留旧行为，按设备已安装处理）。
 - 资产：Excel/安装包/测试资料/参考图版本化；支持「归档」（`archivedAt`，默认隐藏、不可再选，历史任务仍可读，可恢复）与「彻底删除」（仅未被任务/映射引用；共享 `storagePath` 保留文件，secret 资料 unlink 明文；被引用返回 409 + 清单）。
 - 测试资产：Excel/安装包/资料/参考图统一版本化；**本地注册项目（非网页创建）也可上传/保存映射**，归档项目拒绝写入；按 kind 校验扩展名/大小，secret materials 落盘 0600。Excel「导入用例库」先做设计预检：检测 Wireframe 与 `flows.json`/`ui-contract`，有索引时可选「设计增强导入 / 普通导入」，显示 exact/ambiguous/unmapped 覆盖；无索引或点「更换设计来源」时进入统一设计来源选择——**Figma URL 与 `.pen` 文件是等价适配器**，都经提取产出同一 `flows.json`，再回到同一映射预览；也可选择无设计稿普通导入。Figma/pen 提取走后台 job（`202 + jobId` 轮询，面板显示已用时长），不阻塞 HTTP 请求。
 - 统计：`aos_usage` / `usage` CLI / `/usage`+`/usage.json`；调用量/耗时是成本代理，不是计费。
@@ -288,3 +289,4 @@ MOBILE_TESTING_DATABASE_URL（PG）
 | 11-09 | 面板工作区发现：空台账不再算项目，修复同名重复行 | 归档 §13.334 |
 | 11-10 | runner 0.2.6：iOS structured runner 接入 suite；Phase 1 actions 契约；Android Phase 2 未实现 | 本文 §4.4/§8.3 |
 | 11-11 | LLM 资源池与用量记账 v1（原子预留/价格/流式计量/CLI/面板只读） | §2.2.1 |
+| 11-13 | iOS 不下发 IPA（TestFlight 已安装）+ 可选期望版本运行前校验；任务记录安装方式/版本/测试时间 | §5.2/§6 |

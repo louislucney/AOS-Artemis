@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -183,6 +184,86 @@ test("panel actions: POST tasks 创建成功 / 未知项目 404 / refs 空 400 /
     deps
   );
   assert.equal(badBaseline.status, 400);
+});
+
+test("panel actions: iOS 不下发 IPA 的确认/版本字段与校验", async () => {
+  const { runtime, store, set, dir, deps } = await setup();
+  const body = (payload) => ({
+    project: runtime.project.rootDir,
+    refs: [{ caseSetId: set.id, featureKey: "f-1" }],
+    platforms: ["ios"],
+    ...payload
+  });
+
+  const missingConfirm = await handlePanelActionRequest(
+    request({ body: body({ skipIosInstall: true, appPackage: "com.example.app" }) }),
+    deps
+  );
+  assert.equal(missingConfirm.status, 400);
+  assert.match(JSON.parse(missingConfirm.body).error, /TestFlight/);
+
+  const missingPackage = await handlePanelActionRequest(
+    request({ body: body({ skipIosInstall: true, iosInstalledConfirmed: true }) }),
+    deps
+  );
+  assert.equal(missingPackage.status, 400);
+
+  const ok = await handlePanelActionRequest(
+    request({
+      body: body({
+        skipIosInstall: true,
+        iosInstalledConfirmed: true,
+        appPackage: "com.example.app",
+        appVersionExpected: "2.0.0"
+      })
+    }),
+    deps
+  );
+  assert.equal(ok.status, 200);
+  const task = JSON.parse(ok.body).task;
+  assert.equal(task.appInstallMode, "installed");
+  assert.equal(task.appVersionExpected, "2.0.0");
+  assert.equal(task.appVersionCheck, null);
+
+  const noAssetInstall = await handlePanelActionRequest(
+    request({ body: body({ appPackage: "com.example.app", skipIosInstall: false }) }),
+    deps
+  );
+  assert.equal(noAssetInstall.status, 400);
+  assert.match(JSON.parse(noAssetInstall.body).error, /请选择 IPA/);
+
+  const ipaPath = path.join(dir, "app.ipa");
+  fs.writeFileSync(ipaPath, "not-a-real-ipa");
+  const ipa = await store.createWebAsset({
+    rootPath: runtime.project.rootDir,
+    kind: "package",
+    filename: "app.ipa",
+    sha256: "e".repeat(64),
+    size: 1,
+    storagePath: ipaPath
+  });
+  const conflict = await handlePanelActionRequest(
+    request({
+      body: body({
+        skipIosInstall: true,
+        iosInstalledConfirmed: true,
+        appPackage: "com.example.app",
+        appAssetId: ipa.id
+      })
+    }),
+    deps
+  );
+  assert.equal(conflict.status, 400);
+  assert.match(JSON.parse(conflict.body).error, /不能同时选择 IPA/);
+
+  const withIpa = await handlePanelActionRequest(
+    request({ body: body({ appPackage: "com.example.app", appAssetId: ipa.id }) }),
+    deps
+  );
+  assert.equal(withIpa.status, 200);
+  const withIpaTask = JSON.parse(withIpa.body).task;
+  assert.equal(withIpaTask.appInstallMode, "asset");
+  assert.equal(withIpaTask.appVersionExpected, null);
 });
 
 test("panel actions: request identity drives role and audit actor", async () => {

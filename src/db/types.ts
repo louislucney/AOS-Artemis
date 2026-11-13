@@ -705,6 +705,9 @@ export interface TaskProgress {
   at: string;
 }
 
+export type AppInstallMode = "asset" | "installed";
+export type AppVersionCheck = "skipped" | "matched" | "mismatched" | "unavailable";
+
 export interface RegressionTaskRecord {
   id: string;
   projectId: string | null;
@@ -743,6 +746,18 @@ export interface RegressionTaskRecord {
   appAssetId: string | null;
   /** 可选应用包名（Android package / iOS bundle id）；runner 用它锁定并启动被测应用。 */
   appPackage: string | null;
+  /** iOS 安装方式：asset=下发 IPA，installed=使用设备已安装（TestFlight）；非 iOS 任务为 null。 */
+  appInstallMode: AppInstallMode | null;
+  /** 不下发 IPA 时的期望版本（CFBundleShortVersionString 或 CFBundleVersion）；空＝不校验。 */
+  appVersionExpected: string | null;
+  /** runner 读取到的设备已安装版本（格式 `2.0.0 (2)`）；读不到为 null。 */
+  appVersionActual: string | null;
+  /** 版本校验结果；null＝不适用（下发 IPA/旧任务）。 */
+  appVersionCheck: AppVersionCheck | null;
+  /** 版本读取/校验时间（ISO）。 */
+  appVersionCheckedAt: string | null;
+  /** 测试结束时间（ISO）；runner 终态写入。 */
+  finishedAt: string | null;
   /** 可选测试资料资产 id（materials，secret=true 时按 alias=value/JSON 解析为占位符）；runner 执行前下载。 */
   materialsAssetId: string | null;
   /** 可选用例过滤（重跑失败用例）：runner 仅执行这些 caseId；空＝全部。 */
@@ -769,6 +784,37 @@ export function normalizeRegressionTask(record: RegressionTaskRecord): Regressio
     deviceLeaseId: record.deviceLeaseId ?? null,
     appAssetId: record.appAssetId ?? null,
     appPackage: record.appPackage ?? null,
+    appInstallMode:
+      record.appInstallMode === "asset" || record.appInstallMode === "installed"
+        ? record.appInstallMode
+        : (record.platforms ?? []).includes("ios")
+          ? (record.appAssetId ?? null) === null
+            ? "installed"
+            : "asset"
+          : null,
+    appVersionExpected:
+      typeof record.appVersionExpected === "string" && record.appVersionExpected.trim() !== ""
+        ? record.appVersionExpected.trim()
+        : null,
+    appVersionActual:
+      typeof record.appVersionActual === "string" && record.appVersionActual.trim() !== ""
+        ? record.appVersionActual.trim()
+        : null,
+    appVersionCheck:
+      record.appVersionCheck === "skipped" ||
+      record.appVersionCheck === "matched" ||
+      record.appVersionCheck === "mismatched" ||
+      record.appVersionCheck === "unavailable"
+        ? record.appVersionCheck
+        : null,
+    appVersionCheckedAt:
+      typeof record.appVersionCheckedAt === "string" && record.appVersionCheckedAt.trim() !== ""
+        ? record.appVersionCheckedAt.trim()
+        : null,
+    finishedAt:
+      typeof record.finishedAt === "string" && record.finishedAt.trim() !== ""
+        ? record.finishedAt.trim()
+        : null,
     materialsAssetId: record.materialsAssetId ?? null,
     caseIds: record.caseIds ?? [],
     progress: record.progress ?? null
@@ -1184,6 +1230,12 @@ export interface CreateRegressionTaskInput {
   deviceLeaseId?: string | null;
   appAssetId?: string | null;
   appPackage?: string | null;
+  appInstallMode?: AppInstallMode | null;
+  appVersionExpected?: string | null;
+  appVersionActual?: string | null;
+  appVersionCheck?: AppVersionCheck | null;
+  appVersionCheckedAt?: string | null;
+  finishedAt?: string | null;
   materialsAssetId?: string | null;
   caseIds?: string[];
   progress?: TaskProgress | null;
@@ -1334,6 +1386,12 @@ export interface ProjectStore {
       claimedHostId?: string | null;
       claimedInstanceId?: string | null;
       startedAt?: string | null;
+      finishedAt?: string | null;
+      appInstallMode?: AppInstallMode | null;
+      appVersionExpected?: string | null;
+      appVersionActual?: string | null;
+      appVersionCheck?: AppVersionCheck | null;
+      appVersionCheckedAt?: string | null;
       progress?: TaskProgress | null;
       /** CAS 守卫：仅当 `device_serial IS NULL` 时写入（自动选机防重复绑定）。 */
       expectDeviceSerialEmpty?: boolean;
