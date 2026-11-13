@@ -180,7 +180,7 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `MOBILE_TESTING_HOST_ID` | 无 | 自定义主机身份（优先于文件）；集群内每机唯一；与 `--name` 显示名不同；旧名 `AOS_HOST_ID` 兼容 |
+| `MOBILE_TESTING_HOST_ID` | 无 | 自定义主机身份（优先于文件）；集群内每机唯一；runner 脚本默认用同一值作为显示名（手工启动可用 `--name` 单独指定）；旧名 `AOS_HOST_ID` 兼容 |
 | `AOS_HOST_DIR` | `~/.aos` | `host-id` 文件目录；不可写时退化为派生 ID（不可迁移） |
 | `AOS_HOST_ENV_REFRESH_MS` | 600000 | runner 主机环境快照刷新周期 |
 | `AOS_CLIENT_TTL_MS` | 120000 | IDE 会话在线判定窗口 |
@@ -388,6 +388,8 @@ Android 真机现走 MCP 原生：
 
 **MCP runner 双端包（推荐）**：面板「设备 → 接入执行机」还提供 Windows x64（Android）与 macOS arm64（iOS/Android）的 MCP runner。runner 在宿主本机执行 `mobile_run_task` / `suite run`，中心只下发任务并接收结果；包内含 MCP 代码、Artemis 源码、adb 与 setup/doctor/smoke/runner 脚本。runner 通过**中心 LLM 代理**使用 active LLM（真实 provider key 不出中心，runner 本机不填 key；跨主机需中心 `AOS_RUNNER_SHARED_LLM=1`、`AOS_RUNNER_DEFAULT_PROJECT=<中心项目根路径>`，并建议设 `AOS_CENTER_PUBLIC_URL=http://<中心IP>:8765`（否则 LLM 代理地址按请求 Host 推导，回环地址在 runner 上不可达）；runner 不需要知道项目路径）。跨机任务包由中心下发 tests.json/flows 内容，runner 自动落本地 `case-sets` 后执行，不需要复制项目。前置：Node 20+、uv、Python 3.12；中心 runner URL/token（HTTP 控制面）；iOS 另需 Xcode、Appium + xcuitest、签名团队与 iOS 18+ Remote XPC 隧道。`doctor` / `doctor.cmd` 会探测中心 `GET /healthz`：不通时显示「中心不可达」、打印底层原因（如 `ECONNREFUSED`/`ENOTFOUND`），runner 模式下 exit 2。跨机 runner 使用中心项目目录时，**无需在 runner 主机重复登记项目**：面板「去下发」与 `suite task create --host <runner> --project <中心路径>` 会自动复用中心项目。runner 启动脚本默认 `AOS_SUITE_CASE_TIMEOUT_MS=600000`（单用例 10 分钟，可覆盖），避免 LLM agent 用例在 3 分钟默认值下过早超时。
 
+**改名**：`configure.command`/`configure.cmd` 写入 `project/.env`；`runner.command`/`runner.cmd` 会从 `project/.env` 读取 `MOBILE_TESTING_HOST_ID`（进程 env 显式设置时优先），改完必须**停掉旧 runner 再启动**。只改 `.env` 不重启，运行中的进程仍用旧 ID；旧主机记录不会自动改名，会以新 ID 新建一条，请在下发时选新 ID。
+
 构建：`npm run toolchain:fetch && npm run bundle:adb-host`（仅 adb）或 `npm run bundle:mcp-runner`（双端 MCP runner）；**正式发布用 `npm run release:runner`**（自动 bump patch 版本、同步文档版本、跑 verify、重建 online + offline、更新 manifest）。中心 `GET /panel/runner-bundle?role=adb-host&platform=win32&arch=x64` / `...&role=mcp-runner&platform=darwin&arch=arm64`。
 
 #### Windows 首次安装失败（PyPI 超时 / Python 3.12）
@@ -397,7 +399,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.24-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.25-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"

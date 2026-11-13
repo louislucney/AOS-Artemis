@@ -95,6 +95,16 @@ export function checkBundleFiles(files, platform) {
   if (!runner.includes("UV_PYTHON=3.12")) {
     errors.push(`${runnerName} 未固定 UV_PYTHON=3.12`);
   }
+  if (!runner.includes("MOBILE_TESTING_HOST_ID")) {
+    errors.push(`${runnerName} 未读取 MOBILE_TESTING_HOST_ID`);
+  }
+  const readsHostIdFromEnv =
+    platform === "win32"
+      ? runner.includes('findstr /b /c:"MOBILE_TESTING_HOST_ID="')
+      : runner.includes("s/^MOBILE_TESTING_HOST_ID=//p");
+  if (!readsHostIdFromEnv) {
+    errors.push(`${runnerName} 未从 project/.env 读取 MOBILE_TESTING_HOST_ID（configure 改名会被脚本默认值覆盖）`);
+  }
   if (!runner.includes(".aos-deps.json")) {
     errors.push(`${runnerName} 未检查 Artemis 依赖 stamp`);
   }
@@ -126,6 +136,11 @@ export function checkBundleFiles(files, platform) {
   const configure = text(files, configureName);
   if (/AOS_CENTER_PROJECT_ROOT|Center project root|CENTER_ROOT/.test(configure)) {
     errors.push(`${configureName} 不应要求中心项目路径`);
+  }
+  const preservesEnv =
+    platform === "win32" ? configure.includes("findstr /v") : configure.includes("grep -vE");
+  if (!preservesEnv) {
+    errors.push(`${configureName} 会覆盖 project/.env 中的签名等其它配置（应保留非中心三项的已有键）`);
   }
   const readme = text(files, "README.md");
   if (readme !== "" && !/中心\s*LLM|中心代理/.test(readme)) {

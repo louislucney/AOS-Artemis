@@ -22,6 +22,7 @@ function validWinFiles() {
         "set /p CENTER_URL=Center URL: ",
         "set /p CENTER_TOKEN=Runner token: ",
         "set /p HOST_ID=Host ID: ",
+        'findstr /v /b /c:"MOBILE_TESTING_RUNNER_CONTROL_URL=" "project\\.env" > "project\\.env.tmp"',
         ""
       ].join("\r\n")
     ],
@@ -48,6 +49,7 @@ function validWinFiles() {
         'set "HTTPS_PROXY="',
         'set "ALL_PROXY="',
         'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
+        'if "%MOBILE_TESTING_HOST_ID%"=="" for /f "tokens=2 delims==" %%A in (\'findstr /b /c:"MOBILE_TESTING_HOST_ID=" "project\\.env"\') do set "MOBILE_TESTING_HOST_ID=%%A"',
         '"artemis\\.venv\\Scripts\\python.exe" -c "import sys;print(sys.version_info[:2])"',
         'if not exist "artemis\\.venv\\.aos-deps.json" node dist\\cli.js doctor --install-deps',
         "node dist\\cli.js suite runner",
@@ -150,7 +152,14 @@ test("runner bundle contract: valid macOS package passes", () => {
     ],
     [
       "configure.command",
-      ["printf \"Center URL: \"", "read CENTER_URL", "printf \"Runner token: \"", "read CENTER_TOKEN", ""].join("\n")
+      [
+        "printf \"Center URL: \"",
+        "read CENTER_URL",
+        "printf \"Runner token: \"",
+        "read CENTER_TOKEN",
+        "grep -vE '^(MOBILE_TESTING_RUNNER_CONTROL_URL|MOBILE_TESTING_RUNNER_JOB_TOKEN|MOBILE_TESTING_HOST_ID)=' project/.env",
+        ""
+      ].join("\n")
     ],
     ["doctor.command", "#!/bin/sh\nnode dist/cli.js doctor\n"],
     [
@@ -159,6 +168,7 @@ test("runner bundle contract: valid macOS package passes", () => {
         "#!/bin/sh",
         "export UV_PYTHON=3.12",
         "if ! grep -Eq '^MOBILE_TESTING_RUNNER_JOB_TOKEN=.+' project/.env; then exit 2; fi",
+        "MOBILE_TESTING_HOST_ID=\"$(sed -n 's/^MOBILE_TESTING_HOST_ID=//p' project/.env | tail -1)\"",
         "if [ ! -f artemis/.venv/.aos-deps.json ]; then node dist/cli.js doctor --install-deps || true; fi",
         "node dist/cli.js suite runner",
         ""

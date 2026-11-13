@@ -152,6 +152,10 @@ function writeWindowsLaunchers(staging) {
       'set "UV_PYTHON=3.12"',
       'set "UV_SYSTEM_CERTS=1"',
       'if not exist "project\\.env" copy "project\\.env.example" "project\\.env" >nul',
+      'if "%MOBILE_TESTING_HOST_ID%"=="" (',
+      '  for /f "tokens=2 delims==" %%A in (\'findstr /b /c:"MOBILE_TESTING_HOST_ID=" "project\\.env"\') do set "MOBILE_TESTING_HOST_ID=%%A"',
+      ")",
+      'if "%MOBILE_TESTING_HOST_ID%"=="" set "MOBILE_TESTING_HOST_ID=win-runner-01"',
       'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
       'if errorlevel 1 echo [提示] project\\.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。',
       "echo [1/2] 检查环境并安装 Artemis 依赖，首次较慢，需要网络...",
@@ -184,6 +188,10 @@ function writeWindowsLaunchers(staging) {
       "  echo [提示] 缺少 project\\.env：先运行 setup.cmd，再填入中心 runner token。",
       "  exit /b 2",
       ")",
+      'if "%MOBILE_TESTING_HOST_ID%"=="" (',
+      '  for /f "tokens=2 delims==" %%A in (\'findstr /b /c:"MOBILE_TESTING_HOST_ID=" "project\\.env"\') do set "MOBILE_TESTING_HOST_ID=%%A"',
+      ")",
+      'if "%MOBILE_TESTING_HOST_ID%"=="" set "MOBILE_TESTING_HOST_ID=win-runner-01"',
       'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
       'if errorlevel 1 echo [提示] project\\.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；请填入中心 runner token。',
       "node dist\\cli.js doctor",
@@ -207,10 +215,17 @@ function writeWindowsLaunchers(staging) {
       "set /p CENTER_TOKEN=Runner token: ",
       "set /p HOST_ID=Host ID [%DEFAULT_HOST%]: ",
       'if "%HOST_ID%"=="" set "HOST_ID=%DEFAULT_HOST%"',
-      '> "project\\.env" echo MOBILE_TESTING_RUNNER_CONTROL_URL=%CENTER_URL%',
-      '>> "project\\.env" echo MOBILE_TESTING_RUNNER_JOB_TOKEN=%CENTER_TOKEN%',
-      '>> "project\\.env" echo MOBILE_TESTING_HOST_ID=%HOST_ID%',
-      "echo 已写入 project\\.env",
+      'if not exist "project" mkdir "project"',
+      'if exist "project\\.env" (',
+      '  findstr /v /b /c:"MOBILE_TESTING_RUNNER_CONTROL_URL=" /c:"MOBILE_TESTING_RUNNER_JOB_TOKEN=" /c:"MOBILE_TESTING_HOST_ID=" "project\\.env" > "project\\.env.tmp"',
+      ") else (",
+      '  type nul > "project\\.env.tmp"',
+      ")",
+      '>> "project\\.env.tmp" echo MOBILE_TESTING_RUNNER_CONTROL_URL=%CENTER_URL%',
+      '>> "project\\.env.tmp" echo MOBILE_TESTING_RUNNER_JOB_TOKEN=%CENTER_TOKEN%',
+      '>> "project\\.env.tmp" echo MOBILE_TESTING_HOST_ID=%HOST_ID%',
+      'move /y "project\\.env.tmp" "project\\.env" >nul',
+      "echo 已写入 project\\.env（保留其它已有配置）",
       'if "%CENTER_TOKEN%"=="" echo [提示] runner token 为空；请重新运行 configure.cmd。',
       ""
     ].join("\r\n"),
@@ -264,11 +279,14 @@ function writeWindowsLaunchers(staging) {
       'set "ALL_PROXY="',
       'set "UV_PYTHON=3.12"',
       'set "UV_SYSTEM_CERTS=1"',
-      'if "%MOBILE_TESTING_HOST_ID%"=="" set "MOBILE_TESTING_HOST_ID=win-runner-01"',
       'if not exist "project\\.env" (',
       "  echo [runner] 缺少 project\\.env；先运行 configure.cmd。",
       "  exit /b 2",
       ")",
+      'if "%MOBILE_TESTING_HOST_ID%"=="" (',
+      '  for /f "tokens=2 delims==" %%A in (\'findstr /b /c:"MOBILE_TESTING_HOST_ID=" "project\\.env"\') do set "MOBILE_TESTING_HOST_ID=%%A"',
+      ")",
+      'if "%MOBILE_TESTING_HOST_ID%"=="" set "MOBILE_TESTING_HOST_ID=win-runner-01"',
       'findstr /r /c:"^MOBILE_TESTING_RUNNER_JOB_TOKEN=..*" "project\\.env" >nul',
       "if errorlevel 1 (",
       "  echo [runner] project\\.env 的 MOBILE_TESTING_RUNNER_JOB_TOKEN 为空；先运行 configure.cmd。",
@@ -323,12 +341,19 @@ read CENTER_TOKEN
 printf "Host ID [%s]: " "$DEFAULT_HOST"
 read HOST_ID
 HOST_ID="\${HOST_ID:-$DEFAULT_HOST}"
+mkdir -p project
+TMP="$(mktemp project/.env.XXXXXX)"
+if [ -f project/.env ]; then
+  grep -vE '^(MOBILE_TESTING_RUNNER_CONTROL_URL|MOBILE_TESTING_RUNNER_JOB_TOKEN|MOBILE_TESTING_HOST_ID)=' project/.env > "$TMP" || true
+fi
 {
   echo "MOBILE_TESTING_RUNNER_CONTROL_URL=$CENTER_URL"
   echo "MOBILE_TESTING_RUNNER_JOB_TOKEN=$CENTER_TOKEN"
   echo "MOBILE_TESTING_HOST_ID=$HOST_ID"
-} > project/.env
-echo "已写入 project/.env"
+} >> "$TMP"
+chmod 600 "$TMP"
+mv "$TMP" project/.env
+echo "已写入 project/.env（保留其它已有配置）"
 if [ -z "$CENTER_TOKEN" ]; then
   echo "[提示] runner token 为空；请重新运行 configure.command。"
 fi
@@ -416,6 +441,11 @@ export UV_PYTHON=3.12
 export UV_SYSTEM_CERTS=1
 : "\${AOS_SUITE_CASE_TIMEOUT_MS:=600000}"
 export AOS_SUITE_CASE_TIMEOUT_MS
+if [ -z "\${MOBILE_TESTING_HOST_ID:-}" ] && [ -f "$ROOT/project/.env" ]; then
+  MOBILE_TESTING_HOST_ID="$(sed -n 's/^MOBILE_TESTING_HOST_ID=//p' "$ROOT/project/.env" | tail -1 | tr -d '\r')"
+  MOBILE_TESTING_HOST_ID="\${MOBILE_TESTING_HOST_ID%\\"}"
+  MOBILE_TESTING_HOST_ID="\${MOBILE_TESTING_HOST_ID#\\"}"
+fi
 : "\${MOBILE_TESTING_HOST_ID:=mac-runner-01}"
 export MOBILE_TESTING_HOST_ID
 if [ ! -f "$ROOT/project/.env" ]; then
