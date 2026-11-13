@@ -352,6 +352,7 @@ test("artifact route: 文件不存在时浏览器得到 HTML 错误页（含返�
     assert.match(response.body, /文件不存在/);
     assert.doesNotMatch(response.body, /no such file or directory/);
     assert.match(response.body, /打开所在目录/);
+    assert.match(response.body, /path=\.artemis"/, "死链回退到最近已存在目录");
     assert.match(response.body, /← 返回项目/);
     assert.match(response.body, /证据可能未由执行机上传|失败证据/);
   } finally {

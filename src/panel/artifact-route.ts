@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import type { Dirent, Stats } from "node:fs";
 import path from "node:path";
@@ -340,6 +341,20 @@ function wantsHtml(accept: string | null | undefined): boolean {
   return (accept ?? "").toLowerCase().includes("text/html");
 }
 
+/** 错误页的“打开所在目录”优先落到最近的已存在目录（死链时仍能一键回到可浏览层级）。 */
+function nearestExistingDir(rootPath: string | null, rel: string): string | null {
+  if (rootPath === null || rel === "") return null;
+  let dir = path.dirname(rel);
+  for (let depth = 0; depth < 20; depth += 1) {
+    if (dir === "" || dir === "." || dir === "/" || dir === path.sep) return null;
+    if (fs.existsSync(path.join(rootPath, dir))) return dir;
+    const next = path.dirname(dir);
+    if (next === dir) return null;
+    dir = next;
+  }
+  return null;
+}
+
 /** 浏览器打开产物链接时的 HTML 错误页：保留返回项目/所在目录入口，避免直接回 JSON。 */
 function artifactError(input: {
   status: number;
@@ -355,7 +370,7 @@ function artifactError(input: {
   const rel = input.rel ?? "";
   const rootPath = input.rootPath ?? null;
   const hostId = input.hostId ?? null;
-  const dirRel = rel === "" ? null : path.dirname(rel);
+  const dirRel = nearestExistingDir(rootPath, rel);
   const dirHref =
     rootPath === null || dirRel === null || dirRel === "." || dirRel === ""
       ? null
