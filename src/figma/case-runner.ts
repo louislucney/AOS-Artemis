@@ -34,6 +34,7 @@ import {
   type StructuredIosRunResult
 } from "../ios/structured-runner.js";
 import { loadWebSecrets, resolvePlaceholders, type SecretEntry } from "../web/llm/secrets.js";
+import { allocateSequencedSecrets } from "../tasks/secret-sequence.js";
 import type { LogcatWindowResult } from "../device/logcat.js";
 import type { AppResetOutcome } from "../device/reset.js";
 import type { Runtime } from "../runtime.js";
@@ -519,6 +520,13 @@ export async function executeCase(
   context: CaseRunContext
 ): Promise<CaseRunOutcome> {
   const { runtime, sleep, now } = context;
+  const caseSecrets =
+    context.secrets === undefined
+      ? undefined
+      : allocateSequencedSecrets({
+          secrets: context.secrets,
+          stateFile: path.join(runtime.configDirAbs, "secret-sequences.json")
+        });
   let reset: AppResetOutcome | null = null;
   if (context.lockedAppPackage) {
     try {
@@ -544,16 +552,18 @@ export async function executeCase(
     if (context.deviceSerial === null) {
       return nativeSubmitError(testCase, context, "native 用例缺少 device_serial", reset);
     }
+    const nativeContext =
+      caseSecrets === undefined ? context : { ...context, secrets: caseSecrets };
     if (nativeTargetKind !== null) {
-      return await executeNativeIosCase(testCase, context, reset);
+      return await executeNativeIosCase(testCase, nativeContext, reset);
     }
-    return await executeNativeAndroidCase(testCase, context, reset);
+    return await executeNativeAndroidCase(testCase, nativeContext, reset);
   }
   const taskDesc = resolvePlaceholders(
-    `${templatedTaskDesc}${secretContextBlock(templatedTaskDesc, context.secrets ?? [])}`,
-    context.secrets ?? []
+    `${templatedTaskDesc}${secretContextBlock(templatedTaskDesc, caseSecrets ?? [])}`,
+    caseSecrets ?? []
   );
-  const adherenceTaskDesc = resolvePlaceholders(testCase.taskDesc, context.secrets ?? []);
+  const adherenceTaskDesc = resolvePlaceholders(testCase.taskDesc, caseSecrets ?? []);
   const missingAliases = unresolvedSecretAliases(taskDesc);
   if (missingAliases.length > 0) {
     await runtime.recordTaskSubmission({
