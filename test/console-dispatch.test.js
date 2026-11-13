@@ -629,3 +629,47 @@ test("renderDispatchPage: 缺安装包/缺用例集/无执行机都保留可操�
   assert.match(html, /暂无注册执行机/, "无执行机候选显式说明");
   assert.match(html, /去用例库/, "引用明细空态给用例库入口");
 });
+
+test("dispatch: 安装包列表不按当前目标端过滤（勾选 iOS 后 IPA 立即可选）", async () => {
+  const { store, setA } = await seed();
+  const apk = await store.createWebAsset({
+    rootPath: ROOT,
+    kind: "package",
+    filename: "app-release.apk",
+    sha256: "a".repeat(64),
+    size: 1234,
+    storagePath: "/w/p/.artemis/web/assets/package/app.apk"
+  });
+  const ipa = await store.createWebAsset({
+    rootPath: ROOT,
+    kind: "package",
+    filename: "GUUAT_2.0.0_2.ipa",
+    sha256: "b".repeat(64),
+    size: 2345,
+    storagePath: "/w/p/.artemis/web/assets/package/app.ipa"
+  });
+  const params = new URLSearchParams({
+    source: "case-set",
+    ref: setA.id,
+    platforms: "android"
+  });
+  const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
+  assert.deepEqual(
+    preview.appPackages.map((asset) => asset.filename).sort(),
+    ["GUUAT_2.0.0_2.ipa", "app-release.apk"],
+    "列表包含两端安装包，由前端按勾选的目标端即时过滤"
+  );
+  const signature = dispatchFormSignature(params);
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId: dispatchPreviewId(preview, signature, ROOT),
+    formSignature: signature,
+    query: Object.fromEntries(params)
+  });
+  assert.match(html, new RegExp(`data-platform="ios"[^>]*>v\\d+ · GUUAT_2\\.0\\.0_2\\.ipa`));
+  assert.match(html, new RegExp(`data-platform="android"[^>]*>v\\d+ · app-release\\.apk`));
+  assert.match(html, /syncAppAssets/, "勾选目标端后即时隐藏/禁用不匹配的安装包");
+  assert.ok(apk.id && ipa.id);
+});

@@ -539,8 +539,7 @@ export async function computeDispatchPreview(
         : asset.filename.toLowerCase().endsWith(".apk")
           ? ("android" as const)
           : null
-    }))
-    .filter((asset) => asset.platform === null || platforms.includes(asset.platform));
+    }));
   const appPackage = (params.get("appPackage") ?? "").trim();
   const requestedAppAssetId = (params.get("appAssetId") ?? "").trim();
   const appAssetId =
@@ -840,9 +839,11 @@ export function renderDispatchPage(view: DispatchView): string {
   const appPackageOptions = preview.appPackages
     .map(
       (asset) =>
-        `<option value="${escapeHtml(asset.id)}"${
-          asset.id === preview.appAssetId ? " selected" : ""
-        }>${escapeHtml(asset.label)}${asset.platform === null ? "" : `（${asset.platform}）`}</option>`
+        `<option value="${escapeHtml(asset.id)}" data-platform="${
+          asset.platform ?? ""
+        }"${asset.id === preview.appAssetId ? " selected" : ""}>${escapeHtml(asset.label)}${
+          asset.platform === null ? "" : `（${asset.platform}）`
+        }</option>`
     )
     .join("");
   const appAssetField =
@@ -980,6 +981,17 @@ var stale=document.getElementById('dispatch-stale');
 var island=null;try{island=JSON.parse(document.getElementById('dispatch-preview-data').textContent);}catch(e){island=null;}
 if(!island){return;}
 function showErr(m){err.textContent=m;err.hidden=false;}
+function syncAppAssets(){
+  var sel=form.querySelector('select[name="appAssetId"]');if(!sel)return;
+  var picked=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
+  Array.prototype.forEach.call(sel.options,function(opt){
+    var p=opt.getAttribute('data-platform');
+    var ok=!p||picked.indexOf(p)>=0;
+    opt.hidden=!ok;opt.disabled=!ok;
+  });
+  var current=sel.selectedIndex>=0?sel.options[sel.selectedIndex]:null;
+  if(current&&current.disabled){sel.value='';}
+}
 ${priorityReadScript}
 function formSignature(){
   var mode=(form.querySelector('input[name="source"]:checked')||{value:'case-set'}).value;
@@ -1011,6 +1023,8 @@ function refreshStale(){
 }
 form.addEventListener('input',refreshStale);
 form.addEventListener('change',refreshStale);
+form.addEventListener('change',syncAppAssets);
+syncAppAssets();
 refreshStale();
 go.addEventListener('click',function(){
   var pickedHost=(form.querySelector('select[name="host"]')||{value:''}).value;
