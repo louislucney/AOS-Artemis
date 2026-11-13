@@ -945,6 +945,12 @@ test("suite run --task: 设备已安装模式版本不一致 → 执行前失败
     appiumDetector,
     dotenv: "AOS_IOS_XCODE_ORG_ID=TEAMID\n"
   });
+  let disposedIosWda = 0;
+  const originalDisposeIosWda = runtime.disposeIosWda.bind(runtime);
+  runtime.disposeIosWda = async () => {
+    disposedIosWda += 1;
+    await originalDisposeIosWda();
+  };
   const sets = await store.listCaseSets(runtime.project.rootDir);
   const task = await store.createRegressionTask({
     rootPath: runtime.project.rootDir,
@@ -975,6 +981,7 @@ test("suite run --task: 设备已安装模式版本不一致 → 执行前失败
   assert.equal(after.appVersionActual, "1.9.0 (19)");
   assert.ok(after.finishedAt, "终态写入测试结束时间");
   assert.equal((await store.listSuiteRuns(runtime.project.rootDir, { taskId: task.id })).length, 0);
+  assert.equal(disposedIosWda, 1, "任务结束后关闭 iOS Appium/WDA 会话");
 });
 
 test("suite run --task: iOS 真机缺 XCUITest 驱动 → 环境预检失败 exit 2（不装包/不跑用例）", async () => {

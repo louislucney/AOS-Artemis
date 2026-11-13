@@ -829,6 +829,21 @@ async function suiteRunTask(
     io.errorLog("用法: suite run --task <id> --device <serial>（可重复传多个设备）");
     return 2;
   }
+  let iosAutomationClosed = false;
+  const closeIosAutomation = async (): Promise<void> => {
+    if (
+      iosAutomationClosed ||
+      !devices.some((serial) => classifyIosSerial(serial) === "device")
+    ) {
+      return;
+    }
+    iosAutomationClosed = true;
+    try {
+      await runtime.disposeIosWda();
+    } catch (error) {
+      logWarn(`关闭 iOS 自动化会话失败: ${errorMessage(error)}`);
+    }
+  };
   say("子集运行不做全图覆盖门禁（全图完整性由生成时 requireFullCoverage 保障）");
   if (flags.bool("fail-on-uncovered")) {
     say("注意: --fail-on-uncovered 在 task 模式忽略（子集天然不完整）");
@@ -971,6 +986,7 @@ async function suiteRunTask(
         expectStatuses: ["pending", "claimed", "running"]
       })
       .catch(() => false);
+    await closeIosAutomation();
     return 2;
   }
   const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
@@ -1057,6 +1073,7 @@ async function suiteRunTask(
         expectStatuses: ["pending", "claimed", "running"]
       })
       .catch(() => false);
+    await closeIosAutomation();
     return 2;
   };
   const failAppVersion = async (
@@ -1080,6 +1097,7 @@ async function suiteRunTask(
         expectStatuses: ["pending", "claimed", "running"]
       })
       .catch(() => false);
+    await closeIosAutomation();
     return 2;
   };
   const iosInstallMode = task.appInstallMode ?? (task.appAssetId === null ? "installed" : "asset");
@@ -1634,6 +1652,9 @@ async function suiteRunTask(
         logWarn(`释放设备租约失败: ${errorMessage(error)}`);
       }
     }
+    // 任务结束后立即关闭 iOS 真机 Appium/WDA 会话，避免设备长期停留在
+    // “Automation Running”；下一条任务会按需重新拉起。
+    await closeIosAutomation();
   }
 }
 
