@@ -93,6 +93,94 @@ test("suite runner: iOS UDID 任务跑通用例并标记 logcat 降级", async (
   );
 });
 
+test("suite runner: 勾选测试资料但用例无占位符 → 自动注入执行 taskDesc", async () => {
+  __resetIosTasks();
+  const { dir, proxy, runtime } = await setupIos();
+  writeStatus(dir, "trace-1", {
+    trace_id: "trace-1",
+    status: "completed",
+    device_serial: UDID
+  });
+  const report = await runGeneratedTests(runtime, {
+    deviceSerial: UDID,
+    lockedAppPackage: "com.apple.Preferences",
+    secrets: [
+      {
+        alias: "reg_email",
+        value: "user@example.com",
+        kind: "account",
+        label: "Email",
+        screen: "Login"
+      }
+    ],
+    reset: async (request) => ({
+      ok: true,
+      serial: request.serial ?? null,
+      adb: { path: null, source: "missing" },
+      commands: []
+    }),
+    sleep: async () => {},
+    pollIntervalMs: 0,
+    apiErrors: true,
+    iosLogCollector: async () => ({
+      status: "skipped",
+      reason: "ios-log-unsupported",
+      text: "",
+      serial: UDID
+    })
+  });
+  assert.equal(report.ok, true);
+  const submits = proxy.calls.filter((call) => call.name === "mobile_run_task");
+  assert.equal(submits.length, 1);
+  assert.match(submits[0].args.task_desc, /【任务测试资料】/);
+  assert.match(submits[0].args.task_desc, /user@example\.com/);
+  assert.match(submits[0].args.task_desc, /Email（reg_email；screen: Login）/);
+  assert.doesNotMatch(JSON.stringify(report), /user@example\.com/);
+});
+
+test("suite runner: 已显式引用 alias 不重复注入", async () => {
+  __resetIosTasks();
+  const { dir, proxy, runtime } = await setupIos();
+  fs.writeFileSync(
+    path.join(runtime.configDirAbs, "design", "tests.json"),
+    JSON.stringify({
+      flows: [{ ...caseEntry(1), taskDesc: "enter email <secret:reg_email>" }]
+    })
+  );
+  writeStatus(dir, "trace-1", {
+    trace_id: "trace-1",
+    status: "completed",
+    device_serial: UDID
+  });
+  await runGeneratedTests(runtime, {
+    deviceSerial: UDID,
+    lockedAppPackage: "com.apple.Preferences",
+    secrets: [
+      { alias: "reg_email", value: "user@example.com", kind: "account", label: "Email" }
+    ],
+    reset: async (request) => ({
+      ok: true,
+      serial: request.serial ?? null,
+      adb: { path: null, source: "missing" },
+      commands: []
+    }),
+    sleep: async () => {},
+    pollIntervalMs: 0,
+    apiErrors: true,
+    iosLogCollector: async () => ({
+      status: "skipped",
+      reason: "ios-log-unsupported",
+      text: "",
+      serial: UDID
+    })
+  });
+  const submits = proxy.calls.filter((call) => call.name === "mobile_run_task");
+  assert.equal(submits.length, 1);
+  const taskDesc = submits[0].args.task_desc;
+  assert.equal((taskDesc.match(/user@example\.com/g) ?? []).length, 1);
+  assert.doesNotMatch(taskDesc, /【任务测试资料】/);
+});
+
 test("suite runner: iOS 失败任务（test_summary）走分类", async () => {
   __resetIosTasks();
   const { dir, runtime } = await setupIos();

@@ -128,6 +128,25 @@ function unresolvedSecretAliases(text: string): string[] {
   return [...aliases];
 }
 
+/** 自动把任务级测试资料带进执行 taskDesc：用例不需要预先写占位符。
+ * 已显式引用过的 alias 不重复追加；台账仍保存模板，只有执行 prompt 会拿到解析后的值。 */
+export function secretContextBlock(taskDesc: string, secrets: SecretEntry[]): string {
+  if (secrets.length === 0) return "";
+  const mentioned = new Set(unresolvedSecretAliases(taskDesc).map((alias) => alias.toLowerCase()));
+  const lines: string[] = [];
+  for (const entry of secrets) {
+    const alias = entry.alias.trim();
+    if (alias === "" || mentioned.has(alias.toLowerCase())) continue;
+    const label = entry.label?.trim() || alias;
+    const screen = entry.screen?.trim();
+    lines.push(
+      `- ${label}（${alias}${screen === undefined ? "" : `；screen: ${screen}`}）：<secret:${alias}>`
+    );
+  }
+  if (lines.length === 0) return "";
+  return `\n\n【任务测试资料】（已由任务下发，填写对应字段时直接使用，不要编造）\n${lines.join("\n")}`;
+}
+
 function missingSecretsOutcome(
   testCase: GeneratedCase,
   context: CaseRunContext,
@@ -530,7 +549,10 @@ export async function executeCase(
     }
     return await executeNativeAndroidCase(testCase, context, reset);
   }
-  const taskDesc = resolvePlaceholders(templatedTaskDesc, context.secrets ?? []);
+  const taskDesc = resolvePlaceholders(
+    `${templatedTaskDesc}${secretContextBlock(templatedTaskDesc, context.secrets ?? [])}`,
+    context.secrets ?? []
+  );
   const adherenceTaskDesc = resolvePlaceholders(testCase.taskDesc, context.secrets ?? []);
   const missingAliases = unresolvedSecretAliases(taskDesc);
   if (missingAliases.length > 0) {
