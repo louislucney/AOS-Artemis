@@ -9,6 +9,7 @@ import JSZip from "jszip";
 import {
   computeDispatchPreview,
   dispatchFormSignature,
+  dispatchFormSignatureForPreview,
   dispatchPreviewId,
   precheckTask,
   renderDispatchPage
@@ -550,6 +551,57 @@ test("dispatch preview: 可选 secret 测试资料并进入表单/签名", async
   assert.match(html, /virtual-card-reg\.txt/);
   assert.match(html, /secret/);
   assert.match(dispatchFormSignature(params), new RegExp(mat.id));
+});
+
+test("dispatch preview: 无显式参数时沿用上次任务的平台/包名/资料/版本", async () => {
+  const { store, setA } = await seed();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-recent-"));
+  const matPath = path.join(dir, "virtual-card-reg.secret.json");
+  fs.writeFileSync(matPath, JSON.stringify({ reg_email: "user@example.com" }));
+  const mat = await store.createWebAsset({
+    rootPath: ROOT,
+    kind: "materials",
+    filename: "virtual-card-reg.secret.json",
+    sha256: "e".repeat(64),
+    size: fs.statSync(matPath).size,
+    storagePath: matPath,
+    metadata: { secret: true }
+  });
+  await store.createRegressionTask({
+    rootPath: ROOT,
+    refs: [{ caseSetId: setA.id, featureKey: "login" }],
+    platforms: ["ios"],
+    baseline: "latest",
+    createdBy: "panel",
+    appPackage: "com.example.ios",
+    appInstallMode: "installed",
+    appVersionExpected: "2.0.0",
+    appVersionCheck: "skipped",
+    materialsAssetId: mat.id
+  });
+  const params = new URLSearchParams({ source: "case-set", ref: setA.id });
+  const preview = await computeDispatchPreview({ store, env: {} }, ROOT, params);
+  assert.deepEqual(preview.platforms, ["ios"]);
+  assert.equal(preview.appPackage, "com.example.ios");
+  assert.equal(preview.skipIosInstall, true);
+  assert.equal(preview.appInstallMode, "installed");
+  assert.equal(preview.appVersionExpected, "2.0.0");
+  assert.equal(preview.materialsAssetId, mat.id);
+
+  const formSignature = dispatchFormSignatureForPreview(params, preview);
+  const html = renderDispatchPage({
+    rootPath: ROOT,
+    rootLabel: "p",
+    preview,
+    previewId: dispatchPreviewId(preview, formSignature, ROOT),
+    formSignature,
+    query: Object.fromEntries(params)
+  });
+  assert.match(html, /name="skipIosInstall" value="1" checked/);
+  assert.match(html, /name="appPackage" value="com\.example\.ios"/);
+  assert.match(html, /name="appVersionExpected" value="2\.0\.0"/);
+  assert.match(html, new RegExp(`value="${mat.id}"[^>]*selected`));
+  assert.equal(formSignature.includes("|1|2.0.0|com.example.ios"), true);
 });
 
 test("dispatch preview: 非 secret 测试资料不可选并给警告", async () => {

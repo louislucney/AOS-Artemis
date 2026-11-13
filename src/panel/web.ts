@@ -19,7 +19,7 @@ import { renderConsoleShell, renderGroupTabs, setConsoleShellDefaults, type Cons
 import { INTEGRATION_ACTIONS, INTEGRATION_LABELS } from "../figma/integration-readiness.js";
 import {
   computeDispatchPreview,
-  dispatchFormSignature,
+  dispatchFormSignatureForPreview,
   dispatchPreviewId,
   hostScopedStore,
   renderDispatchPage,
@@ -708,7 +708,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
       "",
       url.searchParams
     );
-    const formSignature = dispatchFormSignature(url.searchParams, preview.appPackage);
+    const formSignature = dispatchFormSignatureForPreview(url.searchParams, preview);
     return {
       kind: "dispatch",
       rootPath: "",
@@ -785,7 +785,7 @@ async function buildView(url: URL, deps: PanelWebDeps): Promise<PanelView> {
     );
     const query: Record<string, string> = {};
     for (const [key, value] of url.searchParams) query[key] = value;
-    const formSignature = dispatchFormSignature(url.searchParams, preview.appPackage);
+    const formSignature = dispatchFormSignatureForPreview(url.searchParams, preview);
     const legacyRecord =
       resolved.hostId === null
         ? await deps.store.getProjectByPath(resolved.rootPath).catch(() => null)

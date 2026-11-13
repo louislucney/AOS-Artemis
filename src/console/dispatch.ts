@@ -128,24 +128,50 @@ function dispatchPlatforms(params: URLSearchParams): ("ios" | "android")[] {
   return [...new Set(values)].sort();
 }
 
-/** 表单字段签名（与预览同源；客户端复算同式）。`resolvedAppPackage` 用于把从 APK 自动识别的包名纳入签名，避免客户端读隐藏输入后永远判定过期。 */
+export interface ResolvedDispatchForm {
+  platforms?: Array<"ios" | "android">;
+  appAssetId?: string | null;
+  materialsAssetId?: string | null;
+  skipIosInstall?: boolean;
+  appVersionExpected?: string | null;
+}
+
+/** 表单字段签名（与预览同源；客户端复算同式）。`resolvedAppPackage`/`resolved` 用于把
+ * 服务端从安装包/上次任务/执行机设备推导出的默认值纳入签名，避免表单首次打开就被判过期。 */
 export function dispatchFormSignature(
   params: URLSearchParams,
-  resolvedAppPackage?: string
+  resolvedAppPackage?: string,
+  resolved: ResolvedDispatchForm = {}
 ): string {
   const mode = (params.get("source") ?? "case-set").trim() === "keyword" ? "keyword" : "case-set";
   const refOrKeyword =
     mode === "keyword" ? (params.get("keyword") ?? "").trim() : (params.get("ref") ?? "").trim();
-  const platforms = dispatchPlatforms(params).join(",");
+  const platforms = (resolved.platforms ?? dispatchPlatforms(params)).join(",");
   const baseline = (params.get("baseline") ?? "latest").trim() === "none" ? "none" : "latest";
-  const appAssetId = (params.get("appAssetId") ?? "").trim();
-  const materialsAssetId = (params.get("materialsAssetId") ?? "").trim();
+  const appAssetId =
+    resolved.appAssetId !== undefined
+      ? (resolved.appAssetId ?? "")
+      : (params.get("appAssetId") ?? "").trim();
+  const materialsAssetId =
+    resolved.materialsAssetId !== undefined
+      ? (resolved.materialsAssetId ?? "")
+      : (params.get("materialsAssetId") ?? "").trim();
   const appPackage =
     resolvedAppPackage !== undefined
       ? resolvedAppPackage.trim()
       : (params.get("appPackage") ?? "").trim();
-  const skipIosInstall = params.get("skipIosInstall") === "1" ? "1" : "0";
-  const appVersionExpected = (params.get("appVersionExpected") ?? "").trim();
+  const skipIosInstall =
+    resolved.skipIosInstall !== undefined
+      ? resolved.skipIosInstall
+        ? "1"
+        : "0"
+      : params.get("skipIosInstall") === "1"
+        ? "1"
+        : "0";
+  const appVersionExpected =
+    resolved.appVersionExpected !== undefined
+      ? (resolved.appVersionExpected ?? "").trim()
+      : (params.get("appVersionExpected") ?? "").trim();
   return [
     mode,
     refOrKeyword,
@@ -157,6 +183,27 @@ export function dispatchFormSignature(
     appVersionExpected,
     appPackage
   ].join("|");
+}
+
+export function dispatchFormSignatureForPreview(
+  params: URLSearchParams,
+  preview: Pick<
+    DispatchPreview,
+    | "platforms"
+    | "appAssetId"
+    | "materialsAssetId"
+    | "appPackage"
+    | "skipIosInstall"
+    | "appVersionExpected"
+  >
+): string {
+  return dispatchFormSignature(params, preview.appPackage, {
+    platforms: preview.platforms,
+    appAssetId: preview.appAssetId,
+    materialsAssetId: preview.materialsAssetId,
+    skipIosInstall: preview.skipIosInstall,
+    appVersionExpected: preview.appVersionExpected
+  });
 }
 
 /** 预览 ID＝表单签名＋目标主机/项目＋服务端解析结果（用例集集合/用例数）短哈希；服务端复算不一致即视为过期。 */
@@ -317,7 +364,6 @@ export async function computeDispatchPreview(
   const modeRaw = (params.get("source") ?? "case-set").trim();
   const mode: DispatchPreview["source"]["mode"] =
     modeRaw === "keyword" || modeRaw === "excel" ? modeRaw : "case-set";
-  const platforms = dispatchPlatforms(params);
 
   const warnings: string[] = [];
   const priorityRaw = (params.get("priority") ?? "").trim();
@@ -345,6 +391,23 @@ export async function computeDispatchPreview(
   const targetStore = hostScopedStore(deps, targetHost?.id ?? null);
   const ownerProject =
     rootPath === "" ? null : await deps.store.getProjectByPath(rootPath).catch(() => null);
+  const recentTaskStore = ownerProject !== null ? deps.store : targetStore;
+  const recentTask =
+    rootPath === ""
+      ? null
+      : await recentTaskStore
+          .listRegressionTasks(rootPath, 10)
+          .then((tasks) => tasks.find((task) => task.jobSpec === null) ?? null)
+          .catch(() => null);
+  const explicitPlatforms = params.getAll("platforms").some((value) => value.trim() !== "");
+  const recentPlatforms = (recentTask?.platforms ?? []).filter(
+    (platform): platform is "ios" | "android" => platform === "ios" || platform === "android"
+  );
+  let platforms: Array<"ios" | "android"> = explicitPlatforms
+    ? dispatchPlatforms(params)
+    : recentPlatforms.length > 0
+      ? [...new Set(recentPlatforms)].sort()
+      : dispatchPlatforms(params);
   let executionRunnerForHost = false;
   if (targetHost !== null && rootPath !== "") {
     try {
@@ -385,6 +448,25 @@ export async function computeDispatchPreview(
           );
           hostBlocked = true;
         }
+      }
+    }
+    if (!explicitPlatforms && recentPlatforms.length === 0 && rootPath !== "") {
+      try {
+        const deviceRunners = await (crossRootRunner ? deps.store : targetStore).listRunners(
+          rootPath
+        );
+        const devicePlatforms = deviceRunners
+          .filter((runner) => (runner.hostId ?? runner.name) === targetHost.id)
+          .flatMap((runner) => runner.devices.map((device) => device.platform))
+          .filter(
+            (platform): platform is "ios" | "android" =>
+              platform === "ios" || platform === "android"
+          );
+        if (devicePlatforms.length > 0) {
+          platforms = [...new Set(devicePlatforms)].sort();
+        }
+      } catch {
+        /* keep fallback */
       }
     }
     const precheck = precheckTask(
@@ -558,9 +640,17 @@ export async function computeDispatchPreview(
           ? ("android" as const)
           : null
     }));
-  const appPackage = (params.get("appPackage") ?? "").trim();
-  const skipIosInstall = params.get("skipIosInstall") === "1";
-  const appVersionExpected = (params.get("appVersionExpected") ?? "").trim() || null;
+  const appPackage = params.has("appPackage")
+    ? (params.get("appPackage") ?? "").trim()
+    : (recentTask?.appPackage ?? "").trim();
+  const skipIosInstall = params.has("skipIosInstall")
+    ? params.get("skipIosInstall") === "1"
+    : platforms.includes("ios") && recentTask?.appInstallMode === "installed";
+  const appVersionExpected = params.has("appVersionExpected")
+    ? (params.get("appVersionExpected") ?? "").trim() || null
+    : skipIosInstall
+      ? (recentTask?.appVersionExpected ?? null)
+      : null;
   const requestedAppAssetId = (params.get("appAssetId") ?? "").trim();
   let appAssetId =
     requestedAppAssetId !== "" && appPackages.some((asset) => asset.id === requestedAppAssetId)
@@ -600,11 +690,17 @@ export async function computeDispatchPreview(
     secret: asset.metadata?.secret === true
   }));
   const requestedMaterialsAssetId = (params.get("materialsAssetId") ?? "").trim();
-  const materialsAssetId =
+  let materialsAssetId =
     requestedMaterialsAssetId !== "" &&
     materials.some((asset) => asset.id === requestedMaterialsAssetId && asset.secret)
       ? requestedMaterialsAssetId
       : null;
+  if (!params.has("materialsAssetId") && recentTask?.materialsAssetId != null) {
+    const recentMaterial = materials.find(
+      (asset) => asset.id === recentTask.materialsAssetId && asset.secret
+    );
+    if (recentMaterial !== undefined) materialsAssetId = recentMaterial.id;
+  }
   if (requestedMaterialsAssetId !== "") {
     const picked = materials.find((asset) => asset.id === requestedMaterialsAssetId);
     if (picked === undefined) {
@@ -917,7 +1013,7 @@ export function renderDispatchPage(view: DispatchView): string {
   }>
     <p><label><input type="checkbox" name="skipIosInstall" value="1"${
       preview.skipIosInstall ? " checked" : ""
-    }> 不下发 iOS 安装包（使用设备已安装应用）</label></p>
+    }><input type="hidden" name="skipIosInstall" value="0"> 不下发 iOS 安装包（使用设备已安装应用）</label></p>
     <div id="dispatch-ios-installed"${preview.skipIosInstall ? "" : " hidden"}>
       <p class="note">请先在设备上通过 TestFlight 安装目标 App；未安装将无法锁定/启动。</p>
       <p><label><input type="checkbox" name="iosInstalledConfirmed" value="1"${
@@ -1082,7 +1178,18 @@ function syncAppAssets(){
     opt.hidden=!ok;opt.disabled=!ok;
   });
   var current=sel.selectedIndex>=0?sel.options[sel.selectedIndex]:null;
-  if(current&&current.disabled){sel.value='';}
+  if(current&&current.disabled){sel.value='';current=null;}
+  if(current&&sel.value){
+    var selectedPlatform=current.getAttribute('data-platform');
+    if(selectedPlatform==='ios'||selectedPlatform==='android'){
+      var platformInput=form.querySelector('input[name="platforms"][value="'+selectedPlatform+'"]');
+      if(platformInput&&!platformInput.checked){
+        platformInput.checked=true;
+        syncIosInstall();
+        refreshStale();
+      }
+    }
+  }
 }
 function syncIosInstall(){
   var skip=!!(form.querySelector('input[name="skipIosInstall"]')||{}).checked;

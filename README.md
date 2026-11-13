@@ -280,7 +280,7 @@ node dist/cli.js panel --web [--port 8767] [--workspace <dir>]   # 独立看板�
 | 版块 | 内容与动作 |
 |---|---|
 | `assets` **测试资产** | `overview\|case-sets\|excel\|packages\|materials\|reference`；用例集、Excel/CSV、安装包、测试资料、参考图统一管理；Excel 列映射/导入/上传需 maintainer+。本地注册项目（非网页创建）同样可上传资产/保存映射；归档项目仍拒绝写入。**资产归档/删除**：每个资产可「归档」（默认隐藏、不可再选，历史任务仍可读，可恢复；`?archived=1` 查看已归档）或「彻底删除」（仅未被任务/Excel 映射引用；共享内容保留文件，secret 资料删除明文；被引用返回 409 清单）。**导入前设计预检**：检测 Wireframe 与 `flows.json`/`ui-contract`，有索引时可选「设计增强导入 / 普通导入」并显示 exact/ambiguous/unmapped 覆盖；无索引或「更换设计来源」时选择 Figma URL / `.pen` / 无设计稿——Figma 与 `.pen` 等价，均提取为同一 flows.json 后回到同一映射预览。Figma 未带 node-id 时先列页面/画板清单（`?depth=2`）再选范围，避免整文件下载；Figma/pen 提取走后台 job（202 + jobId 轮询，显示已用时长），不阻塞 HTTP。Maestro 脚本集入口已移除。 |
-| `create` **新建测试** | 只保留套件回归四步下发向导；「② 参数」可选安装包（APK/IPA），执行机领取后先安装再跑用例，不要求设备预装；iOS 也可勾选「不下发 iOS 安装包」，改用设备上通过 TestFlight 安装的版本（需勾选确认），并可填期望版本让执行机在跑用例前校验；测试资料选中后自动注入执行 prompt（用例不必预写 `<secret:alias>`，显式占位符仍可用）；跨机 runner（如 Windows `win-runner-01`）可直接选用中心项目目录，不需要在 runner 主机重复登记项目；切换 host/project 保留已填表单；旧网页测试入口自动跳回套件回归。 |
+| `create` **新建测试** | 只保留套件回归四步下发向导；「② 参数」可选安装包（APK/IPA），执行机领取后先安装再跑用例，不要求设备预装；iOS 也可勾选「不下发 iOS 安装包」，改用设备上通过 TestFlight 安装的版本（需勾选确认），并可填期望版本让执行机在跑用例前校验；测试资料选中后自动注入执行 prompt（用例不必预写 `<secret:alias>`，显式占位符仍可用）；表单会沿用该项目上次派发的平台/应用包名/测试资料/期望版本与 iOS 安装方式，选择 IPA/APK 时自动勾选对应平台；跨机 runner（如 Windows `win-runner-01`）可直接选用中心项目目录，不需要在 runner 主机重复登记项目；切换 host/project 保留已填表单；旧网页测试入口自动跳回套件回归。 |
 | `tasks` **任务与结果** | 套件回归任务列表（状态/设备/门禁/失败域），25 条/页分页并保留搜索/筛选；详情 `section=tasks&task=<id>` 展示运行/引用/跨端+重新派发/只重跑失败用例（`caseIds`），运行行可直接打开批次/轨迹/运行档案/失败分析；`view=review\|stats` 为待处理失败与统计子视图。历史 Web 任务数据保留但不在面板/对比计数中展示 |
 | `devices` **设备台账** | 设备列表（suite runner）：执行机在线/离线、平台、模拟器/真机、型号/系统版本、`空闲`/`占用`/`离线`、当前任务（设备租约）与到期、最后心跳、工具；带项目上下文时保留项目并给每行「去下发」入口；按 `state=idle|busy|offline`、`platform=android|ios` 过滤；空闲＝在线且无有效租约；页面只读、不展示 token/secret |
 | `archive` **档案与产物** | 批次/用例集/报告/差异/崩溃/轨迹 六族索引（与保留期同源），类型/关键词/时间筛选；**产物行可点**（只读服务 `GET /panel/artifact`，限 `.artemis` 范围白名单类型） |
@@ -399,7 +399,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.27-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.28-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"

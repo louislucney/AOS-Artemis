@@ -71,7 +71,7 @@ import { runnerTtlFrom } from "../runner/status.js";
 import { applyWebJobManualStatus, ingestWebJobResult, WebResultError } from "../web/results.js";
 import {
   computeDispatchPreview,
-  dispatchFormSignature,
+  dispatchFormSignatureForPreview,
   dispatchPreviewId,
   hostScopedStore,
   isHostOnline,
@@ -1751,7 +1751,7 @@ async function checkDispatchPreviewFreshness(
   );
   const expected = dispatchPreviewId(
     preview,
-    dispatchFormSignature(params, preview.appPackage),
+    dispatchFormSignatureForPreview(params, preview),
     rootPath
   );
   if (expected !== previewId) {
