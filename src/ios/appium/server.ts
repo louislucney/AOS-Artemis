@@ -84,16 +84,53 @@ export class AppiumServerManager {
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       throw new Error(`AOS_IOS_APPIUM_PORT 非法：${this.env.AOS_IOS_APPIUM_PORT ?? ""}`);
     }
-    const baseUrl = `http://127.0.0.1:${port}`;
+    const preferredUrl = `http://127.0.0.1:${port}`;
+    const reuseExisting = (this.env.AOS_APPIUM_REUSE_EXISTING ?? "").trim() === "1";
+    let occupied = false;
     try {
-      await this.probe(baseUrl, this.probeTimeoutMs);
-      this.baseUrl = baseUrl;
-      this.state = "running";
-      this.log(`Appium 复用已有服务（非本服务启动）：${baseUrl}`);
-      return { baseUrl, managed: false };
+      await this.probe(preferredUrl, this.probeTimeoutMs);
+      occupied = true;
     } catch {
-      /* no existing server on the port — spawn one */
+      /* free */
     }
+    if (occupied) {
+      if (reuseExisting) {
+        this.baseUrl = preferredUrl;
+        this.state = "running";
+        this.log(`Appium 复用已有服务（AOS_APPIUM_REUSE_EXISTING=1）：${preferredUrl}`);
+        return { baseUrl: preferredUrl, managed: false };
+      }
+      this.log(
+        `端口 ${port} 已有 Appium（非本服务启动）：不静默复用（其驱动/APPIUM_HOME 可能与当前 CLI 不一致），改用托管实例`
+      );
+    }
+    // 端口被占用时依次尝试后续端口；显式 AOS_APPIUM_URL 仍由上面的直连分支处理。
+    const candidates: number[] = [];
+    for (let offset = 0; offset <= 10; offset += 1) {
+      const candidate = port + offset;
+      if (candidate > 65535) break;
+      if (offset === 0 && !occupied) candidates.push(candidate);
+      else if (offset > 0) candidates.push(candidate);
+    }
+    if (candidates.length === 0) candidates.push(port);
+    for (const candidate of candidates) {
+      if (candidate !== port) {
+        try {
+          await this.probe(`http://127.0.0.1:${candidate}`, this.probeTimeoutMs);
+          continue;
+        } catch {
+          /* free */
+        }
+      }
+      return await this.startManaged(candidate);
+    }
+    throw new Error(
+      `Appium 端口 ${port}–${Math.min(port + 10, 65535)} 均被占用：请停止一个实例，或设置 AOS_APPIUM_URL 显式复用。`
+    );
+  }
+
+  private async startManaged(port: number): Promise<AppiumServerHandle> {
+    const baseUrl = `http://127.0.0.1:${port}`;
     this.state = "starting";
     this.log(`Appium 启动：appium --port ${port}`);
     const child = this.spawnImpl("appium", ["--port", String(port)], {

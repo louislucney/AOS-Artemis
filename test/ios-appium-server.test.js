@@ -93,10 +93,10 @@ test("appium server: 托管启动轮询就绪并回收", async () => {
   assert.equal(manager.current().state, "stopped");
 });
 
-test("appium server: 端口已有实例时直接复用不重复启动", async () => {
+test("appium server: 显式 AOS_APPIUM_REUSE_EXISTING=1 才复用外部实例", async () => {
   let spawned = 0;
   const manager = new AppiumServerManager({
-    env: { AOS_IOS_APPIUM_PORT: "4799" },
+    env: { AOS_IOS_APPIUM_PORT: "4799", AOS_APPIUM_REUSE_EXISTING: "1" },
     fetchImpl: async () => okStatus(),
     spawnImpl: () => {
       spawned += 1;
@@ -107,6 +107,29 @@ test("appium server: 端口已有实例时直接复用不重复启动", async ()
   const handle = await manager.ensureReady();
   assert.deepEqual(handle, { baseUrl: "http://127.0.0.1:4799", managed: false });
   assert.equal(spawned, 0);
+});
+
+test("appium server: 端口被外部实例占用时改用托管实例（不静默复用旧服务）", async () => {
+  const ready = new Set([4799]);
+  const spawned = [];
+  const manager = new AppiumServerManager({
+    env: { AOS_IOS_APPIUM_PORT: "4799" },
+    fetchImpl: async (url) => {
+      const port = Number(/127\.0\.0\.1:(\d+)/.exec(url)?.[1] ?? 0);
+      if (ready.has(port)) return okStatus();
+      throw new Error("ECONNREFUSED");
+    },
+    spawnImpl: (command, args) => {
+      const port = Number(args[args.indexOf("--port") + 1]);
+      spawned.push(port);
+      ready.add(port);
+      return new FakeChild();
+    },
+    sleep: async () => {}
+  });
+  const handle = await manager.ensureReady();
+  assert.deepEqual(handle, { baseUrl: "http://127.0.0.1:4800", managed: true });
+  assert.deepEqual(spawned, [4800], "跳过被占用的 4799，在 4800 启动托管实例");
 });
 
 test("appium server: 启动失败与非法端口", async () => {

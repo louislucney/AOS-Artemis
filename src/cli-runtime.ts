@@ -43,6 +43,11 @@ export async function defaultBuildRuntime(
         /* already gone */
       }
       try {
+        await runtime.disposeIosWda();
+      } catch {
+        /* Appium 已在退出/无需清理 */
+      }
+      try {
         await store.close();
       } catch {
         /* ignore */
@@ -127,6 +132,11 @@ export async function buildRemoteSuiteRuntime(
         runtime.proxy.disposeSync();
       } catch {
         /* already gone */
+      }
+      try {
+        await runtime.disposeIosWda();
+      } catch {
+        /* Appium 已在退出/无需清理 */
       }
       try {
         await local.close();
