@@ -1079,7 +1079,10 @@ export class Runtime {
 
   iosWda(): IosWdaService {
     if (this.iosWdaService === null) {
-      this.iosWdaService = new IosWdaService({ env: this.iosEnv });
+      this.iosWdaService = new IosWdaService({
+        env: this.iosEnv,
+        logPath: path.join(this.configDirAbs, "logs", "appium.log")
+      });
     }
     return this.iosWdaService;
   }

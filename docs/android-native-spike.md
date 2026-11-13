@@ -27,7 +27,7 @@
 ```bat
 node scripts\android-native-spike.mjs ^
   --device 10CF6609P900059 ^
-  --adb "C:\RUNNER\aos-artemis-runner-0.3.23-win32-x64-offline\project\platform-tools\adb.exe" ^
+  --adb "C:\RUNNER\aos-artemis-runner-0.3.24-win32-x64-offline\project\platform-tools\adb.exe" ^
   --adbkeyboard-apk "C:\path\to\ADBKeyboard.apk" ^
   --package com.android.settings ^
   --tap 540,300 ^

@@ -16,6 +16,7 @@ import { materializeAppPathUrl } from "../device/app-artifacts.js";
 import type { IosDevice } from "../device/ios-actions.js";
 import type { Runtime } from "../runtime.js";
 import type { SecretEntry } from "../web/llm/secrets.js";
+import { iosBuildFailureHint } from "../ios/appium/diagnostics.js";
 import { errorMessage } from "../util.js";
 import { autoCheckUi } from "../ui/auto-check.js";
 import {
@@ -600,7 +601,10 @@ export async function runGeneratedTests(
       options.installIosApp ?? ((udid: string, ipa: string) => runtime.iosWda().installIpa(udid, ipa));
     const installed = await install(serial, caseAppPath);
     if (!installed.ok) {
-      return emptySuiteReport(testsPath, `iOS 安装失败（${serial}）：${installed.error}`);
+      return emptySuiteReport(
+        testsPath,
+        `iOS 安装失败（${serial}）：${installed.error}${iosBuildFailureHint(installed.error)}`
+      );
     }
     caseAppPath = null;
   }

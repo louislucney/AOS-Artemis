@@ -27,19 +27,28 @@ test("iOS 预检：Appium 已装但缺 XCUITest 驱动 → 阻断并给安装命
   assert.ok(result.message.includes(DEVICE));
 });
 
-test("iOS 预检：驱动已安装不阻断", () => {
+test("iOS 预检：驱动已安装但未配置签名团队 → 阻断", () => {
   const result = iosDriverPreflight({
     devices: [DEVICE],
     detection: detection({ installed: true })
   });
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "ios-signing-missing");
+  assert.match(result.message, /AOS_IOS_XCODE_ORG_ID/);
+  const configured = iosDriverPreflight({
+    devices: [DEVICE],
+    detection: detection({ installed: true }),
+    env: { AOS_IOS_XCODE_ORG_ID: "TEAM123" }
+  });
+  assert.equal(configured.ok, true);
 });
 
 test("iOS 预检：直连 AOS_APPIUM_URL 时本地 CLI 探测不阻断", () => {
   const result = iosDriverPreflight({
     devices: [DEVICE],
     detection: detection(),
-    appiumUrl: "http://10.0.0.9:4723"
+    appiumUrl: "http://10.0.0.9:4723",
+    env: {}
   });
   assert.equal(result.ok, true);
 });
@@ -51,4 +60,13 @@ test("iOS 预检：探测不到 Appium 时不在预检阻断（交给托管启�
   });
   assert.equal(result.ok, true);
   assert.equal(iosDriverPreflight({ devices: [DEVICE], detection: null }).ok, true);
+});
+
+test("iOS 构建失败提示：xcodebuild 错误附带 appium.log 位置", async () => {
+  const { iosBuildFailureHint } = await import("../dist/ios/appium/diagnostics.js");
+  assert.match(
+    iosBuildFailureHint("Unable to launch WebDriverAgent. xcodebuild failed with code 70"),
+    /appium\.log/
+  );
+  assert.match(iosBuildFailureHint("Device not found"), /^$/);
 });

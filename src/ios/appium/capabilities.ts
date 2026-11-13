@@ -1,3 +1,5 @@
+import { classifyIosSerial } from "../../device/ios.js";
+
 export const DEFAULT_WDA_BUNDLE_ID = "com.aos.mcp.wda";
 export const DEFAULT_IOS_SIGNING_ID = "Apple Development";
 
@@ -25,5 +27,11 @@ export function buildIosCapabilities(options: IosCapabilitiesOptions): Record<st
   };
   const team = env.AOS_IOS_XCODE_ORG_ID?.trim();
   if (team && team !== "") capabilities["appium:xcodeOrgId"] = team;
+  // 真机默认把 xcodebuild 输出写入 Appium 日志（AOS 落盘 .artemis/logs/appium.log）；
+  // AOS_IOS_SHOW_XCODE_LOG=0 可关闭。
+  const showXcodeLog = (env.AOS_IOS_SHOW_XCODE_LOG ?? "").trim();
+  if (classifyIosSerial(options.udid) === "device" && showXcodeLog !== "0") {
+    capabilities["appium:showXcodeLog"] = true;
+  }
   return capabilities;
 }

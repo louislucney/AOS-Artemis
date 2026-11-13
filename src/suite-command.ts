@@ -27,6 +27,7 @@ export { adbInstallAndroidApk };
 import { createAdbAndroidDevice } from "./device/android-actions.js";
 import { proposeFieldTargets } from "./structured/field-map.js";
 import { classifyIosSerial } from "./device/ios.js";
+import { iosBuildFailureHint } from "./ios/appium/diagnostics.js";
 import { iosDriverPreflight } from "./ios/appium/preflight.js";
 import { latestFeatureRefs, type ResolvedTaskRef } from "./tasks/feature-refs.js";
 import { IosLogCollector, type IosLogWindowRequest } from "./device/ios-log.js";
@@ -867,7 +868,8 @@ async function suiteRunTask(
     const blocker = iosDriverPreflight({
       devices: iosRealDevices,
       detection,
-      appiumUrl: runtime.iosEnvironment().AOS_APPIUM_URL ?? null
+      appiumUrl: runtime.iosEnvironment().AOS_APPIUM_URL ?? null,
+      env: runtime.iosEnvironment()
     });
     if (!blocker.ok) {
       await progress
@@ -1071,7 +1073,9 @@ async function suiteRunTask(
       for (const serial of iosDeviceTargets) {
         const installed = await runtime.iosWda().installIpa(serial, taskApp.path);
         if (!installed.ok) {
-          return await failAppInstall(`iOS 安装包安装失败（${serial}）：${installed.error}`);
+          return await failAppInstall(
+            `iOS 安装包安装失败（${serial}）：${installed.error}${iosBuildFailureHint(installed.error)}`
+          );
         }
       }
       say(

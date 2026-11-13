@@ -191,11 +191,11 @@ MOBILE_TESTING_DATABASE_URL（PG）
 
 - 模拟器：idb/simctl；真机：Appium + WDA。
 - 签名：`AOS_IOS_XCODE_ORG_ID` 必填；iOS 18+ 真机需保持 Remote XPC 隧道（`appium driver run xcuitest tunnel-creation`，AOS 只给指引）。
-- **执行预检**：`suite run --task` 在装包/启动前检查真机 Appium 后端；本地 Appium 已安装但缺 XCUITest 驱动时直接失败（`appium-driver-missing`，进度 5%），不下载/安装 IPA、不占用设备；`AOS_APPIUM_URL` 直连外部服务时跳过本地 CLI 探测（由会话错误兜底）。
+- **执行预检**：`suite run --task` 在装包/启动前检查真机 Appium 后端；本地 Appium 已安装但缺 XCUITest 驱动时直接失败（`appium-driver-missing`，进度 5%），不下载/安装 IPA、不占用设备；`AOS_APPIUM_URL` 直连外部服务时跳过本地 CLI 探测（由会话错误兜底）。 真机未配置 `AOS_IOS_XCODE_ORG_ID`（WDA 签名团队）同样在预检失败（`ios-signing-missing`）。
 - 观察统一 `src/ios/observation.ts`；busy 降级含帧龄/陈旧标注；执行器为门面 + 分模块。
 - 真机崩溃：`devicectl systemCrashLogs`；设备日志：`idevicesyslog` 实时尾采样（窗口近似 + `clockWarning`）。
 - 安装：真机 `.ipa` 经 Appium `mobile: installApp`（本地路径）或 `appium:app`（URL/远程宿主下载）安装；企业证书（In-House）IPA 可直接安装，需设备先信任企业开发者证书；模拟器不支持 `app_path`，需 `simctl install` 预装后用 `locked_app_package`。
-- **套件安装节奏**：`suite run` 对真机 IPA 只在套件开始前**每设备安装一次**，后续用例不再携带 `app_path`（避免逐例重装 74MB 级 IPA）；模拟器忽略 `app_path` 并告警。任务模式同一任务的多份用例集共享这次安装。
+- **套件安装节奏**：`suite run` 对真机 IPA 只在套件开始前**每设备安装一次**，后续用例不再携带 `app_path`（避免逐例重装 74MB 级 IPA）；模拟器忽略 `app_path` 并告警。任务模式同一任务的多份用例集共享这次安装。 真机默认 `appium:showXcodeLog=true`（`AOS_IOS_SHOW_XCODE_LOG=0` 关闭），Appium/xcodebuild 输出落 `<项目>/.artemis/logs/appium.log`；`xcodebuild failed` 的失败信息会附带该日志位置。
 - **Appium 归属与自愈**：默认只使用托管实例（`appium --port`）；端口已被其他实例占用时**不静默复用**，自动改用后续空闲端口并在日志标注（旧实例的驱动/`APPIUM_HOME` 可能与当前 CLI 不一致）。显式 `AOS_APPIUM_URL` 或 `AOS_APPIUM_REUSE_EXISTING=1` 才复用外部实例。会话创建遇到驱动缺失/连接断开时，托管服务自动重启并重试一次；外部服务不自动重启，错误信息带实际地址与排查指引。
 
 ### 5.3 runner / 多主机

@@ -397,7 +397,7 @@ Android 真机现走 MCP 原生：
 如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler），删除半装的 `.venv`，换可达镜像并启用系统证书后重试：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.23-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.24-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -619,6 +619,7 @@ sudo appium driver run xcuitest tunnel-creation
 | IPA 安装失败 | simulator build / 签名 / 未信任 / UDID 不在 profile | 用 device build，信任证书，检查描述文件 |
 | `Appium API 500: Could not find a driver for automationName 'XCUITest'` | 执行机 Appium 未安装 xcuitest 驱动 | 在**执行机**运行 `appium driver install xcuitest` 后重跑；`suite run --task` 现会在装包前预检并直接失败（`appium-driver-missing`） |
 | 端口 4723 已有 Appium 但仍报缺驱动 | 旧实例/Appium Desktop 的 `APPIUM_HOME` 与当前 CLI 不一致（装驱动后未重启） | 0.3.23 起默认不复用外部实例，自动在后续空闲端口启动托管 Appium；也可停止旧实例，或显式 `AOS_APPIUM_URL` / `AOS_APPIUM_REUSE_EXISTING=1` 复用 |
+| `xcodebuild failed with code 70` / `Unable to launch WebDriverAgent` | WDA 签名失败、设备未注册、团队错或 Xcode 版本不匹配 | 执行机项目 `.env` 配 `AOS_IOS_XCODE_ORG_ID`（该机 Xcode 的 Team ID）后重跑；真机默认记录 xcodebuild 输出到 `<项目>/.artemis/logs/appium.log` |
 | 设备日志 `ios-log-tool-missing` | 未装 `idevicesyslog` | `brew install libimobiledevice`（非阻塞，崩溃仍走 devicectl） |
 | `device_busy` | 同 UDID 会话互斥 | 等当前任务/会话结束；观测可用缓存帧 |
 
