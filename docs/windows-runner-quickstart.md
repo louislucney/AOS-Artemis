@@ -66,7 +66,7 @@ AOS_APP_INSTALL_POLICY=always
 启动脚本已固定 `UV_PYTHON=3.12`、`UV_SYSTEM_CERTS=1`。如果 `uv` 仍选 3.13，先 `uv python find 3.12`。如果访问 `pypi.org` 超时，或报 `invalid peer certificate: UnknownIssuer`（公司 TLS 拦截/Zscaler）：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.29-win32-x64
+cd C:\RUNNER\aos-artemis-runner-0.3.31-win32-x64
 Remove-Item -Recurse -Force .\artemis\.venv
 $env:UV_PYTHON="3.12"
 $env:UV_SYSTEM_CERTS="1"
@@ -82,7 +82,7 @@ $env:UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 `依赖已就绪` 只代表 lock 匹配，不代表 venv 能导入。常见原因是旧 `.venv` 不是 Python 3.12（离线依赖按 3.12 打包）或上次安装半途中断：
 
 ```powershell
-cd C:\RUNNER\aos-artemis-runner-0.3.29-win32-x64-offline
+cd C:\RUNNER\aos-artemis-runner-0.3.31-win32-x64-offline
 Remove-Item -Recurse -Force .\artemis\.venv
 .\setup-offline.cmd
 ```
