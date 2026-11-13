@@ -338,3 +338,77 @@ test("artifact route: 越权与穿越全部拒绝", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("artifact route: 文件不存在时浏览器得到 HTML 错误页（含返回/所在目录）", async () => {
+  const { root, deps } = await setup();
+  try {
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/remote-evidence/task-1/trace-1/stderr.log"),
+      deps,
+      { accept: "text/html,application/xhtml+xml" }
+    );
+    assert.equal(response.status, 404);
+    assert.match(response.contentType, /text\/html/);
+    assert.match(response.body, /文件不存在/);
+    assert.doesNotMatch(response.body, /no such file or directory/);
+    assert.match(response.body, /打开所在目录/);
+    assert.match(response.body, /← 返回项目/);
+    assert.match(response.body, /证据可能未由执行机上传|失败证据/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: 文件不存在时非浏览器请求仍返回 JSON", async () => {
+  const { root, deps } = await setup();
+  try {
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/remote-evidence/task-1/trace-1/stderr.log"),
+      deps,
+      { accept: "*/*" }
+    );
+    assert.equal(response.status, 404);
+    assert.match(response.contentType, /application\/json/);
+    assert.match(JSON.parse(response.body).error, /文件不存在/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: 不支持的扩展名在浏览器下给 HTML 说明（非 JSON）", async () => {
+  const { root, deps } = await setup();
+  try {
+    await writeFile(join(root, ".artemis", "design", "diffs", "raw.bin"), Buffer.from([1, 2, 3]));
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/design/diffs/raw.bin"),
+      deps,
+      { accept: "text/html" }
+    );
+    assert.equal(response.status, 400);
+    assert.match(response.contentType, /text\/html/);
+    assert.match(response.body, /不支持的产物类型/);
+    assert.match(response.body, /打开所在目录/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("artifact route: 失败证据页带“返回任务”上下文", async () => {
+  const { root, deps } = await setup();
+  try {
+    const dir = join(root, ".artemis", "remote-evidence", "task-9", "trace-9");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "stderr.log"), "ERROR boom\n", "utf8");
+    const response = await handleArtifactRequest(
+      url(root, ".artemis/remote-evidence/task-9/trace-9/stderr.log"),
+      deps,
+      { accept: "text/html" }
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.body, /返回任务/);
+    assert.match(response.body, /task=task-9/);
+    assert.match(response.body, /ERROR/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

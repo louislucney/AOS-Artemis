@@ -2738,3 +2738,41 @@ test("panel web: iOS 项目定时任务只显示 ios 端", async () => {
   assert.match(html.body, /name="platform" value="ios" checked/);
   assert.doesNotMatch(html.body, /name="platform" value="android"/);
 });
+
+test("panel web: 失败证据入口——目录不存在显示未上传，存在才链接到目录", async () => {
+  const { deps, projectDir, store } = await makeHarness();
+  const task = await store.createRegressionTask({
+    rootPath: projectDir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["ios"],
+    baseline: "none",
+    createdBy: "cli"
+  });
+  const progress = {
+    seq: 2,
+    phase: "failed",
+    percent: 100,
+    caseId: "case-1",
+    traceId: "trace-evidence-1",
+    message: "执行失败",
+    errorCode: "case-failed",
+    at: new Date().toISOString()
+  };
+  await store.updateRegressionTask(projectDir, task.id, { status: "failed", progress });
+  const pageUrl = new URL(
+    `http://x/panel?project=${encodeURIComponent(projectDir)}&task=${encodeURIComponent(task.id)}`
+  );
+
+  const missing = await handlePanelRequest(pageUrl, deps);
+  assert.match(missing.body, /失败证据未上传/);
+  assert.doesNotMatch(missing.body, /remote-evidence[^"']*stderr\.log/);
+
+  fs.mkdirSync(
+    path.join(projectDir, ".artemis", "remote-evidence", task.id, "trace-evidence-1"),
+    { recursive: true }
+  );
+  const present = await handlePanelRequest(pageUrl, deps);
+  assert.match(present.body, /查看失败证据/);
+  assert.match(present.body, /remote-evidence/);
+  assert.doesNotMatch(present.body, /失败证据未上传/);
+});

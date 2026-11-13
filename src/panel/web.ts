@@ -2897,6 +2897,21 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
     task.status === "pending" && !covered
       ? '<p class="note">当前无在线执行机完整覆盖任务目标端（双端任务需单机双端执行机）；可手动执行或等待执行机上线。 <a href="/panel?section=devices#runner-download">下载/接入执行机 →</a></p>'
       : "";
+  const progressTraceId = task.progress?.traceId ?? null;
+  const evidenceDir =
+    progressTraceId === null
+      ? null
+      : path.join(view.rootPath, ".artemis", "remote-evidence", task.id, progressTraceId);
+  // 只在本机确实有证据目录时给入口；否则显示“未上传”，避免跳到 404。
+  const failureEvidence =
+    task.progress !== null &&
+    task.progress !== undefined &&
+    task.progress.errorCode !== null &&
+    task.progress.errorCode !== undefined
+      ? evidenceDir !== null && fs.existsSync(evidenceDir)
+        ? ` · <a href="${escapeHtml(artifactHref(view.rootPath, evidenceDir, view.hostId))}">查看失败证据</a>`
+        : ' · <span class="muted">失败证据未上传</span>'
+      : "";
   return page(
     `任务 · ${task.id}`,
     [
@@ -2913,27 +2928,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         : `<p>应用包名：<code>${escapeHtml(task.appPackage)}</code> · 执行前锁定并启动</p>`,
       task.progress === null || task.progress === undefined
         ? ""
-        : `<p>进度：<strong>${escapeHtml(taskProgressLabel(task.progress) ?? "—")}</strong> · 更新 ${relativeTime(task.progress.at)}${
-            task.progress.traceId !== null &&
-            task.progress.traceId !== undefined &&
-            task.progress.errorCode !== null &&
-            task.progress.errorCode !== undefined
-              ? ` · <a href="${escapeHtml(
-                  artifactHref(
-                    view.rootPath,
-                    path.join(
-                      view.rootPath,
-                      ".artemis",
-                      "remote-evidence",
-                      task.id,
-                      task.progress.traceId,
-                      "stderr.log"
-                    ),
-                    view.hostId
-                  )
-                )}">查看失败证据</a>`
-              : ""
-          }</p>`,
+        : `<p>进度：<strong>${escapeHtml(taskProgressLabel(task.progress) ?? "—")}</strong> · 更新 ${relativeTime(task.progress.at)}${failureEvidence}</p>`,
       `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · ${runSummary}${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });

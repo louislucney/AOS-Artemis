@@ -221,6 +221,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 项目发现：默认 `AOS_PANEL_PROJECT_DISCOVERY=marker`——只认 `aos.config.jsonc`、`.artemis/design/tests.json`、`.artemis/design/flows.json`，或台账 `state.projects` 中确实登记该 root；**空 `.artemis/ledger/state.json` 不算项目**（避免误跑目录变重复项目）。
 - 主机/执行机：`hosts`、`runners`、`device_leases`、`host_addresses`/`host_sessions`；面板设备/执行机区块。
 - 任务：任务台账、实时进度、取消/释放/重跑、队列暂停；产物只读服务（`.artemis` 范围，可选令牌）。
+- 产物浏览：浏览器（`Accept: text/html`）打开日志/文本/JSON/Markdown/目录得到带返回导航的只读查看器（复制/原始/上级/返回任务）；**所有错误也渲染 HTML 错误页**（文件缺失、越权、类型不支持），非浏览器请求仍保持 JSON/原始内容；任务页仅在证据目录实际存在时显示「查看失败证据」，否则标注「失败证据未上传」，不再产生 404 死链。
 - 资产：Excel/安装包/测试资料/参考图版本化；支持「归档」（`archivedAt`，默认隐藏、不可再选，历史任务仍可读，可恢复）与「彻底删除」（仅未被任务/映射引用；共享 `storagePath` 保留文件，secret 资料 unlink 明文；被引用返回 409 + 清单）。
 - 测试资产：Excel/安装包/资料/参考图统一版本化；**本地注册项目（非网页创建）也可上传/保存映射**，归档项目拒绝写入；按 kind 校验扩展名/大小，secret materials 落盘 0600。Excel「导入用例库」先做设计预检：检测 Wireframe 与 `flows.json`/`ui-contract`，有索引时可选「设计增强导入 / 普通导入」，显示 exact/ambiguous/unmapped 覆盖；无索引或点「更换设计来源」时进入统一设计来源选择——**Figma URL 与 `.pen` 文件是等价适配器**，都经提取产出同一 `flows.json`，再回到同一映射预览；也可选择无设计稿普通导入。Figma/pen 提取走后台 job（`202 + jobId` 轮询，面板显示已用时长），不阻塞 HTTP 请求。
 - 统计：`aos_usage` / `usage` CLI / `/usage`+`/usage.json`；调用量/耗时是成本代理，不是计费。

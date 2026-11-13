@@ -56,13 +56,23 @@ async function renderArtifactIndex(
   abs: string,
   projectRoot: string,
   hostId: string | null,
-  showEmpty: boolean
+  showEmpty: boolean,
+  accept?: string | null
 ): Promise<PanelWebResponse> {
   let entries: Dirent[];
   try {
     entries = await readdir(abs, { withFileTypes: true });
   } catch (error) {
-    return jsonError(404, `产物不可读：${errorMessage(error)}`);
+    const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+    return artifactError({
+      status: 404,
+      message: missing ? "目录不存在（可能未创建或已被清理）" : `产物目录不可读：${errorMessage(error)}`,
+      rootPath: projectRoot,
+      hostId,
+      rel: path.relative(root, abs),
+      title: "产物目录不可读",
+      accept
+    });
   }
   const sorted = [...entries].sort((a, b) => {
     if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
@@ -189,8 +199,9 @@ const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]
 
 function renderViewerPage(input: {
   rel: string;
-  rootPath: string;
+  rootPath: string | null;
   hostId: string | null;
+  status?: number;
   size?: number;
   mtime?: Date;
   rawHref?: string;
@@ -204,9 +215,12 @@ function renderViewerPage(input: {
   hideTitle?: boolean;
 }): PanelWebResponse {
   const name = input.title ?? (path.basename(input.rel) || "/");
-  const projectHref = `/panel?project=${encodeURIComponent(input.rootPath)}${
-    input.hostId === null ? "" : `&host=${encodeURIComponent(input.hostId)}`
-  }`;
+  const projectHref =
+    input.rootPath === null
+      ? "/panel"
+      : `/panel?project=${encodeURIComponent(input.rootPath)}${
+          input.hostId === null ? "" : `&host=${encodeURIComponent(input.hostId)}`
+        }`;
   const meta = [
     input.rel === "" ? "/" : input.rel,
     input.size === undefined ? undefined : formatBytes(input.size),
@@ -225,6 +239,20 @@ function renderViewerPage(input: {
   ]
     .filter((part) => part !== "")
     .join("");
+  // 失败证据路径自带任务上下文：补一个“返回任务”，避免只能退回项目页。
+  const taskMatch = /^\.artemis[/\\]remote-evidence[/\\]([^/\\]+)/.exec(input.rel);
+  const taskHref =
+    taskMatch === null || input.rootPath === null
+      ? null
+      : `/panel?project=${encodeURIComponent(input.rootPath)}&task=${encodeURIComponent(
+          taskMatch[1]!
+        )}${input.hostId === null ? "" : `&host=${encodeURIComponent(input.hostId)}`}`;
+  const crumbs = [
+    `<a href="${escapeHtml(projectHref)}">← 返回项目</a>`,
+    taskHref === null ? "" : `<a href="${escapeHtml(taskHref)}">返回任务</a>`
+  ]
+    .filter((part) => part !== "")
+    .join(" · ");
   const html = [
     '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1">',
@@ -292,7 +320,7 @@ pre.json,pre.log{background:#fbfbfd;border:1px solid var(--border);border-radius
 .cs-case .md-run{margin-top:16px}
 @media (max-width:640px){main{padding:16px}.md-title{font-size:22px}.md-case{padding-top:18px}.cs-case{padding:16px;border-radius:12px}.cs-step{padding-left:34px}.cs-num{width:28px;height:28px;flex-basis:28px;font-size:13px}}
 </style></head><body>`,
-    `<div class="bar"><span class="crumbs"><a href="${escapeHtml(projectHref)}">← 返回项目</a></span><span class="actions">${actions}</span></div>`,
+    `<div class="bar"><span class="crumbs">${crumbs}</span><span class="actions">${actions}</span></div>`,
     '<main><section class="card">',
     input.hideTitle === true ? "" : `<h1>${escapeHtml(name)}</h1>`,
     `<p class="meta">${escapeHtml(meta)}</p>`,
@@ -301,7 +329,57 @@ pre.json,pre.log{background:#fbfbfd;border:1px solid var(--border);border-radius
     `<script>(function(){var b=document.getElementById("copy-body"),p=document.getElementById("viewer-body");if(!b||!p)return;var label=b.textContent;b.addEventListener("click",function(){var t=p.textContent||"";function ok(){b.textContent="已复制";setTimeout(function(){b.textContent=label;},1500);}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok,function(){fallback();});}else{fallback();}function fallback(){var a=document.createElement("textarea");a.value=t;a.setAttribute("readonly","");a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();try{document.execCommand("copy");ok();}catch(e){}a.remove();}});})();</script>`,
     "</section></main></body></html>"
   ].join("");
-  return { status: 200, contentType: "text/html; charset=utf-8", body: html };
+  return {
+    status: input.status ?? 200,
+    contentType: "text/html; charset=utf-8",
+    body: html
+  };
+}
+
+function wantsHtml(accept: string | null | undefined): boolean {
+  return (accept ?? "").toLowerCase().includes("text/html");
+}
+
+/** 浏览器打开产物链接时的 HTML 错误页：保留返回项目/所在目录入口，避免直接回 JSON。 */
+function artifactError(input: {
+  status: number;
+  message: string;
+  accept?: string | null;
+  rootPath?: string | null;
+  hostId?: string | null;
+  rel?: string;
+  title?: string;
+  extraBody?: string;
+}): PanelWebResponse {
+  if (!wantsHtml(input.accept)) return jsonError(input.status, input.message);
+  const rel = input.rel ?? "";
+  const rootPath = input.rootPath ?? null;
+  const hostId = input.hostId ?? null;
+  const dirRel = rel === "" ? null : path.dirname(rel);
+  const dirHref =
+    rootPath === null || dirRel === null || dirRel === "." || dirRel === ""
+      ? null
+      : artifactHref(rootPath, dirRel, hostId);
+  const actions = [
+    dirHref === null ? "" : `<a class="btn" href="${escapeHtml(dirHref)}">打开所在目录</a>`
+  ]
+    .filter((part) => part !== "")
+    .join("");
+  const pathLine =
+    rel === ""
+      ? ""
+      : `<p class="meta">请求路径：<code>${escapeHtml(rel)}</code></p>`;
+  return renderViewerPage({
+    rel,
+    rootPath,
+    hostId,
+    status: input.status,
+    title: input.title ?? "产物不可用",
+    metaExtra: "只读产物",
+    body: `<p class="note">${escapeHtml(input.message)}</p>${pathLine}${
+      input.extraBody ?? ""
+    }${actions === "" ? "" : `<p>${actions}</p>`}`
+  });
 }
 
 /** JSON 产物只读查看器：语法高亮、文件元信息、返回项目与原始文件入口。 */
@@ -717,13 +795,36 @@ export async function handleArtifactRequest(
   options: ArtifactRequestOptions = {}
 ): Promise<PanelWebResponse> {
   const project = (url.searchParams.get("project") ?? "").trim();
-  if (project === "") return jsonError(400, "缺少 project");
+  if (project === "") {
+    return artifactError({ status: 400, message: "缺少 project 参数", accept: options.accept });
+  }
   const hostParam = (url.searchParams.get("host") ?? "").trim();
   let resolved: { rootPath: string; name: string; hostId: string | null } | null;
   try {
     resolved = await resolveProjectKey(deps, project, hostParam === "" ? undefined : hostParam);
   } catch (error) {
     if (error instanceof AmbiguousProjectError) {
+      if (wantsHtml(options.accept)) {
+        const rel = (url.searchParams.get("path") ?? "").trim();
+        const links = error.candidates
+          .map((candidate) => {
+            const href = artifactHref(candidate.rootPath, rel, candidate.hostId);
+            return `<li><a href="${escapeHtml(href)}"><span class="name">${escapeHtml(
+              candidate.name
+            )}</span><span class="kind">${escapeHtml(candidate.rootPath)}${
+              candidate.hostId === null ? "" : ` · host ${escapeHtml(candidate.hostId)}`
+            }</span></a></li>`;
+          })
+          .join("");
+        return renderViewerPage({
+          rel,
+          rootPath: null,
+          hostId: null,
+          status: 409,
+          title: "需要选择项目",
+          body: `<p class="note">${escapeHtml(error.message)}</p><ul class="listing">${links}</ul>`
+        });
+      }
       return {
         status: 409,
         contentType: "application/json; charset=utf-8",
@@ -739,7 +840,13 @@ export async function handleArtifactRequest(
     }
     throw error;
   }
-  if (!resolved) return jsonError(404, `未知项目 "${project}"`);
+  if (!resolved) {
+    return artifactError({
+      status: 404,
+      message: `未知项目 "${project}"`,
+      accept: options.accept
+    });
+  }
   if (url.searchParams.get("format") === "csv") {
     const kindRaw = (url.searchParams.get("kind") ?? "").trim();
     const kind =
@@ -769,20 +876,53 @@ export async function handleArtifactRequest(
     };
   }
   const rel = (url.searchParams.get("path") ?? "").trim();
-  if (rel === "") return jsonError(400, "缺少 path");
-  if (rel.includes("..") || path.isAbsolute(rel)) return jsonError(400, "非法路径");
+  if (rel === "") {
+    return artifactError({
+      status: 400,
+      message: "缺少 path 参数",
+      accept: options.accept,
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId
+    });
+  }
+  if (rel.includes("..") || path.isAbsolute(rel)) {
+    return artifactError({
+      status: 400,
+      message: "非法路径",
+      accept: options.accept,
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rel
+    });
+  }
   const root = path.resolve(resolved.rootPath);
   const abs = path.resolve(root, rel);
   const artemisRoot = path.join(root, ".artemis");
   if (!(abs === artemisRoot || abs.startsWith(artemisRoot + path.sep))) {
-    return jsonError(403, "仅可访问项目 .artemis 范围内的产物");
+    return artifactError({
+      status: 403,
+      message: "仅可访问项目 .artemis 范围内的产物",
+      accept: options.accept,
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rel
+    });
   }
   const ext = path.extname(abs).toLowerCase();
   let info: Stats;
   try {
     info = await stat(abs);
   } catch (error) {
-    return jsonError(404, `产物不可读：${errorMessage(error)}`);
+    const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+    return artifactError({
+      status: 404,
+      message: missing ? "文件不存在（可能未由执行机上传，或已被清理/归档）" : `产物不可读：${errorMessage(error)}`,
+      accept: options.accept,
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rel,
+      extraBody: `<p class="meta">请从任务明细或档案页重新进入；若刚执行过任务，可确认执行机是否上报了失败证据。</p>`
+    });
   }
   if (info.isDirectory()) {
     return await renderArtifactIndex(
@@ -791,12 +931,31 @@ export async function handleArtifactRequest(
       abs,
       resolved.rootPath,
       resolved.hostId,
-      url.searchParams.get("showEmpty") === "1"
+      url.searchParams.get("showEmpty") === "1",
+      options.accept
     );
   }
-  if (!info.isFile()) return jsonError(404, "产物不可读：不是文件");
+  if (!info.isFile()) {
+    return artifactError({
+      status: 404,
+      message: "产物不可读：不是文件",
+      accept: options.accept,
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rel
+    });
+  }
   const mime = MIME_BY_EXT[ext];
-  if (mime === undefined) return jsonError(400, `不支持的产物类型 ${ext || "(无扩展名)"}`);
+  if (mime === undefined) {
+    return artifactError({
+      status: 400,
+      message: `不支持的产物类型 ${ext || "(无扩展名)"}（仅支持图片、文本、JSON、Markdown、表格与安装包）`,
+      accept: options.accept,
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rel
+    });
+  }
   try {
     const data = await readFile(abs);
     const wantsHtml =
@@ -838,6 +997,13 @@ export async function handleArtifactRequest(
     }
     return { status: 200, contentType: mime, body: data };
   } catch (error) {
-    return jsonError(404, `产物不可读：${errorMessage(error)}`);
+    return artifactError({
+      status: 404,
+      message: `产物不可读：${errorMessage(error)}`,
+      accept: options.accept,
+      rootPath: resolved.rootPath,
+      hostId: resolved.hostId,
+      rel
+    });
   }
 }
