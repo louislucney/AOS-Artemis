@@ -255,6 +255,68 @@ function markTraceCancelled(traceDir: string, traceId: string, message: string):
   }
 }
 
+const EXECUTION_EVIDENCE_FILE = "execution-evidence.json";
+
+interface ExecutionEvidenceInput {
+  traceDir: string;
+  traceId: string;
+  taskId: string | null;
+  caseId: string;
+  caseName: string;
+  platform: "ios" | "android";
+  engine: "proxy" | "native-ios" | "native-android";
+  status: SuiteCaseResult["status"];
+  testSummary: SuiteCaseResult["testSummary"];
+  failure: FailureClassification | null;
+  reset: AppResetOutcome | null;
+  aliases: string[];
+}
+
+/** 跨端可比的安全证据：只写标识/状态/计数/别名，不写 taskDesc、输入值或 secret。
+ * 目标引擎（iOS/Android）都能产出同名文件，供中心证据页和 parity 读取。 */
+function writeExecutionEvidence(input: ExecutionEvidenceInput): void {
+  const summary = input.testSummary;
+  try {
+    writeFileAtomic(
+      path.join(input.traceDir, EXECUTION_EVIDENCE_FILE),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          recordedAt: new Date().toISOString(),
+          traceId: input.traceId,
+          taskId: input.taskId,
+          caseId: input.caseId,
+          caseName: input.caseName,
+          platform: input.platform,
+          engine: input.engine,
+          status: input.status,
+          failure: input.failure === null ? null : {
+            domain: input.failure.domain,
+            confidence: input.failure.confidence
+          },
+          reset: input.reset === null ? null : {
+            ok: input.reset.ok,
+            reason: input.reset.reason ?? null
+          },
+          data: { aliases: input.aliases },
+          outcome: summary === null ? null : {
+            taskStatus: summary.taskStatus,
+            passed: summary.passed,
+            failed: summary.failed,
+            inconclusive: summary.inconclusive,
+            unchecked: summary.unchecked,
+            synthesized: summary.synthesized
+          }
+        },
+        null,
+        2
+      )}\n`
+    );
+  } catch (error) {
+    logWarn(`写入跨端证据失败：trace=${input.traceId} · ${errorMessage(error)}`);
+  }
+}
+
 function uploadFailureEvidence(
   context: CaseRunContext,
   caseId: string,
@@ -269,7 +331,8 @@ function uploadFailureEvidence(
     "stderr.log",
     "stdout.log",
     "native-ios.json",
-    "native-android.json"
+    "native-android.json",
+    EXECUTION_EVIDENCE_FILE
   ]) {
     try {
       const buffer = fs.readFileSync(path.join(context.runtime.traceDir(traceId), name));
@@ -528,6 +591,20 @@ async function executeNativeCase(
     evidence: emptyEvidence(),
     reset
   };
+  writeExecutionEvidence({
+    traceDir,
+    traceId,
+    taskId: context.regressionTaskId ?? null,
+    caseId: testCase.id,
+    caseName: testCase.name,
+    platform,
+    engine,
+    status: result.status,
+    testSummary: result.testSummary,
+    failure: result.failure,
+    reset,
+    aliases: (context.secrets ?? []).map((entry) => entry.alias)
+  });
   if (!passed) uploadFailureEvidence(context, testCase.id, traceId);
   return { result, submitted: true, submitError: null, terminal: true };
 }
@@ -953,6 +1030,20 @@ export async function executeCase(
     reset
   };
 
+  writeExecutionEvidence({
+    traceDir,
+    traceId,
+    taskId: context.regressionTaskId ?? null,
+    caseId: testCase.id,
+    caseName: testCase.name,
+    platform: iosTarget ? "ios" : "android",
+    engine: "proxy",
+    status: caseResult.status,
+    testSummary: caseResult.testSummary,
+    failure: caseResult.failure,
+    reset,
+    aliases: (context.secrets ?? []).map((entry) => entry.alias)
+  });
   if (caseResult.status !== "passed") {
     uploadFailureEvidence(context, testCase.id, traceId);
   }

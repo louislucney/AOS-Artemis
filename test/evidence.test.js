@@ -144,6 +144,8 @@ test("traceEvidence: aggregates status, crashes, anchor and copies anchored scre
   fs.writeFileSync(adherencePath, JSON.stringify({ traceId: "trace-1", degraded: null }));
   const nativeIosPath = path.join(runtime.traceDir("trace-1"), "native-ios.json");
   fs.writeFileSync(nativeIosPath, JSON.stringify({ traceId: "trace-1", engine: "native-ios" }));
+  const executionEvidencePath = path.join(runtime.traceDir("trace-1"), "execution-evidence.json");
+  fs.writeFileSync(executionEvidencePath, JSON.stringify({ schemaVersion: 1, platform: "ios" }));
 
   const bundle = await traceEvidence(runtime, { traceId: "trace-1" });
   assert.equal(bundle.ok, true);
@@ -170,6 +172,12 @@ test("traceEvidence: aggregates status, crashes, anchor and copies anchored scre
   assert.ok(
     references.some(
       (artifact) => artifact.kind === "native-ios" && artifact.path === nativeIosPath
+    )
+  );
+  assert.ok(
+    references.some(
+      (artifact) =>
+        artifact.kind === "execution-evidence" && artifact.path === executionEvidencePath
     )
   );
   assert.ok(references.some((artifact) => artifact.path === "/logs/1/err.log"));

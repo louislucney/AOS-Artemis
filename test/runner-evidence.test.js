@@ -116,6 +116,10 @@ test("runner evidence: accepts native structured evidence", async () => {
             {
               name: "native-android.json",
               contentBase64: Buffer.from('{"steps":[]}', "utf8").toString("base64")
+            },
+            {
+              name: "execution-evidence.json",
+              contentBase64: Buffer.from('{"schemaVersion":1}', "utf8").toString("base64")
             }
           ]
         })
@@ -125,6 +129,10 @@ test("runner evidence: accepts native structured evidence", async () => {
     const dir = path.join(rootPath, ".artemis", "remote-evidence", task.id, "trace-native");
     assert.equal(fs.readFileSync(path.join(dir, "native-ios.json"), "utf8"), '{"actions":[]}');
     assert.equal(fs.readFileSync(path.join(dir, "native-android.json"), "utf8"), '{"steps":[]}');
+    assert.equal(
+      fs.readFileSync(path.join(dir, "execution-evidence.json"), "utf8"),
+      '{"schemaVersion":1}'
+    );
   } finally {
     await handle.close();
     restore();

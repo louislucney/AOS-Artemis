@@ -158,6 +158,14 @@ test("case-runner: iOS engine=native 直接走 structured runner，不提交 mob
     const native = JSON.parse(fs.readFileSync(path.join(traceDir, "native-ios.json"), "utf8"));
     assert.equal(native.engine, "native-ios");
     assert.equal(native.status, "passed");
+    const evidence = JSON.parse(
+      fs.readFileSync(path.join(traceDir, "execution-evidence.json"), "utf8")
+    );
+    assert.equal(evidence.schemaVersion, 1);
+    assert.equal(evidence.platform, "ios");
+    assert.equal(evidence.engine, "native-ios");
+    assert.equal(evidence.status, "passed");
+    assert.equal(JSON.stringify(evidence).includes("taskDesc"), false, "跨端证据不写任务描述");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

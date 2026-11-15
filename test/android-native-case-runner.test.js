@@ -248,6 +248,12 @@ test("android native: engine=native executes structured runner without Artemis",
     assert.equal(outcome.result.engine, "native-android");
     assert.equal(calls.length, 0, "must not submit mobile_run_task");
     assert.ok(fs.existsSync(path.join(traceDir, "native-android.json")));
+    const evidence = JSON.parse(
+      fs.readFileSync(path.join(traceDir, "execution-evidence.json"), "utf8")
+    );
+    assert.equal(evidence.platform, "android");
+    assert.equal(evidence.engine, "native-android");
+    assert.equal(evidence.status, "passed");
   } finally {
     fs.rmSync(traceDir, { recursive: true, force: true });
   }

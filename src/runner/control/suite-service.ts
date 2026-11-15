@@ -287,7 +287,8 @@ export class SuiteControlService {
       "stdout.log",
       "error.txt",
       "native-ios.json",
-      "native-android.json"
+      "native-android.json",
+      "execution-evidence.json"
     ]);
     const dir = path.join(input.rootPath, ".artemis", "remote-evidence", input.taskId, input.traceId);
     fs.mkdirSync(dir, { recursive: true });

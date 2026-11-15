@@ -197,7 +197,10 @@ test("suite runner: uploads failure evidence when the store supports it", async 
   assert.equal(uploads.length, 1);
   assert.equal(uploads[0].taskId, "task-1");
   assert.equal(uploads[0].caseId, "case-1");
-  assert.deepEqual(uploads[0].files.map((file) => file.name), ["stderr.log"]);
+  assert.deepEqual(uploads[0].files.map((file) => file.name).sort(), [
+    "execution-evidence.json",
+    "stderr.log"
+  ]);
 });
 
 test("suite runner: CRITICAL ERROR in stderr fails fast instead of waiting for timeout", async () => {

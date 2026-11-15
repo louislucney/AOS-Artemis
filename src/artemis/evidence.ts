@@ -39,7 +39,8 @@ export interface EvidenceArtifact {
     | "design-diff"
     | "android-adherence"
     | "native-ios"
-    | "native-android";
+    | "native-android"
+    | "execution-evidence";
   path: string;
   copied: boolean;
 }
@@ -200,6 +201,8 @@ export async function traceEvidence(
   if (fs.existsSync(nativeIosPath)) reference("native-ios", nativeIosPath);
   const nativeAndroidPath = path.join(traceDir, "native-android.json");
   if (fs.existsSync(nativeAndroidPath)) reference("native-android", nativeAndroidPath);
+  const executionEvidencePath = path.join(traceDir, "execution-evidence.json");
+  if (fs.existsSync(executionEvidencePath)) reference("execution-evidence", executionEvidencePath);
   for (const crash of crashes) {
     reference("crash-record", path.join(runtime.crashStore.dirPath, `${crash.id}.json`));
   }
