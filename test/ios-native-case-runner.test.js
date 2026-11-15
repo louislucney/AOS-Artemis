@@ -165,6 +165,9 @@ test("case-runner: iOS engine=native 直接走 structured runner，不提交 mob
     assert.equal(evidence.platform, "ios");
     assert.equal(evidence.engine, "native-ios");
     assert.equal(evidence.status, "passed");
+    assert.equal(evidence.plan.platform, "ios");
+    assert.equal(evidence.plan.engine, "native-ios");
+    assert.equal(evidence.plan.reset.mode, "reuse");
     assert.equal(evidence.stepsAvailable, true);
     assert.equal(evidence.stepCount, native.steps.length);
     assert.deepEqual(

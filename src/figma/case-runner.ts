@@ -41,6 +41,12 @@ import type { Runtime } from "../runtime.js";
 import { logWarn } from "../log.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
 import type { GeneratedCase } from "./design-store.js";
+import {
+  buildExecutionPlan,
+  type ExecutionEngine,
+  type ExecutionPlanView,
+  type ExecutionPlatform
+} from "./execution-plan.js";
 import type { SuiteCaseResult, SuiteResetFn } from "./suite-runner.js";
 
 /** Artemis 子进程异常退出时可能只把错误写到 stderr，status.json 仍保持 running；
@@ -279,9 +285,14 @@ interface ExecutionEvidenceInput {
   aliases: string[];
   /** 结构化执行器的安全步骤摘要；LLM/proxy 目前没有同构步骤，明确写 null。 */
   steps: ExecutionEvidenceStep[] | null;
+  plan: ExecutionPlanView;
 }
 
 /** 从 proxy 的 run.json 提取安全步骤摘要：只保留 index/action/status，不读 params/outcome 文本。 */
+function runtimeEnv(runtime: Runtime): NodeJS.ProcessEnv {
+  return typeof runtime.iosEnvironment === "function" ? runtime.iosEnvironment() : process.env;
+}
+
 function readProxyExecutionSteps(traceDir: string): ExecutionEvidenceStep[] | null {
   const file = path.join(traceDir, "run.json");
   let payload: unknown;
@@ -346,6 +357,7 @@ function writeExecutionEvidence(input: ExecutionEvidenceInput): void {
             reason: input.reset.reason ?? null
           },
           data: { aliases: input.aliases },
+          plan: input.plan,
           stepsAvailable: input.steps !== null,
           stepCount: input.steps === null ? null : input.steps.length,
           steps: input.steps,
@@ -654,6 +666,12 @@ async function executeNativeCase(
     failure: result.failure,
     reset,
     aliases: (context.secrets ?? []).map((entry) => entry.alias),
+    plan: buildExecutionPlan({
+      platform: platform satisfies ExecutionPlatform,
+      engine: engine satisfies ExecutionEngine,
+      aliases: (context.secrets ?? []).map((entry) => entry.alias),
+      env: runtimeEnv(context.runtime)
+    }),
     steps: run.steps.map((step) => ({
       index: step.index,
       action: step.action,
@@ -700,7 +718,7 @@ export async function executeCase(
         { packageName: context.lockedAppPackage, serial: context.deviceSerial },
         {
           ...(context.iosDeviceWda !== null ? { device: context.iosDeviceWda } : {}),
-          env: context.runtime.iosEnvironment()
+          env: runtimeEnv(context.runtime)
         }
       );
     } catch (error) {
@@ -1102,6 +1120,12 @@ export async function executeCase(
     failure: caseResult.failure,
     reset,
     aliases: (context.secrets ?? []).map((entry) => entry.alias),
+    plan: buildExecutionPlan({
+      platform: (iosTarget ? "ios" : "android") satisfies ExecutionPlatform,
+      engine: "proxy" satisfies ExecutionEngine,
+      aliases: (context.secrets ?? []).map((entry) => entry.alias),
+      env: runtimeEnv(context.runtime)
+    }),
     steps: readProxyExecutionSteps(traceDir)
   });
   if (caseResult.status !== "passed") {

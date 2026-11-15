@@ -171,7 +171,19 @@ Suite task
 }
 ```
 
-### 6.3 兼容性
+### 6.3 当前实现（v0.3 起步）
+
+`ExecutionPlan` 的**安全视图**已进入 `execution-evidence.json`：
+
+- platform / engine
+- reset.mode（当前能确定 `app-internal-reset` 或 `reuse`）
+- data.policy=`per-platform` + aliases
+- budget=null（按要求不启软/硬 Token 预算）
+- evidence.steps / screenshots
+
+完整 plan 生成、派发前门禁、raw secret 绑定仍未接入。
+
+### 6.4 兼容性
 
 - 老任务没有 plan 时，由 adapter 生成“旧模式” plan，字段为 null/默认，并在报告中标 `legacy:true`。
 - `plan` 只记录条件，不把 secret 明文写入中心台账；数据值通过 lease 接口或任务材料解析。
@@ -508,6 +520,7 @@ reset: {
 - 两端都执行 + 同一 data namespace/policy + 同预算维度 + 同复位模式 + 证据完整 → `comparable=true`。
 - 任一条件不同 → `not-comparable`，**不进入产品缺陷统计**。
 - 不要求 `ios.status == android.status`；通过率差异仍需人工/统计观察。
+- 当前已提供 `src/figma/execution-plan.ts` 的纯函数 parity 评估（条件是否可比），尚未接入 CLI/面板/任务报告。
 - `ui-divergence` 必须由截图/AX 证据支撑：两端失败均为 `case-target-missing`，但截图/AX 显示控件实际存在/可见，才能归为“用例未适配跨端 UI”（`case-defect`）；缺证据时标 `inconclusive`，不能猜。
 - 原始控件差异（Picker、Permission Dialog、Navigation Bar 等）应由 adapter 归一化或 target 层适配，不直接判产品缺陷。
 

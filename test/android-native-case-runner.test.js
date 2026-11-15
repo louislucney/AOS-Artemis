@@ -254,6 +254,8 @@ test("android native: engine=native executes structured runner without Artemis",
     assert.equal(evidence.platform, "android");
     assert.equal(evidence.engine, "native-android");
     assert.equal(evidence.status, "passed");
+    assert.equal(evidence.plan.platform, "android");
+    assert.equal(evidence.plan.engine, "native-android");
     assert.equal(evidence.stepsAvailable, true);
     assert.ok(evidence.stepCount >= 1);
   } finally {
