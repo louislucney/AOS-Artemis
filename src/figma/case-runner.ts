@@ -36,6 +36,7 @@ import {
 import { loadWebSecrets, resolvePlaceholders, type SecretEntry } from "../web/llm/secrets.js";
 import { allocateSequencedSecrets } from "../tasks/secret-sequence.js";
 import { collectEvidenceScreenshots } from "./evidence-files.js";
+import { collectEvidenceAx } from "./evidence-ax.js";
 import type { LogcatWindowResult } from "../device/logcat.js";
 import type { AppResetOutcome } from "../device/reset.js";
 import type { Runtime } from "../runtime.js";
@@ -407,7 +408,10 @@ function uploadFailureEvidence(
     }
   }
   const env = runtimeEnv(context.runtime);
-  files.push(...collectEvidenceScreenshots(context.runtime.traceDir(traceId), env));
+  const traceDir = context.runtime.traceDir(traceId);
+  files.push(...collectEvidenceScreenshots(traceDir, env));
+  const ax = collectEvidenceAx(traceDir, context.secrets ?? [], env);
+  if (ax !== null) files.push({ name: "evidence-ax.json", contentBase64: Buffer.from(ax, "utf8").toString("base64") });
   if (files.length === 0) return;
   void upload
     .call(context.runtime.store, {

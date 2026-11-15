@@ -40,7 +40,8 @@ export interface EvidenceArtifact {
     | "android-adherence"
     | "native-ios"
     | "native-android"
-    | "execution-evidence";
+    | "execution-evidence"
+    | "ax";
   path: string;
   copied: boolean;
 }
@@ -203,6 +204,8 @@ export async function traceEvidence(
   if (fs.existsSync(nativeAndroidPath)) reference("native-android", nativeAndroidPath);
   const executionEvidencePath = path.join(traceDir, "execution-evidence.json");
   if (fs.existsSync(executionEvidencePath)) reference("execution-evidence", executionEvidencePath);
+  const axPath = path.join(traceDir, "evidence-ax.json");
+  if (fs.existsSync(axPath)) reference("ax", axPath);
   try {
     for (const name of fs.readdirSync(traceDir)) {
       if (/^evidence-shot-\d+\.(png|jpe?g)$/i.test(name)) {
