@@ -118,3 +118,48 @@ test("resetApp: honors AOS_ADB_PATH and AOS_RESET_TIMEOUT_MS", async () => {
   assert.equal(calls[0].command, "/opt/adb");
   assert.equal(calls[0].options.timeoutMs, 9000);
 });
+
+test("resetApp: AOS_ANDROID_RESET_URL 走 App 内建复位并重新拉起", async () => {
+  const { calls, exec } = recordingExec(() => ok());
+  const outcome = await resetApp(
+    { packageName: "com.example.app", serial: "emulator-5554" },
+    {
+      exec,
+      env: {
+        AOS_ANDROID_RESET_URL: "testapp://debug/reset",
+        AOS_ANDROID_RESET_WAIT_MS: "0"
+      }
+    }
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls[2].args, [
+    "-s",
+    "emulator-5554",
+    "shell",
+    "am",
+    "start",
+    "-W",
+    "-a",
+    "android.intent.action.VIEW",
+    "-d",
+    "testapp://debug/reset"
+  ]);
+  assert.deepEqual(calls[3].args, calls[1].args, "复位后再次拉起应用");
+});
+
+test("resetApp: App 内建复位入口失败 → app-internal-reset-failed", async () => {
+  const { exec } = recordingExec((joined) =>
+    joined.includes("android.intent.action.VIEW") ? fail({ stderr: "Error: Activity not started" }) : ok()
+  );
+  const outcome = await resetApp(
+    { packageName: "com.example.app" },
+    {
+      exec,
+      env: { AOS_ANDROID_RESET_URL: "testapp://fail", AOS_ANDROID_RESET_WAIT_MS: "0" }
+    }
+  );
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.reason, "app-internal-reset-failed");
+  assert.match(outcome.message, /内建复位/);
+});

@@ -13,6 +13,7 @@ import {
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 120_000;
+const DEFAULT_INTERNAL_RESET_WAIT_MS = 1_000;
 export const APP_PACKAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 
 export type AppResetReason =
@@ -44,6 +45,12 @@ export interface AppResetOptions {
   exec?: ExecFn;
   platform?: NodeJS.Platform;
   pathExists?: (candidate: string) => boolean;
+}
+
+function internalResetWaitMs(env: NodeJS.ProcessEnv): number {
+  const raw = Number.parseInt(env.AOS_ANDROID_RESET_WAIT_MS ?? "", 10);
+  if (!Number.isInteger(raw) || raw < 0) return DEFAULT_INTERNAL_RESET_WAIT_MS;
+  return Math.min(raw, 30_000);
 }
 
 function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
@@ -141,6 +148,46 @@ export async function resetApp(
       adb,
       commands
     };
+  }
+
+  const resetUrl = (env.AOS_ANDROID_RESET_URL ?? "").trim();
+  if (resetUrl !== "") {
+    const open = [
+      ...base,
+      "shell",
+      "am",
+      "start",
+      "-W",
+      "-a",
+      "android.intent.action.VIEW",
+      "-d",
+      resetUrl
+    ];
+    commands.push(open);
+    const openResult = await run(exec, adb.path, open, timeoutMs);
+    if (openResult.error || openResult.code !== 0) {
+      return {
+        ok: false,
+        reason: "app-internal-reset-failed",
+        message: `应用内建复位入口打开失败：${messageOf(openResult)}`,
+        serial,
+        adb,
+        commands
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, internalResetWaitMs(env)));
+    commands.push(launch);
+    const relaunchResult = await run(exec, adb.path, launch, timeoutMs);
+    if (relaunchResult.error || relaunchResult.code !== 0) {
+      return {
+        ok: false,
+        reason: "app-internal-reset-failed",
+        message: `应用内建复位后重新启动失败：${messageOf(relaunchResult)}`,
+        serial,
+        adb,
+        commands
+      };
+    }
   }
 
   return { ok: true, serial, adb, commands };

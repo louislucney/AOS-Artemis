@@ -215,7 +215,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - **runner 包**：0.3.0 双端；offline 包的 `runner.cmd` 会检测 `deps/win32-site-packages.zip` 并走 `setup-offline.cmd`；包契约 `npm run check:runner-bundle`。
 - **设备页下载区**：右侧只保留下载入口与一句解压提示。Windows 只列 MCP runner 离线包；macOS 保留在线/离线/adb-host 三个入口。setup/产物/状态说明不再常驻侧栏。
 - **宿主磁盘预检**：`suite run --task` 在环境预检阶段检查项目卷剩余空间（`AOS_RUNNER_MIN_FREE_DISK_PCT` 默认 10%，`0` 关闭）；低于阈值以 `host-state` 失败，不进入用例执行。当前只覆盖执行机宿主磁盘，设备存储/系统弹窗仍待接入。
-- **iOS 复位**：`resetIosApp` 默认 terminate+launch；项目 `.env` 的 `AOS_IOS_RESET_URL` 提供 App 内建复位入口时，复位序列追加 `openUrl → wait → launch`，等待 `AOS_IOS_RESET_WAIT_MS`（默认 1000ms）；失败归 `app-internal-reset-failed`/环境域。普通 reset 不清 Keychain，`fresh` 仍须显式能力。
+- **App 内建复位**：iOS `resetIosApp` 默认 terminate+launch；项目 `.env` 的 `AOS_IOS_RESET_URL` 提供入口时追加 `openUrl → wait → launch`（`AOS_IOS_RESET_WAIT_MS` 默认 1000ms）。Android `resetApp` 默认 force-stop+launch；`AOS_ANDROID_RESET_URL` 时追加 `am start VIEW → wait → launch`（`AOS_ANDROID_RESET_WAIT_MS` 默认 1000ms）。失败归 `app-internal-reset-failed`/环境域；普通 reset 不清 Keychain/数据，`fresh` 仍须显式能力。
 
 ---
 
