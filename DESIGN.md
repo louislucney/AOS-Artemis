@@ -215,7 +215,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - **runner 包**：0.3.0 双端；offline 包的 `runner.cmd` 会检测 `deps/win32-site-packages.zip` 并走 `setup-offline.cmd`；包契约 `npm run check:runner-bundle`。
 - **设备页下载区**：右侧只保留下载入口与一句解压提示。Windows 只列 MCP runner 离线包；macOS 保留在线/离线/adb-host 三个入口。setup/产物/状态说明不再常驻侧栏。
 - **跨端执行一致性**：`suite parity --task <id>` 只读读取 `remote-evidence/<task>/<trace>/execution-evidence.json` 的 plan/步骤可用性，输出 `comparable/not-comparable` 与原因；第一版 report-only，不阻断发布。纯评估函数在 `src/figma/execution-plan.ts`。
-- **宿主磁盘预检**：`suite run --task` 在环境预检阶段检查项目卷剩余空间（`AOS_RUNNER_MIN_FREE_DISK_PCT` 默认 10%，`0` 关闭）与 Android 设备 `/data` 剩余空间（`AOS_RUNNER_MIN_FREE_DEVICE_PCT` 默认 10%，`0` 关闭）；低于阈值以 `host-state` 失败，不进入用例执行。iOS 设备存储/后台残留/系统弹窗仍待接入。
+- **宿主磁盘预检**：`suite run --task` 在环境预检阶段检查项目卷剩余空间（`AOS_RUNNER_MIN_FREE_DISK_PCT` 默认 10%，`0` 关闭）与 Android 设备 `/data`、iOS 真机数据卷剩余空间（`AOS_RUNNER_MIN_FREE_DEVICE_PCT` 默认 10%，`0` 关闭；iOS 走 `ideviceinfo -q com.apple.disk_usage`，`AOS_IDEVICEINFO_PATH` 可覆盖工具路径）；低于阈值以 `host-state` 失败，不进入用例执行。iOS 模拟器由宿主磁盘覆盖；后台残留/系统弹窗仍待接入。
 - **App 内建复位**：iOS `resetIosApp` 默认 terminate+launch；项目 `.env` 的 `AOS_IOS_RESET_URL` 提供入口时追加 `openUrl → wait → launch`（`AOS_IOS_RESET_WAIT_MS` 默认 1000ms）。Android `resetApp` 默认 force-stop+launch；`AOS_ANDROID_RESET_URL` 时追加 `am start VIEW → wait → launch`（`AOS_ANDROID_RESET_WAIT_MS` 默认 1000ms）。失败归 `app-internal-reset-failed`/环境域；普通 reset 不清 Keychain/数据，`fresh` 仍须显式能力。
 
 ---

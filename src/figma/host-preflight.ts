@@ -173,3 +173,73 @@ export async function checkAndroidDeviceStorage(input: {
     message: `设备 ${input.serial} /data 剩余 ${freePercent === null ? "未知" : `${freePercent.toFixed(1)}%`}`
   };
 }
+
+function numericField(text: string, key: string): number | null {
+  const match = new RegExp(`(?:^|\\n)\\s*${key}\\s*:\\s*([0-9]+)`, "i").exec(text);
+  if (match === null) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** iOS 真机 /data 容器剩余空间：best-effort 走 ideviceinfo 的 disk_usage 域；
+ * 工具缺失/输出不识别时不阻断（模拟器由宿主磁盘检查覆盖）。 */
+export async function checkIosDeviceStorage(input: {
+  serial: string;
+  env?: NodeJS.ProcessEnv;
+  exec?: ExecFn;
+}): Promise<DeviceStorageResult> {
+  const env = input.env ?? process.env;
+  const exec = input.exec ?? defaultExec;
+  const minFreePercent = deviceThreshold(env);
+  const unavailable = (message: string): DeviceStorageResult => ({
+    ok: true,
+    serial: input.serial,
+    freeBytes: null,
+    totalBytes: null,
+    freePercent: null,
+    minFreePercent,
+    reason: "unavailable",
+    message
+  });
+  const tool = (env.AOS_IDEVICEINFO_PATH ?? "ideviceinfo").trim() || "ideviceinfo";
+  let result;
+  try {
+    result = await exec(tool, ["-u", input.serial, "-q", "com.apple.disk_usage"], {
+      timeoutMs: 10_000,
+      env
+    });
+  } catch (error) {
+    return unavailable(`iOS 设备存储检查失败（不阻断）：${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (result.error || result.code !== 0) {
+    return unavailable(`iOS 设备存储检查失败（不阻断）：${result.error ?? `exit ${String(result.code)}`}`);
+  }
+  const freeBytes = numericField(result.stdout, "TotalDataAvailable");
+  const totalBytes = numericField(result.stdout, "TotalDataCapacity");
+  if (freeBytes === null || totalBytes === null || totalBytes <= 0) {
+    return unavailable("iOS disk_usage 输出无法解析（不阻断）");
+  }
+  const freePercent = (freeBytes / totalBytes) * 100;
+  if (minFreePercent > 0 && freePercent < minFreePercent) {
+    return {
+      ok: false,
+      serial: input.serial,
+      freeBytes,
+      totalBytes,
+      freePercent,
+      minFreePercent,
+      reason: "insufficient-device-disk",
+      message: `iOS 设备 ${input.serial} 存储不足：数据卷剩余 ${freePercent.toFixed(1)}%，低于 AOS_RUNNER_MIN_FREE_DEVICE_PCT=${minFreePercent}%`
+    };
+  }
+  return {
+    ok: true,
+    serial: input.serial,
+    freeBytes,
+    totalBytes,
+    freePercent,
+    minFreePercent,
+    reason: null,
+    message: `iOS 设备 ${input.serial} 数据卷剩余 ${freePercent.toFixed(1)}%`
+  };
+}

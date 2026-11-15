@@ -59,7 +59,11 @@ import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
 import { gateIssueForTests, isImportedTestsFile } from "./figma/gate.js";
 import { preflightGeneratedTests, renderDesignWarningLine } from "./figma/preflight.js";
-import { checkAndroidDeviceStorage, checkHostDisk } from "./figma/host-preflight.js";
+import {
+  checkAndroidDeviceStorage,
+  checkHostDisk,
+  checkIosDeviceStorage
+} from "./figma/host-preflight.js";
 import {
   loadReconciliation,
   reconciliationFilePath,
@@ -929,6 +933,25 @@ async function suiteRunTask(
     const storage = await checkAndroidDeviceStorage({
       serial: device,
       env: runtime.baseEnv
+    });
+    if (!storage.ok) {
+      await progress
+        .report("failed", 5, { message: storage.message, errorCode: "host-state" })
+        .catch(() => undefined);
+      await runtime.store
+        .updateRegressionTask(runtime.project.rootDir, task.id, {
+          status: "failed",
+          expectStatuses: ["pending", "claimed", "running"]
+        })
+        .catch(() => false);
+      io.errorLog(`环境错误：${storage.message}`);
+      return 2;
+    }
+  }
+  for (const device of devices.filter((serial) => classifyIosSerial(serial) === "device")) {
+    const storage = await checkIosDeviceStorage({
+      serial: device,
+      env: runtime.iosEnvironment()
     });
     if (!storage.ok) {
       await progress
