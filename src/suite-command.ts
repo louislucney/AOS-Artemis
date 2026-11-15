@@ -93,6 +93,11 @@ import {
 import { runTextWeightCalibration } from "./ui/text-calibrate.js";
 import { runReferenceCalibration } from "./web/reference-calibrate.js";
 import { compareParityDocs, readParityDoc } from "./figma/parity.js";
+import {
+  compareExecutionParity,
+  type ExecutionParityRecord,
+  type ExecutionPlanView
+} from "./figma/execution-plan.js";
 import { readPenTextBounds } from "./pen/bounds.js";
 import type { WarningSummary } from "./design/warnings.js";
 import {
@@ -430,6 +435,7 @@ Usage:
                                      语义一致性：分类树/截断/IA/覆盖率/动态资产；单屏只给部分覆盖，unverified/offscreen > 0 不返回 layout-compatible（exit 0/1/2）
   mobile-testing-mcp suite ui-lint [options] 检查源码圆角/颜色/字号/字重/字体族字面量是否来自 ui-contract token；--per-screen 按 screen-map 逐屏收窄、--require-mapping 要求 extracted 屏有显式映射、--fail-on-stale-contract 契约指纹过期即失败（--contract/--allowlist/--screen-map/--changed/--require-complete/--fail-on-expiring/--expiry-warn-days <n>/--max-total-bytes <n>；--json；exit 0/1/2）
   mobile-testing-mcp suite parity --a <tests.json> --b <tests.json> [--json] 对比两端人类层用例（semanticId/步骤/预期/屏幕），忽略 taskDesc/i18n/a11y）
+  mobile-testing-mcp suite parity --task <id> [--json] 只读评估该任务两端 execution-evidence 的条件可比性（report-only）
   mobile-testing-mcp suite text-weight-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]
                                      离线字重校准：成对图片 → 混淆矩阵/高置信误报/delta 分布/阈值建议
   mobile-testing-mcp suite reference-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]
@@ -4982,11 +4988,130 @@ async function suiteTextWeightCalibrate(
   return report.ok ? 0 : report.total === 0 ? 2 : 1;
 }
 
-function suiteParity(
+
+const PARITY_CASE_STATUSES = new Set<SuiteCaseResult["status"]>([
+  "passed",
+  "failed",
+  "timeout",
+  "submit-error"
+]);
+
+function parityCaseStatus(value: string): SuiteCaseResult["status"] {
+  return PARITY_CASE_STATUSES.has(value as SuiteCaseResult["status"])
+    ? (value as SuiteCaseResult["status"])
+    : "failed";
+}
+
+function readParityPlan(
+  rootPath: string,
+  traceId: string,
+  runtime: Runtime,
+  taskId: string
+): { plan: ExecutionPlanView | null; stepsAvailable: boolean } {
+  const candidates = [
+    path.join(rootPath, ".artemis", "remote-evidence", taskId, traceId, "execution-evidence.json"),
+    path.join(runtime.traceDir(traceId), "execution-evidence.json")
+  ];
+  for (const file of candidates) {
+    try {
+      const payload: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (payload === null || typeof payload !== "object" || Array.isArray(payload)) continue;
+      const record = payload as Record<string, unknown>;
+      const plan = record.plan;
+      if (plan !== null && typeof plan === "object" && !Array.isArray(plan)) {
+        const candidate = plan as Record<string, unknown>;
+        const reset = candidate.reset;
+        const data = candidate.data;
+        if (
+          candidate.schemaVersion === 1 &&
+          (candidate.platform === "ios" || candidate.platform === "android") &&
+          (candidate.engine === "proxy" ||
+            candidate.engine === "native-ios" ||
+            candidate.engine === "native-android") &&
+          reset !== null &&
+          typeof reset === "object" &&
+          !Array.isArray(reset) &&
+          data !== null &&
+          typeof data === "object" &&
+          !Array.isArray(data) &&
+          Array.isArray((data as Record<string, unknown>).aliases)
+        ) {
+          return {
+            plan: candidate as unknown as ExecutionPlanView,
+            stepsAvailable: record.stepsAvailable === true
+          };
+        }
+      }
+      return { plan: null, stepsAvailable: record.stepsAvailable === true };
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return { plan: null, stepsAvailable: false };
+}
+
+async function suiteExecutionParity(
+  runtime: Runtime,
+  taskId: string,
+  io: { log: (line: string) => void; errorLog: (line: string) => void },
+  json: boolean
+): Promise<number> {
+  const task = await runtime.store.getRegressionTask(runtime.project.rootDir, taskId).catch(() => null);
+  if (task === null) {
+    io.errorLog(`未知回归任务：${taskId}`);
+    return 2;
+  }
+  const runs = await runtime.store
+    .listSuiteRuns(runtime.project.rootDir, { taskId, limit: 200 })
+    .catch(() => []);
+  if (runs.length === 0) {
+    io.errorLog(`任务 ${taskId} 没有已登记批次`);
+    return 2;
+  }
+  const records = new Map<string, ExecutionParityRecord>();
+  for (const run of runs) {
+    for (const entry of run.cases) {
+      const platform = entry.platform === "ios" ? "ios" : entry.platform === "android" ? "android" : null;
+      if (platform === null || entry.caseId === "") continue;
+      const key = `${entry.caseId}\u0000${platform}`;
+      if (records.has(key)) continue;
+      const traceId = entry.traceId;
+      const evidence =
+        traceId === null ? { plan: null, stepsAvailable: false } : readParityPlan(runtime.project.rootDir, traceId, runtime, taskId);
+      records.set(key, {
+        caseId: entry.caseId,
+        platform,
+        status: parityCaseStatus(entry.status),
+        plan: evidence.plan,
+        stepsAvailable: evidence.stepsAvailable
+      });
+    }
+  }
+  const results = compareExecutionParity([...records.values()]);
+  const comparable = results.filter((entry) => entry.comparable).length;
+  const notComparable = results.length - comparable;
+  if (json) {
+    io.log(JSON.stringify({ taskId, comparable, notComparable, cases: results }, null, 2));
+    return 0;
+  }
+  io.log(`执行一致性: 用例 ${results.length} · comparable ${comparable} · not-comparable ${notComparable}`);
+  for (const entry of results) {
+    const platforms = ["ios", "android"]
+      .filter((platform) => entry.platforms[platform as "ios" | "android"] !== undefined)
+      .map((platform) => `${platform}:${entry.platforms[platform as "ios" | "android"]!.status}`)
+      .join(" / ");
+    io.log(`  ${entry.caseId} · ${platforms || "无平台"} · ${entry.comparable ? "comparable" : "not-comparable"}${entry.reasons.length > 0 ? ` · ${entry.reasons.join(",")}` : ""}`);
+  }
+  return 0;
+}
+
+async function suiteParity(
   runtime: Runtime,
   flags: ParsedFlags,
   io: { log: (line: string) => void; errorLog: (line: string) => void }
-): number {
+): Promise<number> {
+  const taskId = flags.get("task");
+  if (taskId !== null) return await suiteExecutionParity(runtime, taskId, io, flags.bool("json"));
   const a = flags.get("a");
   const b = flags.get("b");
   if (a === null || b === null) {
@@ -5214,7 +5339,7 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
     if (sub === "reference-calibrate") {
       return await suiteReferenceCalibrate(built.runtime, flags, { log, errorLog });
     }
-    if (sub === "parity") return suiteParity(built.runtime, flags, { log, errorLog });
+    if (sub === "parity") return await suiteParity(built.runtime, flags, { log, errorLog });
     if (sub === "runner") {
       return await suiteRunnerCommand(
         built.runtime,

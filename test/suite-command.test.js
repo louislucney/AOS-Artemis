@@ -2428,3 +2428,97 @@ test("suite check: malformed ui-semantics exits 2 instead of silently disabling 
   assert.equal(result.code, 2);
   assert.ok(result.errors.some((line) => line.includes("ui-semantics 解析失败")));
 });
+
+test("suite parity --task: 读取 execution-evidence 评估跨端条件可比性", async () => {
+  const { runtime, store } = await setupRun({ cases: [caseEntry(1)] });
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: "cs", featureKey: "f" }],
+    platforms: ["ios", "android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  const plan = (platform) => ({
+    schemaVersion: 1,
+    platform,
+    engine: "proxy",
+    reset: { mode: "reuse", entryConfigured: false },
+    data: { policy: "per-platform", aliases: ["reg_email"] },
+    budget: null,
+    evidence: { steps: true, screenshots: false }
+  });
+  for (const platform of ["ios", "android"]) {
+    const traceId = `trace-${platform}`;
+    const dir = path.join(
+      runtime.project.rootDir,
+      ".artemis",
+      "remote-evidence",
+      task.id,
+      traceId
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "execution-evidence.json"),
+      JSON.stringify({ schemaVersion: 1, plan: plan(platform), stepsAvailable: true })
+    );
+    await store.recordSuiteRun({
+      rootPath: runtime.project.rootDir,
+      run: {
+        trigger: "cli",
+        regressionTaskId: task.id,
+        caseSetId: "cs",
+        featureKey: "f",
+        featureName: "Feature",
+        platform,
+        device: null,
+        appVersion: null,
+        runner: "local",
+        status: "completed",
+        startedAt: "2026-11-15T10:00:00.000Z",
+        finishedAt: "2026-11-15T10:01:00.000Z",
+        total: 1,
+        passed: 1,
+        failed: 0,
+        flaky: 0,
+        quarantined: 0,
+        failureDomains: {},
+        gateResult: "pass",
+        exitCode: 0,
+        manifestPath: null,
+        comparison: null
+      },
+      cases: [
+        {
+          caseId: "case-1",
+          name: "Case 1",
+          featureKey: "f",
+          platform,
+          status: "passed",
+          traceId,
+          failureDomain: null,
+          failureConfidence: null,
+          failureReason: null,
+          durationMs: null,
+          quarantined: false,
+          flaky: false,
+          verdict: null,
+          verdictBy: null,
+          verdictAt: null,
+          verdictNote: null,
+          jiraIssueKey: null
+        }
+      ]
+    });
+  }
+  const { code, logs, errors } = await runCli(runtime, [
+    "parity",
+    "--task",
+    task.id,
+    "--json"
+  ]);
+  assert.equal(code, 0, errors.join("\n"));
+  const payload = JSON.parse(logs.at(-1));
+  assert.equal(payload.comparable, 1);
+  assert.equal(payload.notComparable, 0);
+  assert.equal(payload.cases[0].comparable, true);
+});
