@@ -457,7 +457,7 @@ reset: {
 
 ### 10.4 现有缺口
 
-`uploadFailureEvidence` 当前上传 `status/stderr/stdout/native-*/execution-evidence.json`；`execution-evidence.json` 已包含安全步骤摘要（native 来自 structured runner，proxy 来自 `run.json` 的 index/action/status）。完整 `run.json`、截图和 AX 仍未统一。
+`uploadFailureEvidence` 当前上传 `status/stderr/stdout/native-*/execution-evidence.json` 和最近最多 3 张 `evidence-shot-*`（默认开、可关、≤200KB）；`execution-evidence.json` 已包含安全步骤摘要（native 来自 structured runner，proxy 来自 `run.json` 的 index/action/status）。完整 `run.json`、截图和 AX 仍未统一。
 
 ## 11. Preflight 与 executionParity
 

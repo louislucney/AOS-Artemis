@@ -29,6 +29,7 @@ export function buildExecutionPlan(input: {
   engine: ExecutionEngine;
   aliases: string[];
   env?: NodeJS.ProcessEnv;
+  screenshots?: boolean;
 }): ExecutionPlanView {
   const env = input.env ?? process.env;
   const entry =
@@ -50,7 +51,7 @@ export function buildExecutionPlan(input: {
     budget: null,
     evidence: {
       steps: true,
-      screenshots: false
+      screenshots: input.screenshots === true
     }
   };
 }

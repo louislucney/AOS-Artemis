@@ -203,6 +203,15 @@ export async function traceEvidence(
   if (fs.existsSync(nativeAndroidPath)) reference("native-android", nativeAndroidPath);
   const executionEvidencePath = path.join(traceDir, "execution-evidence.json");
   if (fs.existsSync(executionEvidencePath)) reference("execution-evidence", executionEvidencePath);
+  try {
+    for (const name of fs.readdirSync(traceDir)) {
+      if (/^evidence-shot-\d+\.(png|jpe?g)$/i.test(name)) {
+        reference("screenshot", path.join(traceDir, name));
+      }
+    }
+  } catch {
+    /* no remote screenshots */
+  }
   for (const crash of crashes) {
     reference("crash-record", path.join(runtime.crashStore.dirPath, `${crash.id}.json`));
   }

@@ -290,12 +290,13 @@ export class SuiteControlService {
       "native-android.json",
       "execution-evidence.json"
     ]);
+    const screenshotName = /^evidence-shot-\d+\.(png|jpe?g)$/i;
     const dir = path.join(input.rootPath, ".artemis", "remote-evidence", input.taskId, input.traceId);
     fs.mkdirSync(dir, { recursive: true });
     const saved: string[] = [];
     let total = 0;
     for (const file of input.files) {
-      if (!allowed.has(file.name)) {
+      if (!allowed.has(file.name) && !screenshotName.test(file.name)) {
         throw new RunnerControlError("invalid-state", `不允许上传证据文件：${file.name}`);
       }
       const buffer = Buffer.from(file.contentBase64, "base64");

@@ -120,6 +120,10 @@ test("runner evidence: accepts native structured evidence", async () => {
             {
               name: "execution-evidence.json",
               contentBase64: Buffer.from('{"schemaVersion":1}', "utf8").toString("base64")
+            },
+            {
+              name: "evidence-shot-1.png",
+              contentBase64: Buffer.from("fake-png").toString("base64")
             }
           ]
         })
@@ -133,6 +137,7 @@ test("runner evidence: accepts native structured evidence", async () => {
       fs.readFileSync(path.join(dir, "execution-evidence.json"), "utf8"),
       '{"schemaVersion":1}'
     );
+    assert.equal(fs.readFileSync(path.join(dir, "evidence-shot-1.png"), "utf8"), "fake-png");
   } finally {
     await handle.close();
     restore();

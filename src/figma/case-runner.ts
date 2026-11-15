@@ -35,6 +35,7 @@ import {
 } from "../ios/structured-runner.js";
 import { loadWebSecrets, resolvePlaceholders, type SecretEntry } from "../web/llm/secrets.js";
 import { allocateSequencedSecrets } from "../tasks/secret-sequence.js";
+import { collectEvidenceScreenshots } from "./evidence-files.js";
 import type { LogcatWindowResult } from "../device/logcat.js";
 import type { AppResetOutcome } from "../device/reset.js";
 import type { Runtime } from "../runtime.js";
@@ -405,6 +406,8 @@ function uploadFailureEvidence(
       /* 缺文件不阻断 */
     }
   }
+  const env = runtimeEnv(context.runtime);
+  files.push(...collectEvidenceScreenshots(context.runtime.traceDir(traceId), env));
   if (files.length === 0) return;
   void upload
     .call(context.runtime.store, {
@@ -670,7 +673,8 @@ async function executeNativeCase(
       platform: platform satisfies ExecutionPlatform,
       engine: engine satisfies ExecutionEngine,
       aliases: (context.secrets ?? []).map((entry) => entry.alias),
-      env: runtimeEnv(context.runtime)
+      env: runtimeEnv(context.runtime),
+      screenshots: (runtimeEnv(context.runtime).AOS_RUNNER_EVIDENCE_SCREENSHOTS ?? "1").trim() !== "0"
     }),
     steps: run.steps.map((step) => ({
       index: step.index,
@@ -1124,7 +1128,8 @@ export async function executeCase(
       platform: (iosTarget ? "ios" : "android") satisfies ExecutionPlatform,
       engine: "proxy" satisfies ExecutionEngine,
       aliases: (context.secrets ?? []).map((entry) => entry.alias),
-      env: runtimeEnv(context.runtime)
+      env: runtimeEnv(context.runtime),
+      screenshots: (runtimeEnv(context.runtime).AOS_RUNNER_EVIDENCE_SCREENSHOTS ?? "1").trim() !== "0"
     }),
     steps: readProxyExecutionSteps(traceDir)
   });
