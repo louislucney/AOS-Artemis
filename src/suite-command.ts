@@ -59,6 +59,7 @@ import { buildFlakeReport, renderFlakeMarkdown } from "./figma/flake.js";
 import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./figma/retention.js";
 import { gateIssueForTests, isImportedTestsFile } from "./figma/gate.js";
 import { preflightGeneratedTests, renderDesignWarningLine } from "./figma/preflight.js";
+import { checkHostDisk } from "./figma/host-preflight.js";
 import {
   loadReconciliation,
   reconciliationFilePath,
@@ -901,6 +902,23 @@ async function suiteRunTask(
 
   const progress = new TaskProgressReporter(runtime, task);
   await progress.report("preflight", 5, { message: "环境预检" });
+  const hostDisk = await checkHostDisk({
+    rootPath: runtime.project.rootDir,
+    env: runtime.baseEnv
+  });
+  if (!hostDisk.ok) {
+    await progress
+      .report("failed", 5, { message: hostDisk.message, errorCode: "host-state" })
+      .catch(() => undefined);
+    await runtime.store
+      .updateRegressionTask(runtime.project.rootDir, task.id, {
+        status: "failed",
+        expectStatuses: ["pending", "claimed", "running"]
+      })
+      .catch(() => false);
+    io.errorLog(`环境错误：${hostDisk.message}`);
+    return 2;
+  }
   const iosRealDevices = devices.filter((serial) => classifyIosSerial(serial) === "device");
   if (iosRealDevices.length > 0) {
     const detection = await runtime.iosAppiumInfo().catch(() => null);
