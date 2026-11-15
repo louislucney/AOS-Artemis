@@ -193,6 +193,11 @@ test("case-runner: iOS native 断言失败不回退 Artemis", async () => {
     assert.deepEqual(calls, [], "失败也不得重跑 Artemis");
     const statusPath = path.join(runtime.traceDir(outcome.result.traceId), "status.json");
     assert.equal(JSON.parse(fs.readFileSync(statusPath, "utf8")).status, "failed");
+    const ax = JSON.parse(
+      fs.readFileSync(path.join(runtime.traceDir(outcome.result.traceId), "ax-final.json"), "utf8")
+    );
+    assert.equal(ax.platform, "ios");
+    assert.ok(ax.nodes.some((node) => node.label === "错误页"));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

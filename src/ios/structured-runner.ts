@@ -17,7 +17,17 @@ export interface StructuredIosStepResult {
   target?: StructuredTarget;
   resolvedBy?: "id" | "label" | "value" | "point" | "ancestor";
   expected?: StructuredActionExpect;
-  actual?: { texts: string[]; screen: { width: number; height: number } | null };
+  actual?: {
+    texts: string[];
+    screen: { width: number; height: number } | null;
+    nodes?: Array<{
+      type: string;
+      id: string;
+      label: string;
+      value: string;
+      rect: { x: number; y: number; width: number; height: number };
+    }>;
+  };
   /** secretRef 填写后的回读校验结果（无字段映射/密码/point 目标为 skipped）。 */
   verified?: "ok" | "skipped" | "mismatch";
   error?: string;
@@ -50,6 +60,8 @@ export interface StructuredIosRunInput {
   resolveSecret?: (ref: string) => string | null | undefined;
   /** 字段映射：secretRef 未显式给 target 时按 alias 解析目标，并用于回读校验。 */
   resolveSecretField?: (ref: string) => StructuredSecretField | null | undefined;
+  /** 失败证据需要完整最后观察屏 AX：默认关闭，由 case-runner 按环境开关传入。 */
+  captureAx?: boolean;
 }
 
 function pointOfTarget(target: StructuredTarget): IosPoint | null {
@@ -415,7 +427,18 @@ export async function runStructuredIosCase(
         texts: textsOf(observed)
           .map((text) => redactValue(text, secretValues))
           .slice(0, 30),
-        screen
+        screen,
+        ...(input.captureAx === true
+          ? {
+              nodes: observed.slice(0, 500).map((node) => ({
+                type: node.type,
+                id: redactValue(node.id, secretValues),
+                label: redactValue(node.label, secretValues),
+                value: redactValue(node.value, secretValues),
+                rect: node.rect
+              }))
+            }
+          : {})
       };
       const mismatch = expectError(action.expect, observed);
       if (mismatch !== null) {

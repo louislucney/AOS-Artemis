@@ -291,6 +291,10 @@ interface ExecutionEvidenceInput {
 }
 
 /** 从 proxy 的 run.json 提取安全步骤摘要：只保留 index/action/status，不读 params/outcome 文本。 */
+function failedStepOf(run: StructuredIosRunResult): StructuredIosRunResult["steps"][number] | null {
+  return run.steps.find((step) => step.status !== "passed") ?? run.steps[run.steps.length - 1] ?? null;
+}
+
 function runtimeEnv(runtime: Runtime): NodeJS.ProcessEnv {
   return typeof runtime.iosEnvironment === "function" ? runtime.iosEnvironment() : process.env;
 }
@@ -578,6 +582,7 @@ async function executeNativeCase(
       ...(entry.label === undefined ? {} : { label: entry.label })
     };
   };
+  const runEnv = runtimeEnv(context.runtime);
   let run: StructuredIosRunResult;
   try {
     run = await runStructuredCase({
@@ -585,6 +590,7 @@ async function executeNativeCase(
       actions: testCase.actions,
       resolveSecret,
       resolveSecretField,
+      captureAx: (runEnv.AOS_RUNNER_EVIDENCE_AX ?? "1").trim() !== "0",
       ...(context.pollTimeoutMs > 0 ? { stepTimeoutMs: context.pollTimeoutMs } : {})
     });
   } catch (error) {
@@ -661,6 +667,31 @@ async function executeNativeCase(
     evidence: emptyEvidence(),
     reset
   };
+  if (!passed) {
+    const failedStep = failedStepOf(run);
+    const nodes = failedStep?.actual?.nodes;
+    if (nodes !== undefined && nodes.length > 0) {
+      try {
+        writeFileAtomic(
+          path.join(traceDir, "ax-final.json"),
+          `${JSON.stringify(
+            {
+              schemaVersion: 1,
+              traceId,
+              platform,
+              step: failedStep?.index ?? null,
+              screen: failedStep?.actual?.screen ?? null,
+              nodes
+            },
+            null,
+            2
+          )}\n`
+        );
+      } catch (error) {
+        logWarn(`写入 native AX 失败：${traceId} · ${errorMessage(error)}`);
+      }
+    }
+  }
   writeExecutionEvidence({
     traceDir,
     traceId,
