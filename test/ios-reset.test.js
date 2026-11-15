@@ -20,6 +20,10 @@ function fakeDevice({ launchFails = false } = {}) {
     async openUrl(url) {
       calls.push(["openUrl", url]);
       if (url.includes("fail")) throw new Error("deep link 失败");
+    },
+    async handleAlerts(policy) {
+      calls.push(["alerts", policy?.mode ?? "accept"]);
+      return { handled: 0, tapped: [] };
     }
   };
 }
@@ -74,6 +78,20 @@ test("resetIosApp: 真机 UDID 未注入设备 → 明确报错（不再错造�
       ),
     /WDA provider/
   );
+});
+
+test("resetIosApp: AOS_IOS_RESET_ALERTS 处理系统弹窗", async () => {
+  const device = fakeDevice();
+  const outcome = await resetIosApp(
+    { packageName: "com.apple.Preferences", serial: UDID },
+    { platform: "darwin", device, env: { AOS_IOS_RESET_ALERTS: "accept" } }
+  );
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(device.calls, [
+    ["terminate", "com.apple.Preferences"],
+    ["launch", "com.apple.Preferences"],
+    ["alerts", "accept"]
+  ]);
 });
 
 test("resetIosApp: AOS_IOS_RESET_URL 走 App 内建复位并重新 launch", async () => {

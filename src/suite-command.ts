@@ -60,6 +60,7 @@ import { buildRetentionReport, collectRetentionEntries, formatBytes } from "./fi
 import { gateIssueForTests, isImportedTestsFile } from "./figma/gate.js";
 import { preflightGeneratedTests, renderDesignWarningLine } from "./figma/preflight.js";
 import {
+  checkAndroidBootState,
   checkAndroidDeviceStorage,
   checkHostDisk,
   checkIosDeviceStorage
@@ -931,6 +932,23 @@ async function suiteRunTask(
     return 2;
   }
   for (const device of devices.filter((serial) => platformOf(serial) === "android")) {
+    const boot = await checkAndroidBootState({
+      serial: device,
+      env: runtime.baseEnv
+    });
+    if (!boot.ok) {
+      await progress
+        .report("failed", 5, { message: boot.message, errorCode: "host-state" })
+        .catch(() => undefined);
+      await runtime.store
+        .updateRegressionTask(runtime.project.rootDir, task.id, {
+          status: "failed",
+          expectStatuses: ["pending", "claimed", "running"]
+        })
+        .catch(() => false);
+      io.errorLog(`环境错误：${boot.message}`);
+      return 2;
+    }
     const storage = await checkAndroidDeviceStorage({
       serial: device,
       env: runtime.baseEnv

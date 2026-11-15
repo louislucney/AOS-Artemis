@@ -114,3 +114,31 @@ test("host preflight: iOS disk_usage 不可解析不阻断", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.reason, "unavailable");
 });
+
+import { checkAndroidBootState } from "../dist/figma/host-preflight.js";
+
+test("host preflight: Android 未完成启动阻断", async () => {
+  const result = await checkAndroidBootState({
+    serial: "emulator-5554",
+    env: { AOS_ADB_PATH: "/bin/echo" },
+    exec: async () => ({ code: 0, stdout: "0\n", stderr: "" })
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "device-not-booted");
+});
+
+test("host preflight: Android 启动完成放行，读取失败不阻断", async () => {
+  const done = await checkAndroidBootState({
+    serial: "emulator-5554",
+    env: { AOS_ADB_PATH: "/bin/echo" },
+    exec: async () => ({ code: 0, stdout: "1\n", stderr: "" })
+  });
+  assert.equal(done.ok, true);
+  const unknown = await checkAndroidBootState({
+    serial: "emulator-5554",
+    env: { AOS_ADB_PATH: "/bin/echo" },
+    exec: async () => ({ code: 1, stdout: "", stderr: "offline" })
+  });
+  assert.equal(unknown.ok, true);
+  assert.equal(unknown.reason, "unavailable");
+});

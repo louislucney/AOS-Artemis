@@ -109,6 +109,23 @@ export async function resetIosApp(
     };
   }
 
+  const alertMode = (env.AOS_IOS_RESET_ALERTS ?? "").trim();
+  if (alertMode === "accept" || alertMode === "dismiss" || alertMode === "keep") {
+    commands.push(["alerts", alertMode]);
+    try {
+      await device.handleAlerts({ mode: alertMode });
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "launch-failed",
+        message: `系统弹窗处理失败：${errorMessage(error)}`,
+        serial,
+        adb: MISSING_ADB,
+        commands
+      };
+    }
+  }
+
   const resetUrl = (env.AOS_IOS_RESET_URL ?? "").trim();
   if (resetUrl !== "") {
     commands.push(["openUrl", resetUrl]);

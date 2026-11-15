@@ -243,3 +243,51 @@ export async function checkIosDeviceStorage(input: {
     message: `iOS 设备 ${input.serial} 数据卷剩余 ${freePercent.toFixed(1)}%`
   };
 }
+
+export interface DeviceBootResult {
+  ok: boolean;
+  serial: string;
+  reason: "device-not-booted" | "unavailable" | null;
+  message: string;
+}
+
+/** Android 设备启动完成检查：未 boot_completed 时不进入安装/用例执行。 */
+export async function checkAndroidBootState(input: {
+  serial: string;
+  env?: NodeJS.ProcessEnv;
+  exec?: ExecFn;
+}): Promise<DeviceBootResult> {
+  const env = input.env ?? process.env;
+  const exec = input.exec ?? defaultExec;
+  const adb = resolveAdbPath(env, process.platform);
+  if (adb.path === null) {
+    return { ok: true, serial: input.serial, reason: "unavailable", message: "adb 不可用，跳过启动状态检查" };
+  }
+  try {
+    const result = await exec(
+      adb.path,
+      ["-s", input.serial, "shell", "getprop", "sys.boot_completed"],
+      { timeoutMs: 5_000, env }
+    );
+    if (result.error || result.code !== 0) {
+      return { ok: true, serial: input.serial, reason: "unavailable", message: "设备启动状态读取失败（不阻断）" };
+    }
+    if (result.stdout.trim() === "1") {
+      return { ok: true, serial: input.serial, reason: null, message: "设备已启动完成" };
+    }
+    return {
+      ok: false,
+      serial: input.serial,
+      reason: "device-not-booted",
+      message: `设备 ${input.serial} 尚未完成启动（sys.boot_completed!=1）`
+    };
+  } catch (error) {
+    return {
+      ok: true,
+      serial: input.serial,
+      reason: "unavailable",
+      message: `设备启动状态读取失败（不阻断）：${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
