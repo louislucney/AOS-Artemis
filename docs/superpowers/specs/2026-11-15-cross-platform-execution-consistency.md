@@ -445,7 +445,7 @@ reset: {
 
 ### 10.4 现有缺口
 
-`uploadFailureEvidence` 当前上传 `status/stderr/stdout/native-*`，没有统一 `run.json` 和截图；本设计要求 adapter 都产出统一 schema 后再扩展上传白名单。
+`uploadFailureEvidence` 当前上传 `status/stderr/stdout/native-*/execution-evidence.json`；`execution-evidence.json` 已包含安全步骤摘要（native 来自 structured runner，proxy 来自 `run.json` 的 index/action/status）。完整 `run.json`、截图和 AX 仍未统一。
 
 ## 11. Preflight 与 executionParity
 

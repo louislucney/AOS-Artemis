@@ -98,6 +98,19 @@ test("iOS proxy: 取消后把仍为 running 的 trace 落成 cancelled", async (
       end_time: null
     })
   );
+  fs.writeFileSync(
+    path.join(traceDir, "run.json"),
+    JSON.stringify({
+      schema_version: 1,
+      trace_id: traceId,
+      platform: "ios",
+      status: "running",
+      steps: [
+        { step: 1, action: "tap", outcome: "ok" },
+        { step: 2, action: "text", outcome: "参数错误" }
+      ]
+    })
+  );
   try {
     const outcome = await executeCase(proxyCase(), context);
     assert.equal(outcome.submitted, true);
@@ -115,7 +128,11 @@ test("iOS proxy: 取消后把仍为 running 的 trace 落成 cancelled", async (
     const evidence = JSON.parse(
       fs.readFileSync(path.join(traceDir, "execution-evidence.json"), "utf8")
     );
-    assert.equal(evidence.stepsAvailable, false, "proxy 没有结构化步骤时显式标 null");
+    assert.equal(evidence.stepsAvailable, true);
+    assert.deepEqual(evidence.steps, [
+      { index: 1, action: "tap", status: "passed" },
+      { index: 2, action: "text", status: "failed" }
+    ]);
   } finally {
     fs.rmSync(traceDir, { recursive: true, force: true });
   }

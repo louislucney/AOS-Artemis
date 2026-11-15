@@ -281,6 +281,44 @@ interface ExecutionEvidenceInput {
   steps: ExecutionEvidenceStep[] | null;
 }
 
+/** 从 proxy 的 run.json 提取安全步骤摘要：只保留 index/action/status，不读 params/outcome 文本。 */
+function readProxyExecutionSteps(traceDir: string): ExecutionEvidenceStep[] | null {
+  const file = path.join(traceDir, "run.json");
+  let payload: unknown;
+  try {
+    payload = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const raw = (payload as { steps?: unknown }).steps;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const steps: ExecutionEvidenceStep[] = [];
+  for (let index = 0; index < raw.length && steps.length < 500; index += 1) {
+    const entry = raw[index];
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const stepNumber =
+      typeof record.step === "number"
+        ? record.step
+        : typeof record.index === "number"
+          ? record.index
+          : index + 1;
+    const action = typeof record.action === "string" && record.action !== "" ? record.action : "unknown";
+    const explicitStatus = typeof record.status === "string" ? record.status : null;
+    const status =
+      explicitStatus ??
+      (record.outcome === "ok" ? "passed" : record.outcome === undefined ? "recorded" : "failed");
+    steps.push({
+      index: stepNumber,
+      action,
+      status,
+      ...(typeof record.resolvedBy === "string" ? { resolvedBy: record.resolvedBy } : {})
+    });
+  }
+  return steps.length === 0 ? null : steps;
+}
+
 /** 跨端可比的安全证据：只写标识/状态/计数/别名，不写 taskDesc、输入值或 secret。
  * 目标引擎（iOS/Android）都能产出同名文件，供中心证据页和 parity 读取。 */
 function writeExecutionEvidence(input: ExecutionEvidenceInput): void {
@@ -1064,7 +1102,7 @@ export async function executeCase(
     failure: caseResult.failure,
     reset,
     aliases: (context.secrets ?? []).map((entry) => entry.alias),
-    steps: null
+    steps: readProxyExecutionSteps(traceDir)
   });
   if (caseResult.status !== "passed") {
     uploadFailureEvidence(context, testCase.id, traceId);
