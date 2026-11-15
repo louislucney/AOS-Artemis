@@ -150,6 +150,19 @@ export async function resetApp(
     };
   }
 
+  if ((env.AOS_ANDROID_RESET_ALERTS ?? "").trim() === "1") {
+    const closeDialogs = [
+      ...base,
+      "shell",
+      "am",
+      "broadcast",
+      "-a",
+      "android.intent.action.CLOSE_SYSTEM_DIALOGS"
+    ];
+    commands.push(closeDialogs);
+    await run(exec, adb.path, closeDialogs, timeoutMs).catch(() => undefined);
+  }
+
   const resetUrl = (env.AOS_ANDROID_RESET_URL ?? "").trim();
   if (resetUrl !== "") {
     const open = [
