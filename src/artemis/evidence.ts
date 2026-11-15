@@ -206,6 +206,8 @@ export async function traceEvidence(
   if (fs.existsSync(executionEvidencePath)) reference("execution-evidence", executionEvidencePath);
   const axPath = path.join(traceDir, "evidence-ax.json");
   if (fs.existsSync(axPath)) reference("ax", axPath);
+  const axFinalPath = path.join(traceDir, "ax-final.json");
+  if (fs.existsSync(axFinalPath)) reference("ax", axFinalPath);
   try {
     for (const name of fs.readdirSync(traceDir)) {
       if (/^evidence-shot-\d+\.(png|jpe?g)$/i.test(name)) {

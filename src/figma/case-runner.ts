@@ -396,7 +396,8 @@ function uploadFailureEvidence(
     "stdout.log",
     "native-ios.json",
     "native-android.json",
-    EXECUTION_EVIDENCE_FILE
+    EXECUTION_EVIDENCE_FILE,
+    "ax-final.json"
   ]) {
     try {
       const buffer = fs.readFileSync(path.join(context.runtime.traceDir(traceId), name));

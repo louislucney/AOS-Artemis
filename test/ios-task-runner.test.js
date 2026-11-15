@@ -1931,3 +1931,30 @@ test("脚本断言：未出现项在无验证时写入摘要提示且不改变�
   assert.match(record.result.summary, /⚠ 脚本断言未出现/);
   assert.match(record.result.summary, /永不出现/);
 });
+
+test("runLoop：失败时落 ax-final.json（最后观察的 AX 快照）", async () => {
+  const { runtime } = await makeRuntime();
+  const device = fakeDevice();
+  const { chat } = scriptedChat([
+    JSON.stringify({ thought: "无法完成", action: "fail", reason: "找不到入口" })
+  ]);
+  const started = payloadOf(
+    await maybeIosRunTask(
+      runtime,
+      { task_desc: "失败截图 AX", device_serial: UDID },
+      { entry: ENTRY, device, chat, listSimulators: bootedSims(), stepDelayMs: 0, settleMs: 0 }
+    )
+  );
+  const record = await waitFor(() => {
+    const current = getIosTask(started.trace_id);
+    return current && current.status !== "running" ? current : null;
+  });
+  assert.equal(record.status, "failed");
+  const ax = JSON.parse(
+    fs.readFileSync(path.join(runtime.traceDir(started.trace_id), "ax-final.json"), "utf8")
+  );
+  assert.equal(ax.schemaVersion, 1);
+  assert.equal(ax.traceId, started.trace_id);
+  assert.ok(Array.isArray(ax.nodes));
+  assert.ok(ax.nodes.some((node) => node.label === "搜索"));
+});

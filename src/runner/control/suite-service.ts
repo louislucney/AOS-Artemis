@@ -289,7 +289,8 @@ export class SuiteControlService {
       "native-ios.json",
       "native-android.json",
       "execution-evidence.json",
-      "evidence-ax.json"
+      "evidence-ax.json",
+      "ax-final.json"
     ]);
     const screenshotName = /^evidence-shot-\d+\.(png|jpe?g)$/i;
     const dir = path.join(input.rootPath, ".artemis", "remote-evidence", input.taskId, input.traceId);

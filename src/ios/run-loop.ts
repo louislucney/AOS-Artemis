@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type { IosDevice } from "../device/ios-actions.js";
 import { classifyIosSerial, type IosUiNode } from "../device/ios.js";
 import { IosDeviceLogTail } from "../device/ios-log.js";
@@ -14,7 +16,7 @@ import type { LlmEntry } from "../llm/registry.js";
 import type { SecretEntry } from "../web/llm/secrets.js";
 import { logWarn } from "../log.js";
 import type { Runtime } from "../runtime.js";
-import { errorMessage } from "../util.js";
+import { errorMessage, writeFileAtomic } from "../util.js";
 import { collectFailureLogs, resolveLogFeedback } from "./failure-logs.js";
 import { buildUserPrompt, IOS_SYSTEM_PROMPT, resolveHistorySteps, screenTextSummary } from "./prompt-history.js";
 import {
@@ -353,6 +355,10 @@ export async function runLoop(
     };
   }
 
+  let lastAxNodes: IosUiNode[] | null = null;
+  let lastAxStep: number | null = null;
+  let lastAxScreen: string | null = null;
+
   const finalize = async (
     status: "completed" | "failed" | "cancelled",
     summary: string
@@ -372,6 +378,29 @@ export async function runLoop(
       }
     }
     finish(record, status, finalSummary);
+    if (status === "failed" && lastAxNodes !== null) {
+      try {
+        const payload = redactIosValue(
+          {
+            schemaVersion: 1,
+            traceId: record.traceId,
+            step: lastAxStep,
+            screen: lastAxScreen,
+            nodes: lastAxNodes.slice(0, 500).map((node) => ({
+              type: node.type,
+              id: node.id,
+              label: node.label,
+              value: node.value,
+              rect: node.rect
+            }))
+          },
+          record.redactionSecrets ?? []
+        );
+        writeFileAtomic(path.join(record.runDir, "ax-final.json"), `${JSON.stringify(payload, null, 2)}\n`);
+      } catch (error) {
+        logWarn(`iOS 失败 AX 写入失败（${record.traceId}）: ${errorMessage(error)}`);
+      }
+    }
     if (runtime.crashCaptureEnabled()) {
       const processName = record.lockedAppPackage
         ? record.lockedAppPackage.split(".").pop() ?? null
@@ -434,6 +463,9 @@ export async function runLoop(
         visionLines,
         visionContext
       } = observation;
+      lastAxNodes = nodes;
+      lastAxStep = step;
+      lastAxScreen = screen;
       let perception = observation.perception;
       const instruction = record.instruction;
       record.instruction = null;
