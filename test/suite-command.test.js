@@ -2522,3 +2522,73 @@ test("suite parity --task: 读取 execution-evidence 评估跨端条件可比性
   assert.equal(payload.notComparable, 0);
   assert.equal(payload.cases[0].comparable, true);
 });
+
+test("suite parity --task --fail-on-not-comparable: 不可比时 exit 1", async () => {
+  const { runtime, store } = await setupRun({ cases: [caseEntry(1)] });
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: "cs", featureKey: "f" }],
+    platforms: ["ios", "android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  await store.recordSuiteRun({
+    rootPath: runtime.project.rootDir,
+    run: {
+      trigger: "cli",
+      regressionTaskId: task.id,
+      caseSetId: "cs",
+      featureKey: "f",
+      featureName: "Feature",
+      platform: "ios",
+      device: null,
+      appVersion: null,
+      runner: "local",
+      status: "completed",
+      startedAt: "2026-11-15T10:00:00.000Z",
+      finishedAt: "2026-11-15T10:01:00.000Z",
+      total: 1,
+      passed: 1,
+      failed: 0,
+      flaky: 0,
+      quarantined: 0,
+      failureDomains: {},
+      gateResult: "pass",
+      exitCode: 0,
+      manifestPath: null,
+      comparison: null
+    },
+    cases: [
+      {
+        caseId: "case-1",
+        name: "Case 1",
+        featureKey: "f",
+        platform: "ios",
+        status: "passed",
+        traceId: null,
+        failureDomain: null,
+        failureConfidence: null,
+        failureReason: null,
+        durationMs: null,
+        quarantined: false,
+        flaky: false,
+        verdict: null,
+        verdictBy: null,
+        verdictAt: null,
+        verdictNote: null,
+        jiraIssueKey: null
+      }
+    ]
+  });
+  const { code, logs } = await runCli(runtime, [
+    "parity",
+    "--task",
+    task.id,
+    "--fail-on-not-comparable",
+    "--json"
+  ]);
+  assert.equal(code, 1);
+  const payload = JSON.parse(logs.at(-1));
+  assert.equal(payload.notComparable, 1);
+  assert.equal(payload.failed, true);
+});

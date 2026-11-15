@@ -439,7 +439,8 @@ Usage:
                                      语义一致性：分类树/截断/IA/覆盖率/动态资产；单屏只给部分覆盖，unverified/offscreen > 0 不返回 layout-compatible（exit 0/1/2）
   mobile-testing-mcp suite ui-lint [options] 检查源码圆角/颜色/字号/字重/字体族字面量是否来自 ui-contract token；--per-screen 按 screen-map 逐屏收窄、--require-mapping 要求 extracted 屏有显式映射、--fail-on-stale-contract 契约指纹过期即失败（--contract/--allowlist/--screen-map/--changed/--require-complete/--fail-on-expiring/--expiry-warn-days <n>/--max-total-bytes <n>；--json；exit 0/1/2）
   mobile-testing-mcp suite parity --a <tests.json> --b <tests.json> [--json] 对比两端人类层用例（semanticId/步骤/预期/屏幕），忽略 taskDesc/i18n/a11y）
-  mobile-testing-mcp suite parity --task <id> [--json] 只读评估该任务两端 execution-evidence 的条件可比性（report-only）
+  mobile-testing-mcp suite parity --task <id> [--json] [--fail-on-not-comparable] [--fail-on-diff]
+                                     只读评估该任务两端 execution-evidence 的条件可比性（默认 report-only；两个 --fail-* 为显式门禁）
   mobile-testing-mcp suite text-weight-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]
                                      离线字重校准：成对图片 → 混淆矩阵/高置信误报/delta 分布/阈值建议
   mobile-testing-mcp suite reference-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]
@@ -5096,7 +5097,7 @@ async function suiteExecutionParity(
   runtime: Runtime,
   taskId: string,
   io: { log: (line: string) => void; errorLog: (line: string) => void },
-  json: boolean
+  options: { json: boolean; failOnNotComparable: boolean; failOnDiff: boolean }
 ): Promise<number> {
   const task = await runtime.store.getRegressionTask(runtime.project.rootDir, taskId).catch(() => null);
   if (task === null) {
@@ -5132,11 +5133,26 @@ async function suiteExecutionParity(
   const results = compareExecutionParity([...records.values()]);
   const comparable = results.filter((entry) => entry.comparable).length;
   const notComparable = results.length - comparable;
-  if (json) {
-    io.log(JSON.stringify({ taskId, comparable, notComparable, cases: results }, null, 2));
-    return 0;
+  const differing = results.filter(
+    (entry) =>
+      entry.comparable &&
+      entry.platforms.ios !== undefined &&
+      entry.platforms.android !== undefined &&
+      entry.platforms.ios.status !== entry.platforms.android.status
+  ).length;
+  const failed =
+    (options.failOnNotComparable && notComparable > 0) || (options.failOnDiff && differing > 0);
+  if (options.json) {
+    io.log(
+      JSON.stringify(
+        { taskId, comparable, notComparable, differing, failed, cases: results },
+        null,
+        2
+      )
+    );
+    return failed ? 1 : 0;
   }
-  io.log(`执行一致性: 用例 ${results.length} · comparable ${comparable} · not-comparable ${notComparable}`);
+  io.log(`执行一致性: 用例 ${results.length} · comparable ${comparable} · not-comparable ${notComparable} · 结果不同 ${differing}`);
   for (const entry of results) {
     const platforms = ["ios", "android"]
       .filter((platform) => entry.platforms[platform as "ios" | "android"] !== undefined)
@@ -5153,7 +5169,13 @@ async function suiteParity(
   io: { log: (line: string) => void; errorLog: (line: string) => void }
 ): Promise<number> {
   const taskId = flags.get("task");
-  if (taskId !== null) return await suiteExecutionParity(runtime, taskId, io, flags.bool("json"));
+  if (taskId !== null) {
+    return await suiteExecutionParity(runtime, taskId, io, {
+      json: flags.bool("json"),
+      failOnNotComparable: flags.bool("fail-on-not-comparable"),
+      failOnDiff: flags.bool("fail-on-diff")
+    });
+  }
   const a = flags.get("a");
   const b = flags.get("b");
   if (a === null || b === null) {

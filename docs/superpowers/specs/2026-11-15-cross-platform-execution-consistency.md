@@ -520,7 +520,7 @@ reset: {
 - 两端都执行 + 同一 data namespace/policy + 同预算维度 + 同复位模式 + 证据完整 → `comparable=true`。
 - 任一条件不同 → `not-comparable`，**不进入产品缺陷统计**。
 - 不要求 `ios.status == android.status`；通过率差异仍需人工/统计观察。
-- 已提供 `src/figma/execution-plan.ts` 的纯函数 parity 评估，并接入 `suite parity --task <id>`（report-only）；面板/任务报告仍未接入。
+- 已提供 `src/figma/execution-plan.ts` 的纯函数 parity 评估，并接入 `suite parity --task <id>`（默认 report-only，显式 `--fail-on-not-comparable` / `--fail-on-diff` 可门禁）与面板任务页；任务报告仍未接入。
 - `ui-divergence` 必须由截图/AX 证据支撑：两端失败均为 `case-target-missing`，但截图/AX 显示控件实际存在/可见，才能归为“用例未适配跨端 UI”（`case-defect`）；缺证据时标 `inconclusive`，不能猜。
 - 原始控件差异（Picker、Permission Dialog、Navigation Bar 等）应由 adapter 归一化或 target 层适配，不直接判产品缺陷。
 
