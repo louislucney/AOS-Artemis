@@ -213,6 +213,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 任务进度：`progress`（seq/phase/percent/caseId/traceId/message/errorCode）；失败证据上传（白名单/大小限制/面板链接）；失败即停。Web/LLM 任务执行前把 Excel 生成的 `taskDesc` 落盘 `.artemis/web/jobs/<taskId>/case-plan.json`，便于追溯脚本依据。
 - 失败域（确定性）：`app-defect`/`environment`/`api-error`/`data-environment`/`behavior-or-design`/`design-inference`/`case-defect`/`unclassified`；只有经裁决的 `app-defect` 自动建 Jira。
 - **runner 包**：0.3.0 双端；offline 包的 `runner.cmd` 会检测 `deps/win32-site-packages.zip` 并走 `setup-offline.cmd`；包契约 `npm run check:runner-bundle`。
+- **设备页下载区**：右侧只保留下载入口与一句解压提示。Windows 只列 MCP runner 离线包；macOS 保留在线/离线/adb-host 三个入口。setup/产物/状态说明不再常驻侧栏。
 
 ---
 

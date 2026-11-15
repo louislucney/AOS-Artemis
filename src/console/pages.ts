@@ -982,53 +982,17 @@ ADB_SERVER_SOCKET=tcp:&lt;宿主IP&gt;:5037</code></pre>
           emptyHtml:
             '<span class="muted">当前筛选下没有设备。</span> <a href="/panel?section=devices">清除筛选</a>'
         });
-  const aside = `<aside class="c-device-aside" id="runner-guide" aria-label="设备接入说明">
+  const aside = `<aside class="c-device-aside" id="runner-guide" aria-label="执行机下载">
     <section class="c-card" id="runner-download">
-      <h2 class="c-card-title">接入执行机（Android / iOS）</h2>
-      <p class="c-card-subtitle"><strong>MCP runner</strong> 在宿主本机运行 MCP 执行代码：中心下发任务，runner 用本机 adb / 模拟器执行并回传结果。Windows 跑 Android；macOS 跑 iOS（模拟器/真机）和 Android。</p>
-      <p class="c-card-subtitle c-card-subtitle-tight">LLM 由中心代理提供（runner 只拿 runner token），真实 provider key 不出中心；runner 本机不需要填 LLM key。</p>
-      <p class="c-card-subtitle c-card-subtitle-tight">手机直接插在 MCP 服务所在的 Mac 时，用系统 adb 即可，不需要下载包。</p>
-      <p class="c-card-subtitle c-card-subtitle-tight">前置：Node 20+、uv、Python 3.12；iOS 还需要 Xcode、Appium + xcuitest、签名团队与 iOS 18+ Remote XPC 隧道。包内含 adb、MCP 代码与 Artemis 源码。</p>
-      <div class="c-download-grid" aria-label="MCP runner 安装包下载">
-        <a class="c-button c-button-primary" href="/panel/runner-bundle?role=mcp-runner&amp;platform=win32&amp;arch=x64" download>Windows MCP runner（Android）</a>
+      <h2 class="c-card-title">下载执行机</h2>
+      <p class="c-card-subtitle">下载后解压，按包内 README 完成 setup 并启动。</p>
+      <div class="c-download-grid" aria-label="执行机安装包下载">
+        <a class="c-button c-button-primary" href="/panel/runner-bundle?role=mcp-runner&amp;platform=win32&amp;arch=x64&amp;variant=offline" download>Windows 离线版（Android，内置依赖，约 300MB）</a>
         <a class="c-button c-button-primary" href="/panel/runner-bundle?role=mcp-runner&amp;platform=darwin&amp;arch=arm64" download>macOS MCP runner（iOS/Android）</a>
-      </div>
-      <p class="c-card-subtitle c-card-subtitle-tight">公司网络无法访问 PyPI 时，用离线版（内置依赖，约 300MB；解压后约 850MB）。Windows 用 <code>setup-offline.cmd</code>，macOS 用 <code>setup-offline.command</code>（需 uv + Python 3.12）。</p>
-      <div class="c-download-grid" aria-label="离线 MCP runner 下载">
-        <a class="c-button" href="/panel/runner-bundle?role=mcp-runner&amp;platform=win32&amp;arch=x64&amp;variant=offline" download>Windows 离线版（内置依赖，约 300MB）</a>
         <a class="c-button" href="/panel/runner-bundle?role=mcp-runner&amp;platform=darwin&amp;arch=arm64&amp;variant=offline" download>macOS 离线版（arm64，内置依赖，约 300MB）</a>
-      </div>
-      <p class="c-card-subtitle c-card-subtitle-tight">只把手机插在远端、由中心直接连 adb 时，仍可用 adb-host 小包（只含 platform-tools）。</p>
-      <div class="c-download-grid" aria-label="adb-host 安装包下载">
-        <a class="c-button" href="/panel/runner-bundle?role=adb-host&amp;platform=win32&amp;arch=x64" download>Windows adb-host（约 8MB）</a>
         <a class="c-button" href="/panel/runner-bundle?role=adb-host&amp;platform=darwin&amp;arch=arm64" download>macOS adb-host（约 16MB）</a>
       </div>
-      <a class="c-button" href="/panel/runner-toolchain">单独下载 platform-tools / 依赖工具</a>
-    </section>
-    <section class="c-card" id="runner-artifacts" aria-label="执行机产物服务说明">
-      <h2 class="c-card-title">产物服务（中心打开批次/证据）</h2>
-      <p class="c-card-subtitle">runner 默认在 <code>0.0.0.0:8770</code> 提供只读产物服务；中心要能访问它才能打开批次清单、trace 与截图。面板显示「未广播产物基址」时按下面检查。</p>
-      <ol class="c-card-subtitle">
-        <li>Windows 管理员 PowerShell 放行 8770（建议只允许中心 IP）：<br><code>New-NetFirewallRule -DisplayName "mobile-testing runner artifacts" -Direction Inbound -Protocol TCP -LocalPort 8770 -RemoteAddress &lt;中心IP&gt; -Action Allow</code></li>
-        <li>多网卡/NAT/VPN 时，优先用中心可解析的主机名/DNS 名（不要长期写死 IP）：<br><code>AOS_RUNNER_ADVERTISE_URL=http://&lt;中心可解析的主机名&gt;:8770</code></li>
-        <li>port 被占用时改 <code>AOS_RUNNER_ARTIFACT_PORT=8771</code> 并同步 <code>AOS_RUNNER_ADVERTISE_URL</code> 与防火墙端口；设 <code>0</code> 则关闭产物服务。</li>
-        <li>改完重启 <code>runner.cmd</code>，中心执行机列表的「产物基址」应显示 URL。</li>
-      </ol>
-    </section>
-    <section class="c-card" id="ios-device-guide" aria-label="iOS 设备接入说明">
-      <h2 class="c-card-title">iOS 设备</h2>
-      <p class="c-card-subtitle"><strong>iOS 模拟器</strong>：在 macOS MCP runner 所在机器上（simctl/idb）；下载 macOS MCP runner，启动模拟器后把 UDID 传给 <code>mobile_run_task</code>。</p>
-      <p class="c-card-subtitle"><strong>iOS 真机</strong>：iPhone 必须连接 Mac，不能插 Windows；在 macOS MCP runner 上运行 Appium/WDA，配 <code>AOS_IOS_XCODE_ORG_ID</code>（必填）与 <code>AOS_APPIUM_URL</code>（可选），iOS 18+ 保持 Remote XPC 隧道。用 <code>mobile_run_task</code> 执行。</p>
-      <p class="c-card-subtitle">iOS 不使用 adb-host。签名/隧道细节见 README「iOS 真机」。</p>
-    </section>
-    <section class="c-card">
-      <h2 class="c-card-title">状态口径</h2>
-      <dl class="c-status-legend">
-        <div><dt>空闲</dt><dd>执行机在线、无有效租约、无进行中的任务</dd></div>
-        <div><dt>占用</dt><dd>存在未过期租约，或任务正在执行</dd></div>
-        <div><dt>离线</dt><dd>执行机心跳超过 TTL 未更新</dd></div>
-      </dl>
-      <p class="c-card-subtitle c-card-subtitle-tight">页面加载时快照；刷新查看最新状态。</p>
+      <p class="c-card-subtitle c-card-subtitle-tight">Windows 只提供离线包；macOS 按需选择在线版、离线版或 adb-host。</p>
     </section>
   </aside>`;
   const body = `

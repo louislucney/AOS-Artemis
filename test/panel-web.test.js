@@ -1546,7 +1546,7 @@ test("panel web: 项目页 runner 区块（在线灯/设备 chips/工具徽标�
   assert.doesNotMatch(cleanHtml.body, /http-equiv="refresh"/, "无 runner 不挂刷新");
 });
 
-test("panel web: runner 未广播产物基址 → 通用示例与配置入口（不写死 IP）", async () => {
+test("panel web: runner 未广播产物基址 → 通用示例（不写死 IP）", async () => {
   const { deps, projectDir, store } = await makeHarness();
   await store.upsertRunner({
     rootPath: projectDir,
@@ -1567,7 +1567,7 @@ test("panel web: runner 未广播产物基址 → 通用示例与配置入口（
   assert.match(html.body, /&lt;主机名&gt;/, "示例优先主机名");
   assert.match(html.body, /固定 IP 仅兜底/, "不鼓励写死 IP");
   assert.match(html.body, /放行防火墙 8770/, "点名防火墙这一步");
-  assert.match(html.body, /section=devices#runner-artifacts/, "给产物服务配置入口");
+  assert.doesNotMatch(html.body, /#runner-artifacts/, "不再保留已移除的产物服务侧栏");
   assert.doesNotMatch(html.body, /192\.168\.3\.21/, "不写死具体 IP");
 });
 
