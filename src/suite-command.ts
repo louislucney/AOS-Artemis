@@ -65,6 +65,7 @@ import {
   checkHostDisk,
   checkIosDeviceStorage
 } from "./figma/host-preflight.js";
+import { readAndroidSystemDialog } from "./figma/android-system-dialog.js";
 import {
   loadReconciliation,
   reconciliationFilePath,
@@ -948,6 +949,28 @@ async function suiteRunTask(
         .catch(() => false);
       io.errorLog(`环境错误：${boot.message}`);
       return 2;
+    }
+    const dialog = await readAndroidSystemDialog({
+      serial: device,
+      env: runtime.baseEnv
+    });
+    if (dialog.status === "dialog") {
+      const policy = (runtime.baseEnv.AOS_RUNNER_SYSTEM_DIALOG_POLICY ?? "block").trim();
+      const detail = `系统弹窗：${dialog.dialog.title ?? "未命名"}${dialog.dialog.buttons.length > 0 ? `（按钮：${dialog.dialog.buttons.join(" / ")}）` : ""}`;
+      if (policy !== "warn") {
+        await progress
+          .report("failed", 5, { message: detail, errorCode: "host-alert" })
+          .catch(() => undefined);
+        await runtime.store
+          .updateRegressionTask(runtime.project.rootDir, task.id, {
+            status: "failed",
+            expectStatuses: ["pending", "claimed", "running"]
+          })
+          .catch(() => false);
+        io.errorLog(`环境错误：${detail}`);
+        return 2;
+      }
+      io.log(`警告：${detail}（AOS_RUNNER_SYSTEM_DIALOG_POLICY=warn）`);
     }
     const storage = await checkAndroidDeviceStorage({
       serial: device,
