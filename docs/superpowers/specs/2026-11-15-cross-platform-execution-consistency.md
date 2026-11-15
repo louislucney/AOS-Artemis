@@ -570,9 +570,8 @@ reset: {
    - 结论决定 `cooldownMs`、`riskLevel` 和是否需要外部测试数据服务。
 
 2. **Token/中断恢复 Spike**
-   - 注入超长上下文/多轮 Agent，观察预算熔断点；
-   - 统计 prompt/completion/cache 比例；
-   - 验证熔断后 App 是否处于“半注册”，现有 reset 能否恢复；
+   - 数据侧已完成：[`ios-token-budget-spike-2026-11-15.md`](../../reports/ios-token-budget-spike-2026-11-15.md)（周五 10 个 trace：prompt/completion 10.6x–338x，单 case 4.01M prompt）；
+   - 仍需真实设备：注入预算熔断，验证 App 是否处于“半注册”，现有 reset 能否恢复；
    - 结论决定 `maxTokens`、`maxPromptTokens`、`compressionThreshold` 和 `app-internal-reset` 需求。
 
 ### Phase 1：可观测性与数据
