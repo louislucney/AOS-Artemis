@@ -222,6 +222,39 @@ export interface CaseRunOutcome {
   terminal: boolean;
 }
 
+/** 取消/中断时把仍为 running 的 trace 落成终态，避免中心/报告里留下“永远运行中”的证据。 */
+function markTraceCancelled(traceDir: string, traceId: string, message: string): void {
+  const statusFile = path.join(traceDir, "status.json");
+  let payload: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(statusFile, "utf8"));
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      payload = parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* trace 可能已被执行机清理；仍尝试写终态 */
+  }
+  try {
+    writeFileAtomic(
+      statusFile,
+      `${JSON.stringify(
+        {
+          ...payload,
+          trace_id: traceId,
+          status: "cancelled",
+          error: message,
+          message: "任务已取消",
+          end_time: Date.now() / 1000
+        },
+        null,
+        2
+      )}\n`
+    );
+  } catch (error) {
+    logWarn(`写入取消 trace 终态失败：${traceId} · ${errorMessage(error)}`);
+  }
+}
+
 function uploadFailureEvidence(
   context: CaseRunContext,
   caseId: string,
@@ -676,6 +709,7 @@ export async function executeCase(
 
   const deadline = now() + context.pollTimeoutMs;
   const traceDir = runtime.traceDir(traceId);
+  let aborted = false;
   let status = await runtime.traceStatus(traceId);
   let terminalError =
     isTerminal(status?.status) === true
@@ -684,7 +718,12 @@ export async function executeCase(
   while (!isTerminal(status?.status) && terminalError === null && now() < deadline) {
     if (context.shouldAbort?.() === true) {
       terminalError = "任务已取消，停止等待 Artemis 终态";
-      await context.runtime.proxy.markForRestart().catch(() => undefined);
+      aborted = true;
+      await context.runtime.proxy
+        .callTool("mobile_manage_task", { action: "stop", trace_id: traceId })
+        .catch((error) => {
+          logWarn(`取消任务时停止 Artemis 失败：trace=${traceId} · ${errorMessage(error)}`);
+        });
       break;
     }
     await sleep(context.pollIntervalMs);
@@ -710,6 +749,22 @@ export async function executeCase(
       }),
       status: "failed",
       error: terminalError
+    } satisfies TaskStatus;
+  }
+  if (aborted) {
+    markTraceCancelled(traceDir, traceId, terminalError ?? "任务已取消");
+    status = {
+      traceId: status?.traceId ?? traceId,
+      status: "cancelled",
+      deviceSerial: status?.deviceSerial ?? context.deviceSerial,
+      error: terminalError ?? "任务已取消",
+      message: status?.message ?? null,
+      testSummary: status?.testSummary ?? null,
+      notesDir: status?.notesDir ?? null,
+      stderrLog: status?.stderrLog ?? null,
+      stdoutLog: status?.stdoutLog ?? null,
+      startTimeMs: status?.startTimeMs ?? null,
+      endTimeMs: status?.endTimeMs ?? Date.now()
     } satisfies TaskStatus;
   }
   await runtime.syncTaskStatuses();

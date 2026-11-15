@@ -88,7 +88,11 @@ const INSTALL_PATTERN =
 const LOGIN_PATTERN = /(登录|登陆|log\s?in|sign\s?in|账号|account|credentials?)/i;
 const DATA_PATTERN =
   /(数据|列表|list|feed|为空|空列表|无数据|没有数据|no\s+data|empty|网络|network|连接(失败|超时)|connection|加载失败|load(ing)?\s+failed)/i;
+/** 只有真实数据/登录状态信号才归 data-environment；屏幕标题里的 "Login / Register" 不算。 */
+const DATA_ENVIRONMENT_PATTERN =
+  /(请先登录|需要先?登录|未登录|登录后重试|登录(?:失败|超时|异常)|login\s+(?:failed|error|timed\s*out)|sign\s*in\s+(?:failed|error)|未注册|已注册|已存在|不存在|账号(?:不存在|已存在|已注册|未注册|被锁定|冻结)|account\s+(?:not\s+found|already\s+exists|locked)|数据为空|无数据|列表为空|没有数据|no\s+data|empty\s+(?:list|data)|网络(?:失败|异常|超时)|network\s+(?:failed|error)|连接(?:失败|超时)|connection\s+(?:failed|timed\s*out)|加载失败|load(?:ing)?\s+failed)/i;
 const CASE_PATTERN = /(参数|invalid|格式|task_desc|任务描述|用例)/i;
+const BUDGET_PATTERN = /(超出步数上限|步数上限|max\s*steps|token\s*budget|token.*上限|执行预算)/i;
 
 function failureTexts(input: FailureInput): string[] {
   const texts: string[] = [];
@@ -144,6 +148,16 @@ export function classifyFailure(input: FailureInput): FailureClassification {
     }
   }
 
+  const budgetText = texts.find((text) => BUDGET_PATTERN.test(text));
+  if (budgetText) {
+    return {
+      domain: "case-defect",
+      confidence: "medium",
+      reason: `执行预算耗尽（非产品行为断言）：${budgetText}`,
+      evidence: [budgetText]
+    };
+  }
+
   const installText = texts.find((text) => INSTALL_PATTERN.test(text));
   if (installText) {
     return {
@@ -175,7 +189,7 @@ export function classifyFailure(input: FailureInput): FailureClassification {
     };
   }
 
-  const dataText = texts.find((text) => LOGIN_PATTERN.test(text) || DATA_PATTERN.test(text));
+  const dataText = texts.find((text) => DATA_ENVIRONMENT_PATTERN.test(text));
   if (dataText) {
     const precondition = matchedPrecondition(dataText, input.preconditions);
     return {

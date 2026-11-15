@@ -201,7 +201,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 
 ### 5.3 runner / 多主机
 
-- `suite runner`：心跳 → 原子领取 → 复用 `suite run --task` → 回写；中心 PG 或 `MOBILE_TESTING_RUNNER_CONTROL_URL` HTTP 控制面 + 本地 FileStore。
+- `suite runner`：心跳 → 原子领取 → 复用 `suite run --task` → 回写；中心 PG 或 `MOBILE_TESTING_RUNNER_CONTROL_URL` HTTP 控制面 + 本地 FileStore。人工取消时先向 Artemis 发送 `mobile_manage_task stop`，并把仍为 `running` 的 iOS trace 落成 `cancelled` 终态，避免远端证据永远显示运行中。
 - 跨机：中心默认项目 + tests/flows 下发；runner **不持有** provider key、中心项目路径；LLM 走中心代理（`AOS_LLM_FROM_CENTER=1`）。跨机 runner 复用中心项目登记，不在 runner host 重复建项目行；面板「去下发」与 `suite task create --host` 按该 runner 注册识别跨机项目。
 - 鉴权：`AOS_RUNNER_HOST_TOKENS`/文件优先；全局 `MOBILE_TESTING_RUNNER_JOB_TOKEN` + `X-AOS-Host-Id` 兼容；中心侧 `AOS_RUNNER_SHARED_LLM=1` + `AOS_RUNNER_DEFAULT_PROJECT`。
 - 共享 token：全局 token 下 Host ID 仍每机唯一；仅 `/panel/api/runners/suite/llm/proxy/*` 允许不带 `X-AOS-Host-Id`（Artemis/OpenAI 客户端只带 Authorization；项目 host 校验由 `assertLlmProject` 负责），其他控制面仍强制 host。
@@ -211,7 +211,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - **测试资料占位符**：套件回归任务可挂 **secret materials**（面板「② 参数 → 测试资料」或 `suite task create --materials <id>`）；runner 通过控制面 `/tasks/:id/materials` 下载并用 `alias=value`/JSON 解析，用例 `taskDesc` 的 `<secret:alias>` 提交前替换；台账/审计保留模板、不落明文；缺 alias 按 `data-environment` 失败且不提交 Artemis。非 secret 资料不可挂。**自动注入**：勾选资料后，runner 会把未被用例显式引用的 alias 以 `【任务测试资料】` 段（label/alias/screen + `<secret:alias>`）追加到每个非 native 用例的执行 taskDesc，因此用户不需要预先改写用例；显式占位符仍优先且不会重复追加，台账仍保存原始模板。**测试邮箱自动递增**：值形如 `base+202@domain` 时，runner 按 base/domain/起始号分组，同一用例内 `reg_email`/`reg_email_confirm` 共用下一个号（+203），下一条用例继续 +204、+205…；状态落项目 `.artemis/secret-sequences.json`，源 JSON/台账不修改，避免注册用例复用已注册邮箱。
 - **字段映射（native 确定性填写）**：secret JSON 可为每个 alias 附 `target`/`fallbackTargets`/`screen`；native `type` + `secretRef` 省略 target 时按映射定位，填写后回读 AX value/label 比对（密码跳过；不一致 `field-mismatch`，屏幕不符 `field-screen-mismatch`）。`suite field-map probe --device <serial>` 只读列出可编辑控件（不输出输入值）。taskDesc/Excel 路径仍只有文本替换，不承诺多字段位置确定性。
 - 任务进度：`progress`（seq/phase/percent/caseId/traceId/message/errorCode）；失败证据上传（白名单/大小限制/面板链接）；失败即停。Web/LLM 任务执行前把 Excel 生成的 `taskDesc` 落盘 `.artemis/web/jobs/<taskId>/case-plan.json`，便于追溯脚本依据。
-- 失败域（确定性）：`app-defect`/`environment`/`api-error`/`data-environment`/`behavior-or-design`/`design-inference`/`case-defect`/`unclassified`；只有经裁决的 `app-defect` 自动建 Jira。
+- 失败域（确定性）：`app-defect`/`environment`/`api-error`/`data-environment`/`behavior-or-design`/`design-inference`/`case-defect`/`unclassified`；步数/token 执行预算耗尽归 `case-defect`（不冒充产品行为），屏幕标题里的 Login/Register 等文本不单独触发 `data-environment`；只有经裁决的 `app-defect` 自动建 Jira。
 - **runner 包**：0.3.0 双端；offline 包的 `runner.cmd` 会检测 `deps/win32-site-packages.zip` 并走 `setup-offline.cmd`；包契约 `npm run check:runner-bundle`。
 - **设备页下载区**：右侧只保留下载入口与一句解压提示。Windows 只列 MCP runner 离线包；macOS 保留在线/离线/adb-host 三个入口。setup/产物/状态说明不再常驻侧栏。
 

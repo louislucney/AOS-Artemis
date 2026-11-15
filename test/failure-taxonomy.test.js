@@ -113,6 +113,52 @@ test("failure taxonomy: assertion failures without other signals are behavior-or
   assert.deepEqual(result.evidence, ["校验金额 / expected 42 got 41"]);
 });
 
+test("failure taxonomy: 屏幕标题里的 Login/Register 不误判为 data-environment", () => {
+  const result = classifyFailure({
+    status: status({
+      testSummary: {
+        taskStatus: "failed",
+        passed: 0,
+        failed: 1,
+        inconclusive: null,
+        unchecked: null,
+        failedItems: [
+          failedItem(
+            "步骤2-4：App Intro 三个引导页",
+            "当前屏幕已是 'Register' 选卡页，未出现任何 Intro 引导页内容"
+          ),
+          failedItem(
+            "步骤5：Landing Page 仅显示单一按钮",
+            "当前界面为 Register 选卡页；元素列表无 Email Address、Continue、Forgot your registered email?"
+          )
+        ]
+      }
+    })
+  });
+  assert.equal(result.domain, "behavior-or-design");
+  assert.equal(result.confidence, "high");
+  assert.doesNotMatch(result.reason, /数据环境/);
+});
+
+test("failure taxonomy: 步数上限属于预算/用例问题，不归产品行为", () => {
+  const result = classifyFailure({
+    status: status({
+      error: "超出步数上限（30），任务未完成",
+      testSummary: {
+        taskStatus: "failed",
+        passed: 0,
+        failed: 1,
+        inconclusive: null,
+        unchecked: null,
+        failedItems: [failedItem("超出步数上限（30），任务未完成", "超出步数上限（30），任务未完成")]
+      }
+    })
+  });
+  assert.equal(result.domain, "case-defect");
+  assert.equal(result.confidence, "medium");
+  assert.match(result.reason, /执行预算耗尽/);
+});
+
 test("failure taxonomy: inferred-script failures classify as design-inference", () => {
   const failedSummary = {
     taskStatus: "failed",
