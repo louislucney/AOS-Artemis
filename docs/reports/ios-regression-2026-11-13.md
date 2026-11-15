@@ -232,3 +232,107 @@ Virtual Card 检查中发现：
 - 人工取消时先向 Artemis 发送 `mobile_manage_task stop`，并把仍为 `running` 的 trace 落成 `cancelled` 终态，避免远端证据永远显示运行中。
 - 对应测试：`test/failure-taxonomy.test.js`、`test/case-runner-abort.test.js`。
 
+## 9. Android 对照与跨端一致性
+
+这一节回答“同样的问题在 Android 会怎样”，重点不是 Android 一定会失败，而是**两端的执行过程目前不可直接比较**。
+
+### 9.1 行为对照
+
+| 问题 | iOS（周五实际） | Android（当前实现） | 一致性风险 |
+|---|---|---|---|
+| 测试数据隔离 | `+202` 邮箱被复用；手机号固定 | 同一个 `case-runner` 也会分配 `caseSecrets`，邮箱递增逻辑同样生效 | 邮箱递增只覆盖邮箱；手机号/OTP/卡号仍共享。Android 先注册后，iOS 会被后端判定已注册，反之亦然 |
+| 序号状态 | 执行机本地 `.artemis/secret-sequences.json` | 同一执行机、同一项目也写这个文件 | 两端在同一 runner 上会共享序号；分到不同 runner 时各自从 `+202` 开始，仍会撞号 |
+| 步数/预算 | iOS LLM 默认 30 步，超限失败 | Android proxy 不受 `AOS_IOS_MAX_STEPS` 约束，由 Artemis/轮询/超时/token 预算决定；Android native 执行固定 `actions[]`，没有 30 步计数器 | 同一个用例在两端可能一个“步数耗尽”、一个“跑得更久”，通过率不可比 |
+| 证据 | 远端通常只有 `status.json` | proxy 有 status/stderr/stdout；native 有 `native-android.json`；iOS native 有 `native-ios.json` | 两端证据字段/步骤粒度不同，无法做同口径失败分析 |
+| 复位 | 已安装 TestFlight App 通常只重启，不清数据 | `adb` 侧有复位能力，但当前没有统一的“清数据/全新安装”策略 | Intro/引导页/注册状态在两端可能不同，前置条件不可复现 |
+| 失败分类 | 共享 `classifyFailure` | 共享 `classifyFailure` | 输入信号不同（iOS 验证摘要 vs Android logcat/API），同一失败可能落在不同域 |
+| 环境预检 | Appium/XCUITest/WDA/签名在领取后检查 | adb/设备/安装检查；同样没有统一的派发前门禁 | 两端都在消耗任务后才暴露环境问题 |
+
+### 9.2 当前代码层的判断
+
+- **数据隔离**：`src/figma/case-runner.ts` 在进入 native/proxy 之前统一分配 `caseSecrets`，所以 `base+NNN@domain` 的邮箱递增对 Android 也生效。问题是它只覆盖“看起来像邮箱”的值，且序号状态是执行机本地文件。
+- **步数**：`AOS_IOS_MAX_STEPS` 只在 `src/ios/run-loop.ts` 使用；Android proxy 和 Android native 没有同一个预算字段。
+- **证据**：`uploadFailureEvidence` 会上传 `status.json`、`stderr.log`、`stdout.log`、`native-ios.json`、`native-android.json`，但没有统一的逐步骤 `run.json`/截图 schema。
+- **复位**：`suiteResetFor` 只负责选 Android/iOS 复位函数；“复用已安装 App”不等于“清 App 数据”。
+
+### 9.3 一致性应该怎么保证
+
+目标不是让 Android/iOS 结果相同，而是让**执行过程可比较、失败原因可归因**。
+
+#### A. 统一的 ExecutionPlan
+
+在任务创建时生成，而不是每个用例各读各的环境：
+
+```text
+ExecutionPlan {
+  caseId, platform, device, engine,
+  reset: fresh | reuse | none,
+  budget: { maxSteps, maxActions, maxWallMs, maxTokens },
+  data: { namespace, leaseId, email, phone, otp, card },
+  evidence: requiredSteps
+}
+```
+
+两端 adapter 必须按同一份 plan 执行；plan 进入任务/批次记录，失败时能回答“是不是预算/数据/复位不同”。
+
+#### B. 测试数据代理（Data broker）
+
+- 邮箱、手机号、OTP、Smiles 卡号统一分配，不只递增邮箱。
+- 以 `suiteRunId + caseId + platform` 为租约键，原子预留、用完标记 consumed；跨 runner 通过中心分配，不能依赖本地文件。
+- 注册成功/失败/TNC 使用不同 data profile；需要“未注册账号”的用例不能复用成功注册的数据。
+- 同一用例要在两端跑时：
+  - 注册类：每端独立身份（平台后缀/独立号码池）；
+  - 登录类：使用预先种好的稳定账号，不动态注册；
+  - 不要默认“一个账号两端都能注册”。
+
+#### C. 统一预算语义
+
+定义与引擎无关的预算字段，再由 adapter 映射：
+
+| 统一字段 | iOS LLM | Android proxy | Android native |
+|---|---|---|---|
+| `maxSteps` | `AOS_IOS_MAX_STEPS` | 由 Artemis/轮询预算映射 | `actions.length` + step timeout |
+| `maxWallMs` | 用例轮询超时 | 用例超时 | 用例超时 |
+| `maxTokens` | `AOS_WEB_LLM_MAX_TOKENS_PER_CASE` | 不适用时标注 `null` | 不适用时标注 `null` |
+
+状态和报告统一记录 `engineBudget`、`used`、`exhausted`；预算耗尽归 `case-defect`，不要混进产品行为。
+
+#### D. 统一复位策略
+
+- `fresh`：Android uninstall/clear data；iOS 模拟器 uninstall/erase，真机 TestFlight 无法清数据时显式 `unsupported`，不要假装复位成功。
+- `reuse`：只重启 App，保留登录态，适合登录后业务用例。
+- `none`：明确依赖外部状态。
+- 复位结果写入 trace；失败时先区分“复位失败”和“用例失败”。
+
+#### E. 统一证据 schema
+
+每个用例至少写同一份 `run.json`：
+
+```text
+{
+  platform, engine, device, caseId,
+  reset: {mode, ok, detail},
+  budget: {limit, used, exhausted},
+  dataLease: {namespace, leaseId, keys[]},
+  steps: [{index, action, target, observed, expected, status, screenshot, at}],
+  final: {status, errorCode, failureDomain}
+}
+```
+
+远端只上传 status 的现状要改：至少上传 `run.json` + 失败步骤截图；否则 iOS/Android 的失败不可比。
+
+#### F. 跨端一致性门禁
+
+- 任务报告增加 `executionParity`：同一 case 是否两端都执行、数据 key 是否同源、复位模式、预算是否耗尽、证据是否完整。
+- 不要求两端 pass/fail 相同；**要求“同条件”**。条件不同的用例标 `not-comparable`，不进入产品缺陷统计。
+- `suite parity` 目前只比 tests.json 的人类层；建议增加运行层对比（数据租约/预算/证据），而不是替代现有静态 parity。
+
+### 9.4 建议落地顺序
+
+1. **统一 run.json + 上传失败截图**（先让两端证据可比）。
+2. **数据代理**：邮箱/手机号/OTP 一次性租约；跨 runner 也生效。
+3. **预算接口**：任务级 `maxSteps/maxWallMs`，映射 iOS/Android。
+4. **复位策略**：fresh/reuse/none，iOS 不支持时如实标注。
+5. **派发前预检**：Android adb/设备、iOS Appium/XCUITest/WDA/签名，统一 `PreflightReport`。
+6. **executionParity 报告/门禁**：条件不一致标 `not-comparable`，不直接算产品失败。
+
