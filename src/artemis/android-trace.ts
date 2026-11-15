@@ -11,6 +11,14 @@ import { logWarn } from "../log.js";
  * schema drift is probed explicitly (PRAGMA table_info) and logged — the
  * bounded read-only binding is recorded in ADR-0009. */
 
+export interface AndroidAxNode {
+  type: string;
+  id: string;
+  label: string;
+  value: string;
+  rect: { x: number; y: number; width: number; height: number };
+}
+
 export interface AndroidTraceStep {
   stepNumber: number;
   action: string | null;
@@ -21,6 +29,8 @@ export interface AndroidTraceStep {
   /** Visible texts from the step's UI tree (fallback when OCR is empty). */
   preTreeLabels: string[];
   postTreeLabels: string[];
+  /** 最后观察屏的完整 UI tree（存在 ui_tree 列时）。 */
+  postTree?: AndroidAxNode[];
 }
 
 export interface AndroidTraceObservations {
@@ -251,6 +261,56 @@ export async function readAndroidLastScreenshot(
   }
 }
 
+function rectOfRecord(record: Record<string, unknown>): { x: number; y: number; width: number; height: number } | null {
+  const parsed = record.parsed_bounds;
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const p = parsed as Record<string, unknown>;
+    const left = Number(p.left);
+    const top = Number(p.top);
+    const right = Number(p.right);
+    const bottom = Number(p.bottom);
+    if ([left, top, right, bottom].every((value) => Number.isFinite(value)) && right > left && bottom > top) {
+      return { x: left, y: top, width: right - left, height: bottom - top };
+    }
+  }
+  const raw = record.bounds;
+  if (typeof raw === "string") {
+    const match = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(raw);
+    if (match !== null) {
+      const [left, top, right, bottom] = match.slice(1).map(Number);
+      if (right! > left! && bottom! > top!) {
+        return { x: left!, y: top!, width: right! - left!, height: bottom! - top! };
+      }
+    }
+  }
+  return null;
+}
+
+function treeNodesOf(raw: unknown): AndroidAxNode[] {
+  const parsed = jsonOf(raw);
+  if (!Array.isArray(parsed)) return [];
+  const nodes: AndroidAxNode[] = [];
+  for (const entry of parsed) {
+    if (nodes.length >= 500) break;
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const rect = rectOfRecord(record);
+    if (rect === null) continue;
+    const text = typeof record.text === "string" ? record.text.trim() : "";
+    const desc = typeof record["content-desc"] === "string" ? record["content-desc"].trim() : "";
+    const accessibility =
+      typeof record.accessibilityText === "string" ? record.accessibilityText.trim() : "";
+    nodes.push({
+      type: typeof record.class === "string" ? record.class : "",
+      id: typeof record["resource-id"] === "string" ? record["resource-id"] : "",
+      label: text || desc || accessibility,
+      value: text,
+      rect
+    });
+  }
+  return nodes;
+}
+
 export async function readAndroidTraceObservations(
   dbPath: string,
   traceId: string
@@ -282,6 +342,11 @@ export async function readAndroidTraceObservations(
     } catch {
       treeStatement = null;
     }
+    const treeOfImage = (name: unknown): AndroidAxNode[] => {
+      if (treeStatement === null || typeof name !== "string" || name === "") return [];
+      const imageRow = treeStatement.all(name)[0] as Record<string, unknown> | undefined;
+      return treeNodesOf(imageRow?.ui_tree);
+    };
     const labelsOfImage = (name: unknown): string[] => {
       if (typeof name !== "string" || name === "") return [];
       const imageRow = imageStatement.all(name)[0] as Record<string, unknown> | undefined;
@@ -327,7 +392,10 @@ export async function readAndroidTraceObservations(
         preLabels,
         postLabels,
         preTreeLabels,
-        postTreeLabels
+        postTreeLabels,
+        ...(treeOfImage(row.post_image_name).length > 0
+          ? { postTree: treeOfImage(row.post_image_name) }
+          : {})
       });
     }
     return { steps, labels: [...labels], taps, transitions };

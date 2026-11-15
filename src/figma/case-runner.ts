@@ -37,6 +37,7 @@ import { loadWebSecrets, resolvePlaceholders, type SecretEntry } from "../web/ll
 import { allocateSequencedSecrets } from "../tasks/secret-sequence.js";
 import { collectEvidenceScreenshots } from "./evidence-files.js";
 import { collectEvidenceAx } from "./evidence-ax.js";
+import { readAndroidTraceObservations } from "../artemis/android-trace.js";
 import type { LogcatWindowResult } from "../device/logcat.js";
 import type { AppResetOutcome } from "../device/reset.js";
 import type { Runtime } from "../runtime.js";
@@ -291,6 +292,52 @@ interface ExecutionEvidenceInput {
 }
 
 /** 从 proxy 的 run.json 提取安全步骤摘要：只保留 index/action/status，不读 params/outcome 文本。 */
+function redactAxText(text: string, secrets: readonly SecretEntry[]): string {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret.value.length < 3) continue;
+    out = out.split(secret.value).join("***");
+  }
+  return out;
+}
+
+/** Android proxy 的 data_engine.db 有完整 ui_tree 时，把最后失败屏落成同构 AX。 */
+async function writeAndroidProxyAxFinal(
+  context: CaseRunContext,
+  traceDir: string,
+  traceId: string
+): Promise<boolean> {
+  const dbPath = path.join(path.dirname(traceDir), "data_engine.db");
+  const observations = await readAndroidTraceObservations(dbPath, traceId).catch(() => null);
+  if (observations === null) return false;
+  const last = [...observations.steps].reverse().find((step) => (step.postTree?.length ?? 0) > 0);
+  if (last?.postTree === undefined) return false;
+  const secrets = context.secrets ?? [];
+  const nodes = last.postTree.slice(0, 500).map((node) => ({
+    type: node.type,
+    id: redactAxText(node.id, secrets),
+    label: redactAxText(node.label, secrets),
+    value: redactAxText(node.value, secrets),
+    rect: node.rect
+  }));
+  writeFileAtomic(
+    path.join(traceDir, "ax-final.json"),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        traceId,
+        platform: "android",
+        source: "data_engine.db:ui_tree",
+        step: last.stepNumber,
+        nodes
+      },
+      null,
+      2
+    )}\n`
+  );
+  return true;
+}
+
 function failedStepOf(run: StructuredIosRunResult): StructuredIosRunResult["steps"][number] | null {
   return run.steps.find((step) => step.status !== "passed") ?? run.steps[run.steps.length - 1] ?? null;
 }
@@ -1147,6 +1194,11 @@ export async function executeCase(
     reset
   };
 
+  if (!iosTarget && caseResult.status !== "passed") {
+    await writeAndroidProxyAxFinal(context, traceDir, traceId).catch((error) => {
+      logWarn(`写入 Android proxy AX 失败：${traceId} · ${errorMessage(error)}`);
+    });
+  }
   writeExecutionEvidence({
     traceDir,
     traceId,

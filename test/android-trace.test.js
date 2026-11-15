@@ -62,10 +62,24 @@ function makeArtemisDb(dbPath, traceId) {
     null,
     JSON.stringify({ action: "tap", coordinates: [100, 200], args: {} })
   );
-  const insertImage = db.prepare("INSERT INTO images (image_name, ocr_result) VALUES (?, ?)");
-  insertImage.run("img1", JSON.stringify([{ text: "首頁" }, { text: "門市列表" }]));
-  insertImage.run("img2", JSON.stringify([{ text: "門市列表" }]));
-  insertImage.run("img3", JSON.stringify([{ text: "首頁" }]));
+  const insertImage = db.prepare(
+    "INSERT INTO images (image_name, ocr_result, ui_tree) VALUES (?, ?, ?)"
+  );
+  insertImage.run("img1", JSON.stringify([{ text: "首頁" }, { text: "門市列表" }]), null);
+  insertImage.run(
+    "img2",
+    JSON.stringify([{ text: "門市列表" }]),
+    JSON.stringify([
+      {
+        class: "android.widget.TextView",
+        text: "門市列表",
+        "resource-id": "com.example:id/title",
+        bounds: "[0,0][1000,100]",
+        parsed_bounds: { left: 0, top: 0, right: 1000, bottom: 100 }
+      }
+    ])
+  );
+  insertImage.run("img3", JSON.stringify([{ text: "首頁" }]), null);
   db.close();
 }
 
@@ -87,6 +101,14 @@ test("android trace: reads OCR labels and normalized taps from data_engine.db", 
   assert.equal(observations.steps[0].action, "tap");
   assert.deepEqual(observations.steps[0].preLabels, ["首頁", "門市列表"]);
   assert.deepEqual(observations.steps[0].postLabels, ["門市列表"]);
+  assert.equal(observations.steps[0].postTree?.[0]?.label, "門市列表");
+  assert.equal(observations.steps[0].postTree?.[0]?.id, "com.example:id/title");
+  assert.deepEqual(observations.steps[0].postTree?.[0]?.rect, {
+    x: 0,
+    y: 0,
+    width: 1000,
+    height: 100
+  });
   assert.deepEqual(observations.transitions, [
     { fromLabels: ["首頁", "門市列表"], toLabels: ["門市列表"] },
     { fromLabels: ["門市列表"], toLabels: ["首頁"] }
