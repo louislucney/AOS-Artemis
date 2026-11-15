@@ -12,7 +12,7 @@
 | # | 决策 | v0.2 结论 |
 |---|---|---|
 | D1 | 是否引入统一 `ExecutionPlan` | **采用**。任务执行前生成，覆盖数据/预算/复位/证据要求，而不是各执行器各自读环境 |
-| D2 | 测试数据如何分配 | **中心 Data Lease + 平台命名空间为主**；跨 runner 必须中心化，本地/外部服务作为降级；lease 增加可配置冷却期与号段风险 |
+| D2 | 测试数据如何分配 | **按需启用**。当前测试可能跳过注册/OTP 环节，v1 不把 Data Broker 作为门禁；保留本地 lease core，等真实号码池/后端条件具备再启用 |
 | D3 | 步数/Token 预算如何跨端 | 统一 `maxWallMs` + 引擎相关 `maxSteps/maxActions`；Token 增加 `maxTokens` / `maxPromptTokens` / `compressionThreshold`，采用**调用前预估 + 压缩**，不把 `maxTokensPerStep` 当唯一硬限 |
 | D4 | 复位语义 | `fresh` / `app-internal-reset` / `reuse` / `none`；iOS 真机不支持时标 `unsupported`，可显式降级但要披露，不假装已复位 |
 | D5 | 证据契约 | 统一 `run.json` + 失败步骤截图/AX；不支持截图的引擎在上传结果里显式降级 |
@@ -188,7 +188,9 @@ Suite task
 - 老任务没有 plan 时，由 adapter 生成“旧模式” plan，字段为 null/默认，并在报告中标 `legacy:true`。
 - `plan` 只记录条件，不把 secret 明文写入中心台账；数据值通过 lease 接口或任务材料解析。
 
-## 7. 数据隔离
+## 7. 数据隔离（按需，当前可跳过）
+
+> **2026-11-16 范围调整**：当前测试可能跳过注册/OTP 环节，因此 Data Broker/OTP 冷却不进入 v1 必做门禁；本地 `DataLeaseRegistry` 保留为可选能力，不阻塞任务/parity。
 
 ### 7.1 问题不是“邮箱 +1”
 
@@ -224,7 +226,7 @@ Suite task
 - 已有测试数据平台/API 提供账号、手机号、OTP。
 - 优点：最贴近真实链路；缺点：依赖外部可用性和接入成本。
 
-**建议**：邮箱用 A/B 均可；手机号/OTP/卡号用 A（中心池）或 C；一期不要用固定值。跨 runner 场景必须中心化或使用外部服务，避免两个 runner 各自从同一个起始号分配。
+**建议**：当测试包含注册/OTP 时，邮箱用 A/B 均可；手机号/OTP/卡号用 A（中心池）或 C；跨 runner 场景中心化或使用外部服务。当前测试若跳过注册/OTP，则只保留固定登录 fixture，不启用 Data Broker 门禁。
 
 ### 7.3 冷却期、号段风险与请求节奏
 
@@ -592,12 +594,13 @@ reset: {
 
 ### Phase 1：可观测性与数据
 
-1. **证据 schema + run.json/截图上传**（先让两端可比）
-2. **Data Broker**（冷却/风险字段；中心优先，外部服务可替换）
-3. **统一预算字段**（`maxWallMs` + Token 调用前预估/压缩）
-4. **ResetPolicy**（`app-internal-reset` / fresh/reuse/none；iOS unsupported 显式）
-5. **PreflightReport + host-state + 派发前门禁**
-6. **executionParity report-only → `comparable=true` 才允许发布阻断**
+1. **证据 schema + run.json/截图/AX 上传**（先让两端可比）
+2. **统一预算字段**（`maxWallMs`；Token 软/硬预算按用户要求暂不启用）
+3. **ResetPolicy**（`app-internal-reset` / fresh/reuse/none；iOS unsupported 显式）
+4. **PreflightReport + host-state + 派发前门禁**
+5. **executionParity report-only → `comparable=true` 才允许发布阻断**
+
+Data Broker/OTP 移到可选 backlog：等测试重新包含注册环节、且供应商/后端清理条件具备再启用。
 
 Phase 1 的每一步都可独立回滚；第 1 步不改变执行结果，只改善可观测性，建议先做。
 
@@ -605,7 +608,7 @@ Phase 1 的每一步都可独立回滚；第 1 步不改变执行结果，只改
 
 | # | 问题 | 当前结论 | 仍需确认 |
 |---|---|---|---|
-| 1 | 数据分配：中心 Data Broker vs 本地/外部 | 跨 runner 以中心为主；外部测试数据服务可替换；冷却/风险可配置 | 供应商/测试环境是否支持 API 清理与号码池 |
+| 1 | 数据分配：中心 Data Broker vs 本地/外部 | **当前范围跳过**：测试可能跳过注册/OTP；v1 不启用 Data Broker 门禁，本地 core 保留 | 等测试重新包含注册环节再确认供应商/号码池 |
 | 2 | 注册身份策略 | 默认 `per-platform`；登录用 `shared`；需要证明同账号多端行为时显式 `shared` + 顺序锁 | 产品是否要求同账号跨端互踢用例 |
 | 3 | Android proxy 预算 | 接受 `maxStepsEffective=null` + `maxWallMs` + token 预算作为统一硬限制 | Artemis 是否有可映射的内部预算字段 |
 | 4 | iOS 真机 fresh | 首选 `app-internal-reset`；不支持时 `unsupported`/`degraded`，不假装复位 | App 是否能提供 Debug Menu/Deep Link/测试 API |
@@ -631,6 +634,6 @@ Phase 1 的每一步都可独立回滚；第 1 步不改变执行结果，只改
 - Data Broker 增加可配置 `cooldownMs` / `riskLevel` / provider；`deviceIpBinding` 改为可选。
 - Preflight 增加 `host-state`；`executionParity` 增加 `ui-divergence`（证据门禁）。
 - 失败语义增加 `otp-rate-limited`、`host-state`、`ui-divergence`。
-- 增加 Phase 0 数据/OTP 与 Token/中断恢复两个 Spike。
+- 增加 Phase 0 数据/OTP 与 Token/中断恢复两个 Spike；随后按测试范围将 Data Broker/OTP 标为按需/可跳过。
 - 明确 v1 parity 只报告；只有 `comparable=true` 且结果不一致时才考虑发布阻断。
 
