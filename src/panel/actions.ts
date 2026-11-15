@@ -2000,6 +2000,27 @@ async function createTask(
       });
     }
     warnings = [...installWarnings, ...precheck.reasons];
+    const disk = targetHost.env?.disk;
+    if (disk !== null && typeof disk === "object" && !Array.isArray(disk)) {
+      const free = Number((disk as Record<string, unknown>).freeBytes);
+      const total = Number((disk as Record<string, unknown>).totalBytes);
+      const env = deps.env ?? process.env;
+      const rawMin = Number.parseFloat(env.AOS_PANEL_MIN_FREE_DISK_PCT ?? "");
+      const minPercent = Number.isFinite(rawMin) && rawMin >= 0 ? Math.min(rawMin, 100) : 10;
+      if (Number.isFinite(free) && Number.isFinite(total) && total > 0 && minPercent > 0) {
+        const freePercent = (free / total) * 100;
+        if (freePercent < minPercent) {
+          return json(400, {
+            ok: false,
+            code: "host-state",
+            error: `目标主机磁盘不足：剩余 ${freePercent.toFixed(1)}%，低于 AOS_PANEL_MIN_FREE_DISK_PCT=${minPercent}%`,
+            freePercent,
+            minPercent
+          });
+        }
+        warnings = [...warnings, `目标主机磁盘剩余 ${freePercent.toFixed(1)}%`];
+      }
+    }
   }
 
   const targetHostId =

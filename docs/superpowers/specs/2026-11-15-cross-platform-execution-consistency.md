@@ -496,6 +496,7 @@ reset: {
   - 系统更新/权限弹窗未处理 → 阻断并给 `host-alert`；
   - 低电量 → 默认告警，不直接阻断（除非用例声明必须满电/充电）。
 - “系统更新/低电量弹窗”只能检测/关闭/报告，不能承诺阻止系统事件。
+- 面板派发时已按目标主机心跳磁盘做 `host-state` 门禁（`AOS_PANEL_MIN_FREE_DISK_PCT`，默认 10%）。
 - 当前实现已接入宿主磁盘检查（`AOS_RUNNER_MIN_FREE_DISK_PCT`）、Android `/data` 与 iOS 真机数据卷检查（`AOS_RUNNER_MIN_FREE_DEVICE_PCT`，默认 10%；iOS 走 `ideviceinfo`）、Android `sys.boot_completed`；iOS 可用 `AOS_IOS_RESET_ALERTS` 处理已知系统弹窗。后台残留、未知系统弹窗仍待接入。
 
 ### 11.2 executionParity
