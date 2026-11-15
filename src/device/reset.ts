@@ -22,6 +22,7 @@ export type AppResetReason =
   | "timeout"
   | "force-stop-failed"
   | "launch-failed"
+  | "app-internal-reset-failed"
   | "ios-unsupported";
 
 export interface AppResetRequest {

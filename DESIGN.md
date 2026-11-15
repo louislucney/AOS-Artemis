@@ -214,6 +214,7 @@ MOBILE_TESTING_DATABASE_URL（PG）
 - 失败域（确定性）：`app-defect`/`environment`/`api-error`/`data-environment`/`behavior-or-design`/`design-inference`/`case-defect`/`unclassified`；步数/token 执行预算耗尽归 `case-defect`（不冒充产品行为），屏幕标题里的 Login/Register 等文本不单独触发 `data-environment`；只有经裁决的 `app-defect` 自动建 Jira。
 - **runner 包**：0.3.0 双端；offline 包的 `runner.cmd` 会检测 `deps/win32-site-packages.zip` 并走 `setup-offline.cmd`；包契约 `npm run check:runner-bundle`。
 - **设备页下载区**：右侧只保留下载入口与一句解压提示。Windows 只列 MCP runner 离线包；macOS 保留在线/离线/adb-host 三个入口。setup/产物/状态说明不再常驻侧栏。
+- **iOS 复位**：`resetIosApp` 默认 terminate+launch；项目 `.env` 的 `AOS_IOS_RESET_URL` 提供 App 内建复位入口时，复位序列追加 `openUrl → wait → launch`，等待 `AOS_IOS_RESET_WAIT_MS`（默认 1000ms）；失败归 `app-internal-reset-failed`/环境域。普通 reset 不清 Keychain，`fresh` 仍须显式能力。
 
 ---
 

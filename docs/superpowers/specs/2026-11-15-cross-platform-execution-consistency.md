@@ -357,6 +357,7 @@ reset: {
 - 要求 fresh 的用例：`supported=false`，标 `not-comparable` 或按项目策略跳过；
 - 可降级 reuse 的用例：显式 `degraded=true`，报告中披露，不假装已清数据；
 - 不能直接假设 `fullReset` 一定可用。
+- 当前实现已支持 `AOS_IOS_RESET_URL`（terminate → launch → openUrl → wait → launch）；这是 `app-internal-reset` 的第一个适配器，完整 plan/capability 字段仍待接入。
 
 ### 9.3 不支持时要显式
 

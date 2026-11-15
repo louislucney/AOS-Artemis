@@ -16,6 +16,10 @@ function fakeDevice({ launchFails = false } = {}) {
     async launch(bundleId) {
       calls.push(["launch", bundleId]);
       if (launchFails) throw new Error("idb launch 失败：boom");
+    },
+    async openUrl(url) {
+      calls.push(["openUrl", url]);
+      if (url.includes("fail")) throw new Error("deep link 失败");
     }
   };
 }
@@ -70,6 +74,43 @@ test("resetIosApp: 真机 UDID 未注入设备 → 明确报错（不再错造�
       ),
     /WDA provider/
   );
+});
+
+test("resetIosApp: AOS_IOS_RESET_URL 走 App 内建复位并重新 launch", async () => {
+  const device = fakeDevice();
+  const outcome = await resetIosApp(
+    { packageName: "com.apple.Preferences", serial: UDID },
+    {
+      platform: "darwin",
+      device,
+      env: {
+        AOS_IOS_RESET_URL: "testapp://debug/reset",
+        AOS_IOS_RESET_WAIT_MS: "0"
+      }
+    }
+  );
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(device.calls, [
+    ["terminate", "com.apple.Preferences"],
+    ["launch", "com.apple.Preferences"],
+    ["openUrl", "testapp://debug/reset"],
+    ["launch", "com.apple.Preferences"]
+  ]);
+  assert.equal(outcome.commands.length, 4);
+});
+
+test("resetIosApp: App 内建复位入口失败 → app-internal-reset-failed", async () => {
+  const outcome = await resetIosApp(
+    { packageName: "com.apple.Preferences", serial: UDID },
+    {
+      platform: "darwin",
+      device: fakeDevice(),
+      env: { AOS_IOS_RESET_URL: "testapp://fail/reset", AOS_IOS_RESET_WAIT_MS: "0" }
+    }
+  );
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.reason, "app-internal-reset-failed");
+  assert.match(outcome.message, /内建复位/);
 });
 
 test("resetIosApp: launch 失败 → launch-failed", async () => {

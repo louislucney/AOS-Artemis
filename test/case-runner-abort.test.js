@@ -112,6 +112,10 @@ test("iOS proxy: 取消后把仍为 running 的 trace 落成 cancelled", async (
     assert.equal(status.status, "cancelled");
     assert.match(status.error, /任务已取消/);
     assert.equal(typeof status.end_time, "number");
+    const evidence = JSON.parse(
+      fs.readFileSync(path.join(traceDir, "execution-evidence.json"), "utf8")
+    );
+    assert.equal(evidence.stepsAvailable, false, "proxy 没有结构化步骤时显式标 null");
   } finally {
     fs.rmSync(traceDir, { recursive: true, force: true });
   }

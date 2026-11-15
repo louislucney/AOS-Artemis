@@ -79,7 +79,8 @@ const ENVIRONMENT_RESET_REASONS = new Set([
   "device-offline",
   "timeout",
   "ios-unsupported",
-  "launch-failed"
+  "launch-failed",
+  "app-internal-reset-failed"
 ]);
 const ENVIRONMENT_PATTERN =
   /(adb|device\s+(offline|unauthorized|not\s+found)|no\s+devices?|emulator|设备(离线|未授权|未连接|不可用|不存在)|无可用设备|没有可用设备|找不到设备)/i;

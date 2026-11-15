@@ -71,6 +71,20 @@ test("failure taxonomy: reset and submit errors classify as environment", () => 
   assert.match(install.reason, /安装/);
 });
 
+test("failure taxonomy: App 内建复位失败归 environment", () => {
+  const result = classifyFailure({
+    reset: {
+      ok: false,
+      reason: "app-internal-reset-failed",
+      serial: "00008101-000359440C69001E",
+      adb: { path: null, source: "missing" },
+      commands: []
+    }
+  });
+  assert.equal(result.domain, "environment");
+  assert.match(result.reason, /app-internal-reset-failed/);
+});
+
 test("failure taxonomy: precondition match raises data-environment confidence", () => {
   const input = {
     status: status({

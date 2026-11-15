@@ -15,8 +15,17 @@ export interface IosResetOptions extends IosDeviceOptions {
 }
 
 const MISSING_ADB = { path: null, source: "missing" as const };
+const DEFAULT_RESET_WAIT_MS = 1_000;
 
-/** iOS app reset: terminate (best effort) then launch; device resolved per serial kind. */
+function resetWaitMs(env: NodeJS.ProcessEnv): number {
+  const raw = Number.parseInt(env.AOS_IOS_RESET_WAIT_MS ?? "", 10);
+  if (!Number.isInteger(raw) || raw < 0) return DEFAULT_RESET_WAIT_MS;
+  return Math.min(raw, 30_000);
+}
+
+/** iOS app reset: terminate (best effort) → launch；配置了 AOS_IOS_RESET_URL 时
+ * 再打开 App 内建复位入口，等待后重新 launch。普通 reset 不清 Keychain，
+ * 需要 fresh 的场景必须由 App 提供内建复位或明确的 fresh 适配器。 */
 export async function resetIosApp(
   request: AppResetRequest,
   options: IosResetOptions = {}
@@ -98,6 +107,37 @@ export async function resetIosApp(
       adb: MISSING_ADB,
       commands
     };
+  }
+
+  const resetUrl = (env.AOS_IOS_RESET_URL ?? "").trim();
+  if (resetUrl !== "") {
+    commands.push(["openUrl", resetUrl]);
+    try {
+      await device.openUrl(resetUrl);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "app-internal-reset-failed",
+        message: `应用内建复位入口打开失败：${errorMessage(error)}`,
+        serial,
+        adb: MISSING_ADB,
+        commands
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, resetWaitMs(env)));
+    commands.push(["idb", "launch", "--udid", serial, packageName]);
+    try {
+      await device.launch(packageName);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "app-internal-reset-failed",
+        message: `应用内建复位后重新启动失败：${errorMessage(error)}`,
+        serial,
+        adb: MISSING_ADB,
+        commands
+      };
+    }
   }
 
   return { ok: true, serial, adb: MISSING_ADB, commands };

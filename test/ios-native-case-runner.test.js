@@ -165,6 +165,12 @@ test("case-runner: iOS engine=native 直接走 structured runner，不提交 mob
     assert.equal(evidence.platform, "ios");
     assert.equal(evidence.engine, "native-ios");
     assert.equal(evidence.status, "passed");
+    assert.equal(evidence.stepsAvailable, true);
+    assert.equal(evidence.stepCount, native.steps.length);
+    assert.deepEqual(
+      evidence.steps.map((step) => [step.index, step.action, step.status]),
+      native.steps.map((step) => [step.index, step.action, step.status])
+    );
     assert.equal(JSON.stringify(evidence).includes("taskDesc"), false, "跨端证据不写任务描述");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

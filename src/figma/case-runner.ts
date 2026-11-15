@@ -257,6 +257,13 @@ function markTraceCancelled(traceDir: string, traceId: string, message: string):
 
 const EXECUTION_EVIDENCE_FILE = "execution-evidence.json";
 
+interface ExecutionEvidenceStep {
+  index: number;
+  action: string;
+  status: string;
+  resolvedBy?: string;
+}
+
 interface ExecutionEvidenceInput {
   traceDir: string;
   traceId: string;
@@ -270,6 +277,8 @@ interface ExecutionEvidenceInput {
   failure: FailureClassification | null;
   reset: AppResetOutcome | null;
   aliases: string[];
+  /** 结构化执行器的安全步骤摘要；LLM/proxy 目前没有同构步骤，明确写 null。 */
+  steps: ExecutionEvidenceStep[] | null;
 }
 
 /** 跨端可比的安全证据：只写标识/状态/计数/别名，不写 taskDesc、输入值或 secret。
@@ -299,6 +308,9 @@ function writeExecutionEvidence(input: ExecutionEvidenceInput): void {
             reason: input.reset.reason ?? null
           },
           data: { aliases: input.aliases },
+          stepsAvailable: input.steps !== null,
+          stepCount: input.steps === null ? null : input.steps.length,
+          steps: input.steps,
           outcome: summary === null ? null : {
             taskStatus: summary.taskStatus,
             passed: summary.passed,
@@ -603,7 +615,13 @@ async function executeNativeCase(
     testSummary: result.testSummary,
     failure: result.failure,
     reset,
-    aliases: (context.secrets ?? []).map((entry) => entry.alias)
+    aliases: (context.secrets ?? []).map((entry) => entry.alias),
+    steps: run.steps.map((step) => ({
+      index: step.index,
+      action: step.action,
+      status: step.status,
+      ...(step.resolvedBy === undefined ? {} : { resolvedBy: step.resolvedBy })
+    }))
   });
   if (!passed) uploadFailureEvidence(context, testCase.id, traceId);
   return { result, submitted: true, submitError: null, terminal: true };
@@ -642,7 +660,10 @@ export async function executeCase(
     try {
       reset = await context.resetFn(
         { packageName: context.lockedAppPackage, serial: context.deviceSerial },
-        context.iosDeviceWda !== null ? { device: context.iosDeviceWda } : {}
+        {
+          ...(context.iosDeviceWda !== null ? { device: context.iosDeviceWda } : {}),
+          env: context.runtime.iosEnvironment()
+        }
       );
     } catch (error) {
       reset = resetFailure(error, context.deviceSerial);
@@ -1042,7 +1063,8 @@ export async function executeCase(
     testSummary: caseResult.testSummary,
     failure: caseResult.failure,
     reset,
-    aliases: (context.secrets ?? []).map((entry) => entry.alias)
+    aliases: (context.secrets ?? []).map((entry) => entry.alias),
+    steps: null
   });
   if (caseResult.status !== "passed") {
     uploadFailureEvidence(context, testCase.id, traceId);
