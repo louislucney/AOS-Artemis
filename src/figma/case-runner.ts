@@ -37,6 +37,7 @@ import { loadWebSecrets, resolvePlaceholders, type SecretEntry } from "../web/ll
 import { allocateSequencedSecrets } from "../tasks/secret-sequence.js";
 import { collectEvidenceScreenshots } from "./evidence-files.js";
 import { collectEvidenceAx } from "./evidence-ax.js";
+import { DataLeaseError, DataLeaseRegistry, type DataResource } from "./data-lease.js";
 import { readAndroidTraceObservations } from "../artemis/android-trace.js";
 import type { LogcatWindowResult } from "../device/logcat.js";
 import type { AppResetOutcome } from "../device/reset.js";
@@ -786,7 +787,7 @@ function executeNativeAndroidCase(
   return executeNativeCase(testCase, context, reset, "android");
 }
 
-export async function executeCase(
+async function executeCaseInner(
   testCase: GeneratedCase,
   context: CaseRunContext
 ): Promise<CaseRunOutcome> {
@@ -1225,4 +1226,86 @@ export async function executeCase(
     uploadFailureEvidence(context, testCase.id, traceId);
   }
   return { result: caseResult, submitted: true, submitError: null, terminal };
+}
+
+function dataLeaseFailure(
+  testCase: GeneratedCase,
+  context: CaseRunContext,
+  error: DataLeaseError
+): CaseRunOutcome {
+  return {
+    submitted: false,
+    submitError: null,
+    terminal: false,
+    result: {
+      caseId: testCase.id,
+      name: testCase.name,
+      status: "failed",
+      traceId: null,
+      engine: "proxy",
+      error: error.message,
+      testSummary: null,
+      scriptProvenance: testCase.scriptProvenance,
+      failure: {
+        domain: "data-environment",
+        confidence: "high",
+        reason: `数据租约不可用：${error.message}`,
+        evidence: [`data-lease:${error.code}`]
+      },
+      apiErrors: [],
+      apiErrorsDegraded: null,
+      evidence: emptyEvidence(),
+      reset: null
+    }
+  };
+}
+
+function leaseResourceOf(entry: SecretEntry): DataResource | null {
+  if (entry.value.trim() === "") return null;
+  if (entry.kind === "otp") return "otp";
+  if (entry.kind !== "account") return null;
+  if (entry.value.includes("@")) return "email";
+  if (/card/i.test(entry.alias) || /card/i.test(entry.label ?? "")) return "card";
+  if (/^\d{6,20}$/.test(entry.value.replace(/\s+/g, ""))) return "phone";
+  return "account";
+}
+
+/** 可选数据租约门禁：只有显式配置 AOS_DATA_LEASE_FILE 才启用。
+ * 任务材料中的 email/phone/otp/card 在 case 开始前租用、结束后释放；冷却期由
+ * AOS_DATA_LEASE_COOLDOWN_MS 控制（默认 0）。 */
+export async function executeCase(
+  testCase: GeneratedCase,
+  context: CaseRunContext
+): Promise<CaseRunOutcome> {
+  const env = runtimeEnv(context.runtime);
+  const file = (env.AOS_DATA_LEASE_FILE ?? "").trim();
+  if (file === "") return await executeCaseInner(testCase, context);
+  const absolute = path.isAbsolute(file) ? file : path.join(context.runtime.project.rootDir, file);
+  const registry = new DataLeaseRegistry({ file: absolute });
+  const cooldownMs = Math.max(
+    0,
+    Number.parseInt(env.AOS_DATA_LEASE_COOLDOWN_MS ?? "", 10) || 0
+  );
+  const leases: string[] = [];
+  try {
+    for (const entry of context.secrets ?? []) {
+      const resource = leaseResourceOf(entry);
+      if (resource === null) continue;
+      try {
+        leases.push(registry.allocate({ resource, value: entry.value, cooldownMs }).id);
+      } catch (error) {
+        if (error instanceof DataLeaseError) return dataLeaseFailure(testCase, context, error);
+        throw error;
+      }
+    }
+    return await executeCaseInner(testCase, context);
+  } finally {
+    for (const id of leases) {
+      try {
+        registry.release(id);
+      } catch {
+        /* already released / persistence best effort */
+      }
+    }
+  }
 }

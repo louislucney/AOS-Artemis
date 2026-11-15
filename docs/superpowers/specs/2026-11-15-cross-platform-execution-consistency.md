@@ -251,7 +251,7 @@ lease: {
 - `riskLevel` 来自供应商/号段元数据；高风险号码不用于金融/实名类用例。
 - `deviceIpBinding` 只作为可选策略；NAT/共享出口 IP 下默认关闭，避免把测试环境自身变成风控信号。
 - 连续失败要能区分 `data-conflict`、`otp-rate-limited`、`otp-provider-unavailable`，不要统一叫“环境问题”。
-- 当前已提供本地 `DataLeaseRegistry`（`src/figma/data-lease.ts`）：分配/释放/冷却/风险/文件恢复；中心跨 runner 原子分配和真实供应商接入仍未实现。
+- 当前已提供本地 `DataLeaseRegistry`（`src/figma/data-lease.ts`），并在显式配置 `AOS_DATA_LEASE_FILE` 时由 case-runner 租用/释放 email/phone/otp/card；默认关闭，中心跨 runner 原子分配和真实供应商接入仍未实现。
 
 ### 7.4 Identity policy
 
