@@ -52,3 +52,41 @@ test("host preflight: statfs 不可用不阻断", async () => {
   assert.equal(result.reason, "unavailable");
   assert.match(result.message, /不阻断/);
 });
+
+import { checkAndroidDeviceStorage } from "../dist/figma/host-preflight.js";
+
+function dfExec(stdout) {
+  return async () => ({ code: 0, stdout, stderr: "" });
+}
+
+test("host preflight: Android /data 低于阈值阻断", async () => {
+  const result = await checkAndroidDeviceStorage({
+    serial: "emulator-5554",
+    env: { AOS_ADB_PATH: "/bin/echo" },
+    exec: dfExec("Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/block 1000 950 50 95% /data\n")
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "insufficient-device-disk");
+  assert.equal(result.freePercent, 5);
+  assert.match(result.message, /AOS_RUNNER_MIN_FREE_DEVICE_PCT=10%/);
+});
+
+test("host preflight: Android /data 充足放行，阈值可配", async () => {
+  const result = await checkAndroidDeviceStorage({
+    serial: "emulator-5554",
+    env: { AOS_ADB_PATH: "/bin/echo", AOS_RUNNER_MIN_FREE_DEVICE_PCT: "20" },
+    exec: dfExec("Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/block 1000 700 300 70% /data\n")
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.freePercent, 30);
+});
+
+test("host preflight: Android df 不可解析不阻断", async () => {
+  const result = await checkAndroidDeviceStorage({
+    serial: "emulator-5554",
+    env: { AOS_ADB_PATH: "/bin/echo" },
+    exec: dfExec("garbage")
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, "unavailable");
+});

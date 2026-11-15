@@ -2865,6 +2865,17 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       .map(([platform, outcome]) => `${escapeHtml(platform)}=${escapeHtml(outcome)}`)
       .join(" · ")
   ]);
+  const parityRows = detail.executionParity.map((entry) => [
+    `<code>${escapeHtml(entry.caseId)}</code>`,
+    entry.platforms.ios
+      ? `ios=${escapeHtml(entry.platforms.ios.status)}${entry.platforms.ios.stepsAvailable ? "" : "（无步骤）"}`
+      : "—",
+    entry.platforms.android
+      ? `android=${escapeHtml(entry.platforms.android.status)}${entry.platforms.android.stepsAvailable ? "" : "（无步骤）"}`
+      : "—",
+    entry.comparable ? "可比" : "不可比",
+    entry.reasons.length === 0 ? "—" : escapeHtml(entry.reasons.join("、"))
+  ]);
   const warnings = detail.warnings
     .map((warning) => `<p class="note">${escapeHtml(warning)}</p>`)
     .join("");
@@ -3114,6 +3125,15 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       '<section id="cross">',
       "<h2>跨端差异</h2>",
       renderTable(["用例", "名称", "结果"], crossRows, "两端结果一致（或仅单端运行）"),
+      "</section>",
+      '<section id="execution-parity">',
+      "<h2>执行一致性</h2>",
+      renderTable(
+        ["用例", "iOS", "Android", "可比性", "原因"],
+        parityRows,
+        "暂无跨端 execution-evidence（单端运行或旧批次）"
+      ),
+      '<p class="muted">report-only：条件不同标为不可比，不据此判定产品缺陷。</p>',
       "</section>",
       '<section id="run-hint">',
       "<h2>触发执行</h2>",

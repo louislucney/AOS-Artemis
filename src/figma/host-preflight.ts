@@ -1,5 +1,7 @@
 import { statfs } from "node:fs/promises";
 
+import { defaultExec, resolveAdbPath, type ExecFn } from "../device/adb.js";
+
 export interface HostPreflightResult {
   ok: boolean;
   freeBytes: number | null;
@@ -17,6 +19,7 @@ export interface HostPreflightOptions {
 }
 
 const DEFAULT_MIN_FREE_PERCENT = 10;
+const DEFAULT_MIN_FREE_DEVICE_PERCENT = 10;
 
 function minFreePercentFrom(env: NodeJS.ProcessEnv): number {
   const raw = Number.parseFloat(env.AOS_RUNNER_MIN_FREE_DISK_PCT ?? "");
@@ -80,4 +83,93 @@ export async function checkHostDisk(options: HostPreflightOptions): Promise<Host
       message: `执行机磁盘信息不可用（不阻断）：${error instanceof Error ? error.message : String(error)}`
     };
   }
+}
+
+export interface DeviceStorageResult {
+  ok: boolean;
+  serial: string;
+  freeBytes: number | null;
+  totalBytes: number | null;
+  freePercent: number | null;
+  minFreePercent: number;
+  reason: "insufficient-device-disk" | "unavailable" | null;
+  message: string;
+}
+
+function deviceThreshold(env: NodeJS.ProcessEnv): number {
+  const raw = Number.parseFloat(env.AOS_RUNNER_MIN_FREE_DEVICE_PCT ?? "");
+  if (!Number.isFinite(raw) || raw < 0) return DEFAULT_MIN_FREE_DEVICE_PERCENT;
+  return Math.min(raw, 100);
+}
+
+/** Android 设备 /data 剩余空间检查；探测失败不阻断，避免把远程 adb 差异误判为设备故障。 */
+export async function checkAndroidDeviceStorage(input: {
+  serial: string;
+  env?: NodeJS.ProcessEnv;
+  exec?: ExecFn;
+}): Promise<DeviceStorageResult> {
+  const env = input.env ?? process.env;
+  const exec = input.exec ?? defaultExec;
+  const minFreePercent = deviceThreshold(env);
+  const unavailable = (message: string): DeviceStorageResult => ({
+    ok: true,
+    serial: input.serial,
+    freeBytes: null,
+    totalBytes: null,
+    freePercent: null,
+    minFreePercent,
+    reason: "unavailable",
+    message
+  });
+  const adb = resolveAdbPath(env, process.platform);
+  if (adb.path === null) return unavailable("adb 不可用，跳过设备存储检查");
+  let result;
+  try {
+    result = await exec(
+      adb.path,
+      ["-s", input.serial, "shell", "df", "-k", "/data"],
+      { timeoutMs: 10_000, env }
+    );
+  } catch (error) {
+    return unavailable(`设备存储检查失败（不阻断）：${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (result.error || result.code !== 0) {
+    return unavailable(`设备存储检查失败（不阻断）：${result.error ?? `exit ${String(result.code)}`}`);
+  }
+  const lines = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const dataLine =
+    [...lines].reverse().find((line) => /\s\/data$/.test(line)) ??
+    (lines.length > 0 ? lines[lines.length - 1]! : "");
+  const parts = dataLine.split(/\s+/);
+  if (parts.length < 5) return unavailable("设备 df 输出无法解析（不阻断）");
+  const blocks = Number(parts[1]);
+  const available = Number(parts[3]);
+  if (!Number.isFinite(blocks) || !Number.isFinite(available) || blocks <= 0 || available < 0) {
+    return unavailable("设备 df 数值无法解析（不阻断）");
+  }
+  const totalBytes = blocks * 1024;
+  const freeBytes = available * 1024;
+  const freePercent = totalBytes === 0 ? null : (freeBytes / totalBytes) * 100;
+  if (minFreePercent > 0 && freePercent !== null && freePercent < minFreePercent) {
+    return {
+      ok: false,
+      serial: input.serial,
+      freeBytes,
+      totalBytes,
+      freePercent,
+      minFreePercent,
+      reason: "insufficient-device-disk",
+      message: `设备 ${input.serial} 存储不足：/data 剩余 ${freePercent.toFixed(1)}%，低于 AOS_RUNNER_MIN_FREE_DEVICE_PCT=${minFreePercent}%`
+    };
+  }
+  return {
+    ok: true,
+    serial: input.serial,
+    freeBytes,
+    totalBytes,
+    freePercent,
+    minFreePercent,
+    reason: null,
+    message: `设备 ${input.serial} /data 剩余 ${freePercent === null ? "未知" : `${freePercent.toFixed(1)}%`}`
+  };
 }

@@ -25,6 +25,12 @@ import { resolveAndroidAdbSocket, resolveIosHost } from "../device/device-hosts.
 import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
 import { designDir } from "../figma/design-store.js";
 import {
+  compareExecutionParity,
+  type ExecutionParityRecord,
+  type ExecutionParityResult,
+  type ExecutionPlanView
+} from "../figma/execution-plan.js";
+import {
   integrationReadinessFromFailures,
   type IntegrationReadiness
 } from "../figma/integration-readiness.js";
@@ -337,6 +343,7 @@ export interface PanelTaskDetail {
   }>;
   runs: PanelTaskRunView[];
   crossPlatform: Array<{ caseId: string; name: string; results: Record<string, string> }>;
+  executionParity: ExecutionParityResult[];
   runner: PanelRunnerView | null;
   runners: PanelRunnerView[];
   warnings: string[];
@@ -1522,6 +1529,59 @@ export async function buildPanelTaskDetail(
     }))
   );
 
+  const parityRecords = new Map<string, ExecutionParityRecord>();
+  for (const run of runs) {
+    for (const entry of run.cases) {
+      const platform = entry.platform === "ios" ? "ios" : entry.platform === "android" ? "android" : null;
+      if (platform === null || entry.caseId === "") continue;
+      const key = `${entry.caseId}\u0000${platform}`;
+      if (parityRecords.has(key)) continue;
+      const planAndSteps = (() => {
+        if (entry.traceId === null) return { plan: null, stepsAvailable: false };
+        for (const file of [
+          path.join(rootPath, ".artemis", "remote-evidence", taskId, entry.traceId, "execution-evidence.json"),
+          path.join(rootPath, ".artemis", "traces", entry.traceId, "execution-evidence.json")
+        ]) {
+          try {
+            const payload: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+            if (payload === null || typeof payload !== "object" || Array.isArray(payload)) continue;
+            const record = payload as Record<string, unknown>;
+            const plan = record.plan;
+            if (plan !== null && typeof plan === "object" && !Array.isArray(plan)) {
+              const candidate = plan as Record<string, unknown>;
+              const reset = candidate.reset;
+              const data = candidate.data;
+              if (
+                candidate.schemaVersion === 1 &&
+                (candidate.platform === "ios" || candidate.platform === "android") &&
+                reset !== null && typeof reset === "object" && !Array.isArray(reset) &&
+                data !== null && typeof data === "object" && !Array.isArray(data) &&
+                Array.isArray((data as Record<string, unknown>).aliases)
+              ) {
+                return { plan: candidate as unknown as ExecutionPlanView, stepsAvailable: record.stepsAvailable === true };
+              }
+            }
+            return { plan: null, stepsAvailable: record.stepsAvailable === true };
+          } catch {
+            /* try next */
+          }
+        }
+        return { plan: null, stepsAvailable: false };
+      })();
+      const status = ["passed", "failed", "timeout", "submit-error"].includes(entry.status)
+        ? (entry.status as "passed" | "failed" | "timeout" | "submit-error")
+        : "failed";
+      parityRecords.set(key, {
+        caseId: entry.caseId,
+        platform,
+        status,
+        plan: planAndSteps.plan,
+        stepsAvailable: planAndSteps.stepsAvailable
+      });
+    }
+  }
+  const executionParity = compareExecutionParity([...parityRecords.values()]);
+
   const runners: PanelRunnerView[] = [];
   try {
     const ttlMs = runnerTtlFrom(deps.env ?? process.env);
@@ -1601,7 +1661,7 @@ export async function buildPanelTaskDetail(
     xlsxUrl: artifactUrl(base, rootPath, ref.xlsxPath)
   }));
 
-  return { task, refs: refViews, runs: runViews, crossPlatform, runner, runners, runtime, warnings };
+  return { task, refs: refViews, runs: runViews, crossPlatform, executionParity, runner, runners, runtime, warnings };
 }
 
 /** 归因队列（DESIGN：回归服务 §5.7）：最近 N 次运行的全部失败用例；
