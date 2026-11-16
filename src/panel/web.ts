@@ -3161,6 +3161,21 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       ),
       `<p class="muted">${detail.systemDialogParity.comparable ? "两端弹窗内容一致" : `不可比：${detail.systemDialogParity.reasons.join("、")}`}</p>`,
       "</section>",
+      '<section id="execution-plan">',
+      "<h2>执行计划</h2>",
+      renderTable(
+        ["平台", "引擎", "复位", "数据策略", "步骤证据", "截图"],
+        (detail.executionPlan?.plans ?? []).map((plan) => [
+          escapeHtml(plan.platform),
+          escapeHtml(plan.engine),
+          escapeHtml(plan.reset.mode),
+          escapeHtml(plan.data.policy),
+          plan.evidence.steps ? "是" : "否",
+          plan.evidence.screenshots ? "是" : "否"
+        ]),
+        "暂无任务级执行计划（旧任务或手工创建）"
+      ),
+      "</section>",
       '<section id="run-hint">',
       "<h2>触发执行</h2>",
       `<p class="muted">在线执行机会自动领取执行；也可手动：<code>node dist/cli.js suite run --task ${escapeHtml(

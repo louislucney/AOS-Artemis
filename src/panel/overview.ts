@@ -36,6 +36,10 @@ import {
   type SystemDialogParity
 } from "../figma/system-dialog-store.js";
 import {
+  readTaskExecutionPlan,
+  type TaskExecutionPlan
+} from "../figma/task-execution-plan.js";
+import {
   integrationReadinessFromFailures,
   type IntegrationReadiness
 } from "../figma/integration-readiness.js";
@@ -350,6 +354,7 @@ export interface PanelTaskDetail {
   crossPlatform: Array<{ caseId: string; name: string; results: Record<string, string> }>;
   executionParity: ExecutionParityResult[];
   systemDialogParity: SystemDialogParity;
+  executionPlan: TaskExecutionPlan | null;
   runner: PanelRunnerView | null;
   runners: PanelRunnerView[];
   warnings: string[];
@@ -1588,6 +1593,7 @@ export async function buildPanelTaskDetail(
   }
   const executionParity = compareExecutionParity([...parityRecords.values()]);
   const systemDialogParity = compareSystemDialogs(readSystemDialogs(rootPath, taskId));
+  const executionPlan = readTaskExecutionPlan(rootPath, taskId);
 
   const runners: PanelRunnerView[] = [];
   try {
@@ -1675,6 +1681,7 @@ export async function buildPanelTaskDetail(
     crossPlatform,
     executionParity,
     systemDialogParity,
+    executionPlan,
     runner,
     runners,
     runtime,
