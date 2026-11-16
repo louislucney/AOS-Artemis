@@ -69,8 +69,10 @@ import { readAndroidSystemDialog } from "./figma/android-system-dialog.js";
 import { readIosSystemDialog } from "./figma/ios-system-dialog.js";
 import { compareSystemDialogs, readSystemDialogs, writeSystemDialog } from "./figma/system-dialog-store.js";
 import {
+  buildTaskExecutionPlan,
   readTaskExecutionPlan,
-  validateTaskExecutionPlan
+  validateTaskExecutionPlan,
+  writeTaskExecutionPlan
 } from "./figma/task-execution-plan.js";
 import {
   loadReconciliation,
@@ -3428,6 +3430,19 @@ async function suiteTaskCreate(
     appVersionCheck: installPlan.plan.appVersionCheck,
     materialsAssetId
   });
+  try {
+    writeTaskExecutionPlan(
+      runtime.project.rootDir,
+      buildTaskExecutionPlan({
+        taskId: task.id,
+        hostId: task.targetHostId,
+        platforms: uniquePlatforms,
+        env: runtime.baseEnv
+      })
+    );
+  } catch {
+    /* plan sidecar 不阻断已创建任务 */
+  }
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
     return 0;
@@ -3887,6 +3902,19 @@ async function suiteTaskCreateOnHost(
     appVersionCheck: installPlan.plan.appVersionCheck,
     materialsAssetId
   });
+  try {
+    writeTaskExecutionPlan(
+      rootPath,
+      buildTaskExecutionPlan({
+        taskId: task.id,
+        hostId: task.targetHostId,
+        platforms: targeting.platforms,
+        env
+      })
+    );
+  } catch {
+    /* plan sidecar 不阻断已创建任务 */
+  }
   if (flags.bool("json")) {
     io.log(JSON.stringify({ ok: true, task, resolved }, null, 2));
     return 0;
