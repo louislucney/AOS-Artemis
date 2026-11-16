@@ -41,7 +41,10 @@ export function readTaskExecutionPlan(
     const record = parsed as Record<string, unknown>;
     if (record.schemaVersion !== 1 || record.taskId !== taskId) return null;
     if (!Array.isArray(record.platforms) || !Array.isArray(record.plans)) return null;
-    return record as unknown as TaskExecutionPlan;
+    return {
+      ...(record as unknown as TaskExecutionPlan),
+      warnings: Array.isArray(record.warnings) ? (record.warnings as string[]) : []
+    };
   } catch {
     return null;
   }

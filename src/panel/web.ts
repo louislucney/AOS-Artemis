@@ -3177,7 +3177,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
         ]),
         "暂无任务级执行计划（旧任务或手工创建）"
       ),
-      ...(detail.executionPlan?.warnings.length
+      ...(detail.executionPlan?.warnings?.length
         ? [`<p class="muted">计划警告：${escapeHtml(detail.executionPlan.warnings.join("；"))}</p>`]
         : []),
       "</section>",

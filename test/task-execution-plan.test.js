@@ -32,6 +32,13 @@ test("task execution plan: 写入/读取/平台覆盖校验", () => {
       }),
       []
     );
+    const legacyFile = path.join(dir, ".artemis", "design", "task-plans", "legacy.json");
+    fs.mkdirSync(path.dirname(legacyFile), { recursive: true });
+    fs.writeFileSync(
+      legacyFile,
+      JSON.stringify({ schemaVersion: 1, taskId: "legacy", hostId: null, platforms: [], plans: [] })
+    );
+    assert.deepEqual(readTaskExecutionPlan(dir, "legacy")?.warnings, []);
     assert.deepEqual(
       validateTaskExecutionPlan(read, {
         platforms: ["ios"],
