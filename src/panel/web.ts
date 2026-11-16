@@ -3135,6 +3135,32 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       ),
       '<p class="muted">report-only：条件不同标为不可比，不据此判定产品缺陷。</p>',
       "</section>",
+      '<section id="dialog-parity">',
+      "<h2>弹窗一致性</h2>",
+      renderTable(
+        ["平台", "标题", "正文", "按钮"],
+        [
+          detail.systemDialogParity.ios === null
+            ? ["iOS", "—", "—", "—"]
+            : [
+                "iOS",
+                escapeHtml(detail.systemDialogParity.ios.title ?? "—"),
+                escapeHtml(detail.systemDialogParity.ios.message ?? "—"),
+                escapeHtml(detail.systemDialogParity.ios.buttons.join(" / ") || "—")
+              ],
+          detail.systemDialogParity.android === null
+            ? ["Android", "—", "—", "—"]
+            : [
+                "Android",
+                escapeHtml(detail.systemDialogParity.android.title ?? "—"),
+                escapeHtml(detail.systemDialogParity.android.message ?? "—"),
+                escapeHtml(detail.systemDialogParity.android.buttons.join(" / ") || "—")
+              ]
+        ],
+        "两端均未捕获系统弹窗"
+      ),
+      `<p class="muted">${detail.systemDialogParity.comparable ? "两端弹窗内容一致" : `不可比：${detail.systemDialogParity.reasons.join("、")}`}</p>`,
+      "</section>",
       '<section id="run-hint">',
       "<h2>触发执行</h2>",
       `<p class="muted">在线执行机会自动领取执行；也可手动：<code>node dist/cli.js suite run --task ${escapeHtml(

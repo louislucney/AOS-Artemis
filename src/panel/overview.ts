@@ -31,6 +31,11 @@ import {
   type ExecutionPlanView
 } from "../figma/execution-plan.js";
 import {
+  compareSystemDialogs,
+  readSystemDialogs,
+  type SystemDialogParity
+} from "../figma/system-dialog-store.js";
+import {
   integrationReadinessFromFailures,
   type IntegrationReadiness
 } from "../figma/integration-readiness.js";
@@ -344,6 +349,7 @@ export interface PanelTaskDetail {
   runs: PanelTaskRunView[];
   crossPlatform: Array<{ caseId: string; name: string; results: Record<string, string> }>;
   executionParity: ExecutionParityResult[];
+  systemDialogParity: SystemDialogParity;
   runner: PanelRunnerView | null;
   runners: PanelRunnerView[];
   warnings: string[];
@@ -1581,6 +1587,7 @@ export async function buildPanelTaskDetail(
     }
   }
   const executionParity = compareExecutionParity([...parityRecords.values()]);
+  const systemDialogParity = compareSystemDialogs(readSystemDialogs(rootPath, taskId));
 
   const runners: PanelRunnerView[] = [];
   try {
@@ -1661,7 +1668,18 @@ export async function buildPanelTaskDetail(
     xlsxUrl: artifactUrl(base, rootPath, ref.xlsxPath)
   }));
 
-  return { task, refs: refViews, runs: runViews, crossPlatform, executionParity, runner, runners, runtime, warnings };
+  return {
+    task,
+    refs: refViews,
+    runs: runViews,
+    crossPlatform,
+    executionParity,
+    systemDialogParity,
+    runner,
+    runners,
+    runtime,
+    warnings
+  };
 }
 
 /** 归因队列（DESIGN：回归服务 §5.7）：最近 N 次运行的全部失败用例；
