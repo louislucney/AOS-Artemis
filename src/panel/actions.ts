@@ -78,6 +78,7 @@ import {
   precheckTask
 } from "../console/dispatch.js";
 import { auditActionLabel } from "../console/vocab.js";
+import { buildTaskExecutionPlan, writeTaskExecutionPlan } from "../figma/task-execution-plan.js";
 import { resolveAppInstallPlan } from "../tasks/app-install.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 import {
@@ -2044,6 +2045,19 @@ async function createTask(
     materialsAssetId,
     caseIds
   });
+  try {
+    writeTaskExecutionPlan(
+      rootPath,
+      buildTaskExecutionPlan({
+        taskId: task.id,
+        hostId: targetHostId,
+        platforms: uniquePlatforms,
+        env: deps.env ?? process.env
+      })
+    );
+  } catch {
+    /* plan sidecar 是审计/门禁辅助，不阻断已创建任务 */
+  }
   return json(200, { ok: true, task, ...(warnings.length > 0 ? { warnings } : {}) });
 }
 

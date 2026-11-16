@@ -69,6 +69,10 @@ import { readAndroidSystemDialog } from "./figma/android-system-dialog.js";
 import { readIosSystemDialog } from "./figma/ios-system-dialog.js";
 import { compareSystemDialogs, readSystemDialogs, writeSystemDialog } from "./figma/system-dialog-store.js";
 import {
+  readTaskExecutionPlan,
+  validateTaskExecutionPlan
+} from "./figma/task-execution-plan.js";
+import {
   loadReconciliation,
   reconciliationFilePath,
   reconciliationListing,
@@ -917,6 +921,27 @@ async function suiteRunTask(
 
   const progress = new TaskProgressReporter(runtime, task);
   await progress.report("preflight", 5, { message: "环境预检" });
+  const taskPlan = readTaskExecutionPlan(runtime.project.rootDir, task.id);
+  if (taskPlan !== null) {
+    const planReasons = validateTaskExecutionPlan(taskPlan, {
+      platforms: task.platforms,
+      targetHostId: task.targetHostId
+    });
+    if (planReasons.length > 0) {
+      const message = `执行计划门禁未通过：${planReasons.join("、")}`;
+      await progress
+        .report("failed", 5, { message, errorCode: "host-state" })
+        .catch(() => undefined);
+      await runtime.store
+        .updateRegressionTask(runtime.project.rootDir, task.id, {
+          status: "failed",
+          expectStatuses: ["pending", "claimed", "running"]
+        })
+        .catch(() => false);
+      io.errorLog(`环境错误：${message}`);
+      return 2;
+    }
+  }
   const hostDisk = await checkHostDisk({
     rootPath: runtime.project.rootDir,
     env: runtime.baseEnv
