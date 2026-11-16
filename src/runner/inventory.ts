@@ -2,6 +2,7 @@ import type { RunnerDevice, RunnerTools } from "../db/types.js";
 import { defaultExec, resolveAdbPath, type ExecFn } from "../device/adb.js";
 import { classifyIosSerial, listIosSimulators, resolveIdbPath, resolveXcrunPath } from "../device/ios.js";
 import { listAdbDevices } from "../device/logcat.js";
+import { readAndroidSystemDialog } from "../figma/android-system-dialog.js";
 
 /** 设备盘点（心跳上报；`AOS_RUNNER_DEVICES` 非空 → 覆盖全部来源，真机 UDID 可显式列入）。 */
 export interface RunnerInventory {
@@ -63,6 +64,10 @@ export async function collectRunnerInventory(
           ? Promise.resolve({})
           : probeAndroidCapabilities(exec, adbPath, serial, timeoutMs, env)
       ]);
+      const dialog =
+        (env.AOS_RUNNER_DEVICE_DIALOG_CHECK ?? "").trim() === "1"
+          ? await readAndroidSystemDialog({ serial, env, exec }).catch(() => null)
+          : null;
       return {
         serial,
         name: "",
@@ -71,7 +76,15 @@ export async function collectRunnerInventory(
         platform: "android" as const,
         kind: serial.startsWith("emulator-") ? ("emulator" as const) : ("device" as const),
         state: "device",
-        ...capabilities
+        ...capabilities,
+        ...(dialog?.status === "dialog"
+          ? {
+              systemDialog: {
+                title: dialog.dialog.title,
+                buttons: dialog.dialog.buttons
+              }
+            }
+          : {})
       };
     })
   );

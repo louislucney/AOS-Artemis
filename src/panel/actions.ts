@@ -2062,6 +2062,15 @@ async function createTask(
               });
             }
           }
+          const dialogFree = ready.filter((device) => device.systemDialog === undefined || device.systemDialog === null);
+          if (dialogFree.length === 0) {
+            return json(400, {
+              ok: false,
+              code: "host-alert",
+              error: `目标主机 ${platform} 可用设备均存在系统弹窗`,
+              platform
+            });
+          }
         }
       }
     } catch {

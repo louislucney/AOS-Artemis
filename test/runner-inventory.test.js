@@ -407,3 +407,29 @@ test("ios 真机心跳：disk_usage 写入 freeDiskPct", async () => {
   assert.equal(device.ready, true);
   assert.equal(device.freeDiskPct, 30);
 });
+
+test("android 心跳：显式开启时上报系统弹窗", async () => {
+  const xml = '<hierarchy><node class="android.app.AlertDialog" package="com.android.systemui" text="Software Update" clickable="false" /><node class="android.widget.Button" package="com.android.systemui" text="Later" clickable="true" /></hierarchy>';
+  const { exec } = makeExec([
+    {
+      match: (command, args) => command === "adb" && args[0] === "devices",
+      result: { code: 0, stdout: "List of devices attached\nemulator-5554\tdevice\n", stderr: "" }
+    },
+    {
+      match: (command, args) => command === "adb" && args.includes("uiautomator"),
+      result: { code: 0, stdout: "UI hierarchy dumped", stderr: "" }
+    },
+    {
+      match: (command, args) => command === "adb" && args.includes("cat"),
+      result: { code: 0, stdout: xml, stderr: "" }
+    }
+  ]);
+  const inventory = await collectRunnerInventory({
+    exec,
+    platform: "linux",
+    env: { AOS_RUNNER_DEVICE_DIALOG_CHECK: "1" }
+  });
+  const device = inventory.devices.find((entry) => entry.serial === "emulator-5554");
+  assert.equal(device.systemDialog?.title, "Software Update");
+  assert.deepEqual(device.systemDialog?.buttons, ["Later"]);
+});

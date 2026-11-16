@@ -809,6 +809,7 @@ export interface DeviceListEntry {
   osVersion: string | null;
   ready?: boolean;
   freeDiskPct?: number | null;
+  systemDialog?: { title: string | null; buttons: string[] } | null;
   state: "idle" | "busy" | "offline";
   idle: boolean;
   leaseTaskId: string | null;
@@ -902,6 +903,9 @@ export function renderDevicesPage(data: DevicesPageData): string {
       .map(String);
     if (device.ready === false) modelParts.push("未就绪");
     if (typeof device.freeDiskPct === "number") modelParts.push(`剩余 ${device.freeDiskPct}%`);
+    if (device.systemDialog != null) {
+      modelParts.push(`弹窗：${device.systemDialog.title ?? "未命名"}`);
+    }
     const model = modelParts.join(" · ") || "—";
     const job =
       device.jobTaskId === null

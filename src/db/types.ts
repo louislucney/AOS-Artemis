@@ -846,6 +846,8 @@ export interface RunnerDevice {
   ready?: boolean;
   /** 设备数据卷剩余百分比；旧 runner/探测失败缺省。 */
   freeDiskPct?: number | null;
+  /** 心跳时探测到的系统弹窗；未开启探测/无弹窗为缺省。 */
+  systemDialog?: { title: string | null; buttons: string[] } | null;
 }
 
 export interface RunnerTools {

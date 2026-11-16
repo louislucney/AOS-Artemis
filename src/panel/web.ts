@@ -625,6 +625,7 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
         osVersion: device.osVersion ?? null,
         ...(device.ready === undefined ? {} : { ready: device.ready }),
         ...(device.freeDiskPct === undefined ? {} : { freeDiskPct: device.freeDiskPct }),
+        ...(device.systemDialog === undefined ? {} : { systemDialog: device.systemDialog }),
         state,
         idle: state === "idle",
         leaseTaskId: lease?.taskId ?? null,
