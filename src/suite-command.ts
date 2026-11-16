@@ -1030,11 +1030,15 @@ async function suiteRunTask(
     const iosEnv = runtime.iosEnvironment();
     const dialogSetting = (iosEnv.AOS_RUNNER_IOS_SYSTEM_DIALOG_CHECK ?? "").trim();
     // 默认只在已配置 Appium 的真机上启用，避免预检为模拟器额外拉起会话。
+    const serialKind = classifyIosSerial(device);
     const dialogCheckEnabled =
       dialogSetting === "1" ||
       (dialogSetting !== "0" &&
-        classifyIosSerial(device) === "device" &&
-        (iosEnv.AOS_APPIUM_URL ?? "").trim() !== "");
+        serialKind === "device" &&
+        (iosEnv.AOS_APPIUM_URL ?? "").trim() !== "") ||
+      (dialogSetting !== "0" &&
+        serialKind === "simulator" &&
+        (iosEnv.AOS_IDB_PATH ?? "").trim() !== "");
     if (!dialogCheckEnabled) continue;
     try {
       const iosDevice = await runtime.iosDevice(device);
