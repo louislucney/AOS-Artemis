@@ -67,7 +67,7 @@ import {
   type WebToolName
 } from "../web/dispatch.js";
 import { authenticateRunner } from "../runner/control/auth.js";
-import { runnerTtlFrom } from "../runner/status.js";
+import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
 import { applyWebJobManualStatus, ingestWebJobResult, WebResultError } from "../web/results.js";
 import {
   computeDispatchPreview,
@@ -2001,6 +2001,35 @@ async function createTask(
       });
     }
     warnings = [...installWarnings, ...precheck.reasons];
+    try {
+      const runners = await taskStore.listRunners(rootPath);
+      const hostRunners = runners.filter((runner) => runner.hostId === targetHost.id);
+      if (hostRunners.length > 0) {
+        const ttlMs = runnerTtlFrom(deps.env ?? process.env);
+        const nowMs = deps.now?.() ?? Date.now();
+        const online = hostRunners.filter((runner) =>
+          isRunnerOnline(runner.lastSeenAt, nowMs, ttlMs)
+        );
+        const missing = uniquePlatforms.filter(
+          (platform) =>
+            !online.some(
+              (runner) =>
+                runner.platforms.includes(platform) ||
+                runner.devices.some((device) => device.platform === platform)
+            )
+        );
+        if (missing.length > 0) {
+          return json(400, {
+            ok: false,
+            code: "host-state",
+            error: `目标主机没有在线执行机覆盖平台：${missing.join("、")}`,
+            missingPlatforms: missing
+          });
+        }
+      }
+    } catch {
+      /* runner 查询失败不阻断旧部署；执行前仍有预检 */
+    }
     const disk = targetHost.env?.disk;
     if (disk !== null && typeof disk === "object" && !Array.isArray(disk)) {
       const free = Number((disk as Record<string, unknown>).freeBytes);
