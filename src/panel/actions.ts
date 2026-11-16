@@ -2026,6 +2026,43 @@ async function createTask(
             missingPlatforms: missing
           });
         }
+        const rawMinDevice = Number.parseFloat(
+          (deps.env ?? process.env).AOS_PANEL_MIN_FREE_DEVICE_PCT ?? ""
+        );
+        const minDevicePercent =
+          Number.isFinite(rawMinDevice) && rawMinDevice >= 0 ? Math.min(rawMinDevice, 100) : 10;
+        for (const platform of uniquePlatforms) {
+          if (platform !== "ios" && platform !== "android") continue;
+          const devices = online.flatMap((runner) =>
+            runner.devices.filter((device) => device.platform === platform)
+          );
+          if (devices.length === 0) continue;
+          const ready = devices.filter((device) => device.ready !== false);
+          if (ready.length === 0) {
+            return json(400, {
+              ok: false,
+              code: "host-state",
+              error: `目标主机 ${platform} 设备未就绪`,
+              platform
+            });
+          }
+          if (minDevicePercent > 0) {
+            const healthy = ready.filter(
+              (device) =>
+                device.freeDiskPct === undefined ||
+                device.freeDiskPct === null ||
+                device.freeDiskPct >= minDevicePercent
+            );
+            if (healthy.length === 0) {
+              return json(400, {
+                ok: false,
+                code: "host-state",
+                error: `目标主机 ${platform} 设备剩余空间均低于 AOS_PANEL_MIN_FREE_DEVICE_PCT=${minDevicePercent}%`,
+                platform
+              });
+            }
+          }
+        }
       }
     } catch {
       /* runner 查询失败不阻断旧部署；执行前仍有预检 */

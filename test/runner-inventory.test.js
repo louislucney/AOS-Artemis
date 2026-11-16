@@ -359,3 +359,51 @@ test("android：多设备元数据探测并发（心跳耗时 ~单次超时，�
     `探测应并发执行（maxActive=${maxActive}；按设备顺序等待时为 2，完全串行为 1）`
   );
 });
+
+test("android 心跳：boot_completed + /data 空间写入 ready/freeDiskPct", async () => {
+  const { exec } = makeExec([
+    {
+      match: (command, args) => command === "adb" && args[0] === "devices",
+      result: { code: 0, stdout: "List of devices attached\nemulator-5554\tdevice\n", stderr: "" }
+    },
+    {
+      match: (command, args) => command === "adb" && args[4] === "sys.boot_completed",
+      result: { code: 0, stdout: "1\n", stderr: "" }
+    },
+    {
+      match: (command, args) => command === "adb" && args[3] === "df",
+      result: {
+        code: 0,
+        stdout:
+          "Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/block/dm-0 1000000 600000 400000 60% /data\n",
+        stderr: ""
+      }
+    }
+  ]);
+  const inventory = await collectRunnerInventory({ exec, platform: "linux", env: {} });
+  const device = inventory.devices.find((entry) => entry.serial === "emulator-5554");
+  assert.equal(device.ready, true);
+  assert.equal(device.freeDiskPct, 40);
+});
+
+test("ios 真机心跳：disk_usage 写入 freeDiskPct", async () => {
+  const { exec } = makeExec([
+    { match: (command) => command === "adb", result: { code: 1, stdout: "", stderr: "" } },
+    {
+      match: (command) => command.endsWith("xcrun"),
+      result: { code: 0, stdout: JSON.stringify({ devices: {} }), stderr: "" }
+    },
+    {
+      match: (command) => command === "idevice_id",
+      result: { code: 0, stdout: "00008101-000A1B2C3D4E001E\n", stderr: "" }
+    },
+    {
+      match: (command, args) => command === "ideviceinfo" && args.includes("com.apple.disk_usage"),
+      result: { code: 0, stdout: "TotalDataAvailable: 30\nTotalDataCapacity: 100\n", stderr: "" }
+    }
+  ]);
+  const inventory = await collectRunnerInventory({ exec, platform: "darwin", env: {} });
+  const device = inventory.devices.find((entry) => entry.serial.startsWith("0000"));
+  assert.equal(device.ready, true);
+  assert.equal(device.freeDiskPct, 30);
+});

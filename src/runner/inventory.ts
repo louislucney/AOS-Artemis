@@ -55,10 +55,14 @@ export async function collectRunnerInventory(
       : await listAdbDevices(exec, adbPath, env);
   const devices: RunnerDevice[] = await Promise.all(
     adbResult.devices.map(async (serial) => {
-      const meta =
+      const [meta, capabilities] = await Promise.all([
         adbPath === null
-          ? { model: null, osVersion: null }
-          : await probeAndroidDeviceMeta(exec, adbPath, serial, timeoutMs, env);
+          ? Promise.resolve({ model: null, osVersion: null })
+          : probeAndroidDeviceMeta(exec, adbPath, serial, timeoutMs, env),
+        adbPath === null
+          ? Promise.resolve({})
+          : probeAndroidCapabilities(exec, adbPath, serial, timeoutMs, env)
+      ]);
       return {
         serial,
         name: "",
@@ -66,7 +70,8 @@ export async function collectRunnerInventory(
         osVersion: meta.osVersion,
         platform: "android" as const,
         kind: serial.startsWith("emulator-") ? ("emulator" as const) : ("device" as const),
-        state: "device"
+        state: "device",
+        ...capabilities
       };
     })
   );
@@ -94,7 +99,8 @@ export async function collectRunnerInventory(
           osVersion: simulator.osVersion ?? null,
           platform: "ios",
           kind: "simulator",
-          state: simulator.state
+          state: simulator.state,
+          ready: true
         });
       }
     }
@@ -103,7 +109,10 @@ export async function collectRunnerInventory(
     tools.ideviceId = idevice.ok;
     const iosDevices = await Promise.all(
       idevice.serials.map(async (serial) => {
-        const meta = await probeIosDeviceMeta(exec, serial, timeoutMs);
+        const [meta, capabilities] = await Promise.all([
+          probeIosDeviceMeta(exec, serial, timeoutMs),
+          probeIosCapabilities(exec, serial, timeoutMs)
+        ]);
         return {
           serial,
           name: "",
@@ -111,7 +120,8 @@ export async function collectRunnerInventory(
           osVersion: meta.osVersion,
           platform: "ios" as const,
           kind: "device" as const,
-          state: "device"
+          state: "device",
+          ...capabilities
         };
       })
     );
@@ -178,6 +188,73 @@ async function versionProbe(
     return !result.error && result.code === 0;
   } catch {
     return false;
+  }
+}
+
+async function probeAndroidCapabilities(
+  exec: ExecFn,
+  adbPath: string,
+  serial: string,
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv
+): Promise<Pick<RunnerDevice, "ready" | "freeDiskPct">> {
+  const read = async (args: string[]): Promise<string | null> => {
+    try {
+      const result = await exec(adbPath, args, { timeoutMs, env });
+      return result.error || result.code !== 0 ? null : result.stdout;
+    } catch {
+      return null;
+    }
+  };
+  const [boot, df] = await Promise.all([
+    read(["-s", serial, "shell", "getprop", "sys.boot_completed"]),
+    read(["-s", serial, "shell", "df", "-k", "/data"])
+  ]);
+  const out: Pick<RunnerDevice, "ready" | "freeDiskPct"> = {};
+  if (boot !== null) {
+    const value = boot.trim();
+    if (value === "1" || value === "0") out.ready = value === "1";
+  }
+  if (df !== null) {
+    const numbers = df
+      .split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/))
+      .filter(
+        (cols) =>
+          cols.length >= 4 &&
+          /^\d+$/.test(cols[1] ?? "") &&
+          /^\d+$/.test(cols[2] ?? "") &&
+          /^\d+$/.test(cols[3] ?? "")
+      );
+    const last = numbers.at(-1);
+    if (last !== undefined) {
+      const used = Number(last[2]);
+      const available = Number(last[3]);
+      if (used + available > 0) out.freeDiskPct = Math.round((available / (used + available)) * 1000) / 10;
+    }
+  }
+  return out;
+}
+
+async function probeIosCapabilities(
+  exec: ExecFn,
+  serial: string,
+  timeoutMs: number
+): Promise<Pick<RunnerDevice, "ready" | "freeDiskPct">> {
+  try {
+    const result = await exec("ideviceinfo", ["-u", serial, "-q", "com.apple.disk_usage"], {
+      timeoutMs
+    });
+    if (result.error || result.code !== 0) return {};
+    const available = /TotalDataAvailable:\s*(\d+)/.exec(result.stdout);
+    const capacity = /TotalDataCapacity:\s*(\d+)/.exec(result.stdout);
+    if (available === null || capacity === null) return {};
+    const free = Number(available[1]);
+    const total = Number(capacity[1]);
+    if (!(total > 0)) return {};
+    return { ready: true, freeDiskPct: Math.round((free / total) * 1000) / 10 };
+  } catch {
+    return {};
   }
 }
 

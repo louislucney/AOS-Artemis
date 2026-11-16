@@ -842,6 +842,10 @@ export interface RunnerDevice {
   platform: "ios" | "android";
   kind: "device" | "emulator" | "simulator";
   state: string;
+  /** 最近一次心跳的设备就绪状态；旧 runner/探测失败缺省。 */
+  ready?: boolean;
+  /** 设备数据卷剩余百分比；旧 runner/探测失败缺省。 */
+  freeDiskPct?: number | null;
 }
 
 export interface RunnerTools {
