@@ -807,6 +807,8 @@ export interface DeviceListEntry {
   kind: "device" | "simulator" | "emulator";
   model: string | null;
   osVersion: string | null;
+  ready?: boolean;
+  freeDiskPct?: number | null;
   state: "idle" | "busy" | "offline";
   idle: boolean;
   leaseTaskId: string | null;
@@ -895,7 +897,12 @@ export function renderDevicesPage(data: DevicesPageData): string {
       .join("");
     const tools = toolNames === "" ? '<span class="muted">—</span>' : `<div class="c-device-tools">${toolNames}</div>`;
     const deviceLabel = `<div class="c-device-kind">${escapeHtml(device.platform)} · ${escapeHtml(device.kind)}</div><code class="c-device-serial" title="${escapeHtml(device.serial)}">${escapeHtml(device.serial)}</code>`;
-    const model = [device.model, device.osVersion].filter((value) => value !== null).map(String).join(" · ") || "—";
+    const modelParts = [device.model, device.osVersion]
+      .filter((value) => value !== null)
+      .map(String);
+    if (device.ready === false) modelParts.push("未就绪");
+    if (typeof device.freeDiskPct === "number") modelParts.push(`剩余 ${device.freeDiskPct}%`);
+    const model = modelParts.join(" · ") || "—";
     const job =
       device.jobTaskId === null
         ? '<span class="muted">—</span>'
