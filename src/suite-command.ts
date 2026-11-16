@@ -1027,7 +1027,15 @@ async function suiteRunTask(
     }
   }
   for (const device of devices.filter((serial) => classifyIosSerial(serial) !== null)) {
-    if ((runtime.iosEnvironment().AOS_RUNNER_IOS_SYSTEM_DIALOG_CHECK ?? "0").trim() !== "1") continue;
+    const iosEnv = runtime.iosEnvironment();
+    const dialogSetting = (iosEnv.AOS_RUNNER_IOS_SYSTEM_DIALOG_CHECK ?? "").trim();
+    // 默认只在已配置 Appium 的真机上启用，避免预检为模拟器额外拉起会话。
+    const dialogCheckEnabled =
+      dialogSetting === "1" ||
+      (dialogSetting !== "0" &&
+        classifyIosSerial(device) === "device" &&
+        (iosEnv.AOS_APPIUM_URL ?? "").trim() !== "");
+    if (!dialogCheckEnabled) continue;
     try {
       const iosDevice = await runtime.iosDevice(device);
       if (iosDevice === null) continue;

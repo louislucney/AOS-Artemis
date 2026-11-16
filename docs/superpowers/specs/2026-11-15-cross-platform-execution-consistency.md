@@ -497,7 +497,7 @@ reset: {
   - 低电量 → 默认告警，不直接阻断（除非用例声明必须满电/充电）。
 - “系统更新/低电量弹窗”只能检测/关闭/报告，不能承诺阻止系统事件。
 - 面板派发时已按目标主机心跳磁盘做 `host-state` 门禁（`AOS_PANEL_MIN_FREE_DISK_PCT`，默认 10%）。
-- 当前实现已接入宿主磁盘检查（`AOS_RUNNER_MIN_FREE_DISK_PCT`）、Android `/data` 与 iOS 真机数据卷检查（`AOS_RUNNER_MIN_FREE_DEVICE_PCT`，默认 10%；iOS 走 `ideviceinfo`）、Android `sys.boot_completed`；iOS 可用 `AOS_IOS_RESET_ALERTS` 与 `AOS_IOS_BACKGROUND_BUNDLES`，Android 可用 `AOS_ANDROID_RESET_ALERTS=1` 广播关闭系统弹窗、`AOS_ANDROID_RESET_BACKGROUND=1` 清理后台；Android 预检用 `uiautomator dump`（`AOS_RUNNER_SYSTEM_DIALOG_CHECK`/`AOS_RUNNER_SYSTEM_DIALOG_POLICY`）；iOS 预检按 AX `Alert` 类型识别，但需显式 `AOS_RUNNER_IOS_SYSTEM_DIALOG_CHECK=1`（默认关；两端均只读，不自动点击）。后台残留、未知系统弹窗仍待接入。
+- 当前实现已接入宿主磁盘检查（`AOS_RUNNER_MIN_FREE_DISK_PCT`）、Android `/data` 与 iOS 真机数据卷检查（`AOS_RUNNER_MIN_FREE_DEVICE_PCT`，默认 10%；iOS 走 `ideviceinfo`）、Android `sys.boot_completed`；iOS 可用 `AOS_IOS_RESET_ALERTS` 与 `AOS_IOS_BACKGROUND_BUNDLES`，Android 可用 `AOS_ANDROID_RESET_ALERTS=1` 广播关闭系统弹窗、`AOS_ANDROID_RESET_BACKGROUND=1` 清理后台；Android 预检用 `uiautomator dump`（`AOS_RUNNER_SYSTEM_DIALOG_CHECK`/`AOS_RUNNER_SYSTEM_DIALOG_POLICY`）；iOS 预检按 AX `Alert` 类型识别：真机且配置 `AOS_APPIUM_URL` 时默认启用，模拟器/未配置默认关（`AOS_RUNNER_IOS_SYSTEM_DIALOG_CHECK` 可覆盖；两端均只读，不自动点击）。后台残留、未知系统弹窗仍待接入。
 
 ### 11.2 executionParity
 
