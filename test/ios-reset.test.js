@@ -80,6 +80,24 @@ test("resetIosApp: 真机 UDID 未注入设备 → 明确报错（不再错造�
   );
 });
 
+test("resetIosApp: AOS_IOS_BACKGROUND_BUNDLES 清理指定后台应用", async () => {
+  const device = fakeDevice();
+  const outcome = await resetIosApp(
+    { packageName: "com.apple.Preferences", serial: UDID },
+    {
+      platform: "darwin",
+      device,
+      env: { AOS_IOS_BACKGROUND_BUNDLES: "com.example.old,com.apple.Preferences" }
+    }
+  );
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(device.calls, [
+    ["terminate", "com.example.old"],
+    ["terminate", "com.apple.Preferences"],
+    ["launch", "com.apple.Preferences"]
+  ]);
+});
+
 test("resetIosApp: AOS_IOS_RESET_ALERTS 处理系统弹窗", async () => {
   const device = fakeDevice();
   const outcome = await resetIosApp(

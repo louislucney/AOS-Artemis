@@ -88,6 +88,15 @@ export async function resetIosApp(
     };
   }
 
+  const backgroundBundles = (env.AOS_IOS_BACKGROUND_BUNDLES ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "" && entry !== packageName);
+  for (const bundle of backgroundBundles) {
+    commands.push(["terminate", bundle]);
+    await device.terminate(bundle).catch(() => undefined);
+  }
+
   commands.push(["idb", "terminate", "--udid", serial, packageName]);
   try {
     await device.terminate(packageName);
