@@ -623,6 +623,8 @@ async function buildDeviceListView(url: URL, deps: PanelWebDeps): Promise<PanelV
         kind: device.kind,
         model: device.model ?? null,
         osVersion: device.osVersion ?? null,
+        ...(device.ready === undefined ? {} : { ready: device.ready }),
+        ...(device.freeDiskPct === undefined ? {} : { freeDiskPct: device.freeDiskPct }),
         state,
         idle: state === "idle",
         leaseTaskId: lease?.taskId ?? null,
