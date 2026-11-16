@@ -191,6 +191,9 @@ node dist/cli.js suite queue resume [--host <id|hostname>]
 | `AOS_TASK_MAX_RUNTIME_MS` | 0（关闭） | runner 单任务执行上限（协作式中止）；超时按“取消（source=runner）”终结，不释放重试；超过 32 位毫秒上限时收敛并 WARN |
 | `AOS_CANCEL_GRACE_MS` | 90000 | `stopping` 离线终结宽限 |
 | `AOS_PANEL_PRIORITY` | 0 | `=1` 时面板开放优先级编辑 |
+| `AOS_PANEL_MIN_FREE_DISK_PCT` | 10 | 面板派发前目标主机磁盘最低剩余百分比；`0` 关闭 |
+| `AOS_PANEL_MIN_FREE_DEVICE_PCT` | 10 | 面板派发前设备数据卷最低剩余百分比（依赖 runner 心跳 `freeDiskPct`）；`0` 关闭 |
+| `AOS_RUNNER_DEVICE_DIALOG_CHECK` | 0（关闭） | `=1` 时 Android 设备心跳运行 `uiautomator dump` 并上报 `systemDialog`；全部可用设备有弹窗时面板以 `host-alert` 拒绝派发 |
 | `AOS_HOST_STRICT` | 0 | `=1`/`=true` 时严格主机模式：**本版本**的领取与本地手动执行/取消在无主机身份时拒绝。旧 runner 二进制仍按自己的 SQL 连 PG，需停用/升级，不会被此开关拦截（见 DESIGN §13.165/§13.166） |
 
 **已知限制**：文件台账为单主机视图（`host`/`queue`/默认项目机 runner/定时回归需中心 PG；项目机 runner 可走控制面）；中心清扫 `allHosts=true` 可能先于离线 runner 终结取消；旧 runner 行 `host_id NULL` 需升级重启后补齐（`AOS_HOST_STRICT` 只约束本版本的 claim/本地命令，旧 runner 需停用/升级，不会被开关拦截）；队列暂停是整机粒度；P4 跨主机逻辑项目分组与 HTTP 客户端记录未实现。完整清单见 DESIGN §13.165。
