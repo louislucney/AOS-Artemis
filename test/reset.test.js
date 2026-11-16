@@ -119,6 +119,22 @@ test("resetApp: honors AOS_ADB_PATH and AOS_RESET_TIMEOUT_MS", async () => {
   assert.equal(calls[0].options.timeoutMs, 9000);
 });
 
+test("resetApp: AOS_ANDROID_RESET_BACKGROUND=1 清理后台", async () => {
+  const { calls, exec } = recordingExec(() => ok());
+  const outcome = await resetApp(
+    { packageName: "com.example.app", serial: "emulator-5554" },
+    { exec, env: { AOS_ANDROID_RESET_BACKGROUND: "1" } }
+  );
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(calls[2].args, [
+    "-s",
+    "emulator-5554",
+    "shell",
+    "am",
+    "kill-all"
+  ]);
+});
+
 test("resetApp: AOS_ANDROID_RESET_ALERTS=1 关闭系统弹窗", async () => {
   const { calls, exec } = recordingExec(() => ok());
   const outcome = await resetApp(

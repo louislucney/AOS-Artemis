@@ -150,6 +150,12 @@ export async function resetApp(
     };
   }
 
+  if ((env.AOS_ANDROID_RESET_BACKGROUND ?? "").trim() === "1") {
+    const killAll = [...base, "shell", "am", "kill-all"];
+    commands.push(killAll);
+    await run(exec, adb.path, killAll, timeoutMs).catch(() => undefined);
+  }
+
   if ((env.AOS_ANDROID_RESET_ALERTS ?? "").trim() === "1") {
     const closeDialogs = [
       ...base,
