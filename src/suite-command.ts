@@ -66,6 +66,7 @@ import {
   checkIosDeviceStorage
 } from "./figma/host-preflight.js";
 import { readAndroidSystemDialog } from "./figma/android-system-dialog.js";
+import { readIosSystemDialog } from "./figma/ios-system-dialog.js";
 import {
   loadReconciliation,
   reconciliationFilePath,
@@ -988,6 +989,34 @@ async function suiteRunTask(
         .catch(() => false);
       io.errorLog(`环境错误：${storage.message}`);
       return 2;
+    }
+  }
+  for (const device of devices.filter((serial) => classifyIosSerial(serial) !== null)) {
+    if ((runtime.iosEnvironment().AOS_RUNNER_IOS_SYSTEM_DIALOG_CHECK ?? "0").trim() !== "1") continue;
+    try {
+      const iosDevice = await runtime.iosDevice(device);
+      if (iosDevice === null) continue;
+      const dialog = await readIosSystemDialog({ device: iosDevice, env: runtime.iosEnvironment() });
+      if (dialog.status === "dialog") {
+        const policy = (runtime.iosEnvironment().AOS_RUNNER_SYSTEM_DIALOG_POLICY ?? "block").trim();
+        const detail = `iOS 系统弹窗：${dialog.dialog.title ?? "未命名"}${dialog.dialog.buttons.length > 0 ? `（按钮：${dialog.dialog.buttons.join(" / ")}）` : ""}`;
+        if (policy !== "warn") {
+          await progress
+            .report("failed", 5, { message: detail, errorCode: "host-alert" })
+            .catch(() => undefined);
+          await runtime.store
+            .updateRegressionTask(runtime.project.rootDir, task.id, {
+              status: "failed",
+              expectStatuses: ["pending", "claimed", "running"]
+            })
+            .catch(() => false);
+          io.errorLog(`环境错误：${detail}`);
+          return 2;
+        }
+        io.log(`警告：${detail}（AOS_RUNNER_SYSTEM_DIALOG_POLICY=warn）`);
+      }
+    } catch {
+      /* 设备解析失败交给后续 Appium preflight，不在弹窗检查里重复报错 */
     }
   }
   for (const device of devices.filter((serial) => classifyIosSerial(serial) === "device")) {
