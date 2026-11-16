@@ -67,6 +67,7 @@ import {
 } from "./figma/host-preflight.js";
 import { readAndroidSystemDialog } from "./figma/android-system-dialog.js";
 import { readIosSystemDialog } from "./figma/ios-system-dialog.js";
+import { compareSystemDialogs, readSystemDialogs, writeSystemDialog } from "./figma/system-dialog-store.js";
 import {
   loadReconciliation,
   reconciliationFilePath,
@@ -442,7 +443,7 @@ Usage:
                                      语义一致性：分类树/截断/IA/覆盖率/动态资产；单屏只给部分覆盖，unverified/offscreen > 0 不返回 layout-compatible（exit 0/1/2）
   mobile-testing-mcp suite ui-lint [options] 检查源码圆角/颜色/字号/字重/字体族字面量是否来自 ui-contract token；--per-screen 按 screen-map 逐屏收窄、--require-mapping 要求 extracted 屏有显式映射、--fail-on-stale-contract 契约指纹过期即失败（--contract/--allowlist/--screen-map/--changed/--require-complete/--fail-on-expiring/--expiry-warn-days <n>/--max-total-bytes <n>；--json；exit 0/1/2）
   mobile-testing-mcp suite parity --a <tests.json> --b <tests.json> [--json] 对比两端人类层用例（semanticId/步骤/预期/屏幕），忽略 taskDesc/i18n/a11y）
-  mobile-testing-mcp suite parity --task <id> [--json] [--fail-on-not-comparable] [--fail-on-diff]
+  mobile-testing-mcp suite parity --task <id> [--json] [--fail-on-not-comparable] [--fail-on-diff] [--fail-on-dialog-diff]
                                      只读评估该任务两端 execution-evidence 的条件可比性（默认 report-only；两个 --fail-* 为显式门禁）
   mobile-testing-mcp suite text-weight-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]
                                      离线字重校准：成对图片 → 混淆矩阵/高置信误报/delta 分布/阈值建议
@@ -956,6 +957,13 @@ async function suiteRunTask(
       env: runtime.baseEnv
     });
     if (dialog.status === "dialog") {
+      writeSystemDialog(runtime.project.rootDir, task.id, {
+        platform: "android",
+        title: dialog.dialog.title,
+        message: dialog.dialog.message,
+        buttons: dialog.dialog.buttons,
+        at: new Date().toISOString()
+      });
       const policy = (runtime.baseEnv.AOS_RUNNER_SYSTEM_DIALOG_POLICY ?? "block").trim();
       const detail = `系统弹窗：${dialog.dialog.title ?? "未命名"}${dialog.dialog.buttons.length > 0 ? `（按钮：${dialog.dialog.buttons.join(" / ")}）` : ""}`;
       if (policy !== "warn") {
@@ -998,6 +1006,13 @@ async function suiteRunTask(
       if (iosDevice === null) continue;
       const dialog = await readIosSystemDialog({ device: iosDevice, env: runtime.iosEnvironment() });
       if (dialog.status === "dialog") {
+        writeSystemDialog(runtime.project.rootDir, task.id, {
+          platform: "ios",
+          title: dialog.dialog.title,
+          message: dialog.dialog.message,
+          buttons: dialog.dialog.buttons,
+          at: new Date().toISOString()
+        });
         const policy = (runtime.iosEnvironment().AOS_RUNNER_SYSTEM_DIALOG_POLICY ?? "block").trim();
         const detail = `iOS 系统弹窗：${dialog.dialog.title ?? "未命名"}${dialog.dialog.buttons.length > 0 ? `（按钮：${dialog.dialog.buttons.join(" / ")}）` : ""}`;
         if (policy !== "warn") {
@@ -5167,7 +5182,7 @@ async function suiteExecutionParity(
   runtime: Runtime,
   taskId: string,
   io: { log: (line: string) => void; errorLog: (line: string) => void },
-  options: { json: boolean; failOnNotComparable: boolean; failOnDiff: boolean }
+  options: { json: boolean; failOnNotComparable: boolean; failOnDiff: boolean; failOnDialogDiff: boolean }
 ): Promise<number> {
   const task = await runtime.store.getRegressionTask(runtime.project.rootDir, taskId).catch(() => null);
   if (task === null) {
@@ -5201,6 +5216,7 @@ async function suiteExecutionParity(
     }
   }
   const results = compareExecutionParity([...records.values()]);
+  const systemDialog = compareSystemDialogs(readSystemDialogs(runtime.project.rootDir, taskId));
   const comparable = results.filter((entry) => entry.comparable).length;
   const notComparable = results.length - comparable;
   const differing = results.filter(
@@ -5211,11 +5227,13 @@ async function suiteExecutionParity(
       entry.platforms.ios.status !== entry.platforms.android.status
   ).length;
   const failed =
-    (options.failOnNotComparable && notComparable > 0) || (options.failOnDiff && differing > 0);
+    (options.failOnNotComparable && notComparable > 0) ||
+    (options.failOnDiff && differing > 0) ||
+    (options.failOnDialogDiff && !systemDialog.comparable);
   if (options.json) {
     io.log(
       JSON.stringify(
-        { taskId, comparable, notComparable, differing, failed, cases: results },
+        { taskId, comparable, notComparable, differing, systemDialog, failed, cases: results },
         null,
         2
       )
@@ -5223,6 +5241,7 @@ async function suiteExecutionParity(
     return failed ? 1 : 0;
   }
   io.log(`执行一致性: 用例 ${results.length} · comparable ${comparable} · not-comparable ${notComparable} · 结果不同 ${differing}`);
+  io.log(`弹窗一致性: ${systemDialog.comparable ? "一致" : `不一致（${systemDialog.reasons.join(",")}）`}`);
   for (const entry of results) {
     const platforms = ["ios", "android"]
       .filter((platform) => entry.platforms[platform as "ios" | "android"] !== undefined)
@@ -5243,7 +5262,8 @@ async function suiteParity(
     return await suiteExecutionParity(runtime, taskId, io, {
       json: flags.bool("json"),
       failOnNotComparable: flags.bool("fail-on-not-comparable"),
-      failOnDiff: flags.bool("fail-on-diff")
+      failOnDiff: flags.bool("fail-on-diff"),
+      failOnDialogDiff: flags.bool("fail-on-dialog-diff")
     });
   }
   const a = flags.get("a");
