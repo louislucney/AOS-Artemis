@@ -3437,7 +3437,8 @@ async function suiteTaskCreate(
         taskId: task.id,
         hostId: task.targetHostId,
         platforms: uniquePlatforms,
-        env: runtime.baseEnv
+        env: runtime.baseEnv,
+        warnings: installPlan.plan.warnings
       })
     );
   } catch {
@@ -3909,7 +3910,8 @@ async function suiteTaskCreateOnHost(
         taskId: task.id,
         hostId: task.targetHostId,
         platforms: targeting.platforms,
-        env
+        env,
+        warnings: installPlan.plan.warnings
       })
     );
   } catch {

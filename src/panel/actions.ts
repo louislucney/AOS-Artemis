@@ -2081,7 +2081,8 @@ async function createTask(
         taskId: task.id,
         hostId: targetHostId,
         platforms: uniquePlatforms,
-        env: deps.env ?? process.env
+        env: deps.env ?? process.env,
+        warnings
       })
     );
   } catch {

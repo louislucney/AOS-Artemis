@@ -16,6 +16,7 @@ export interface TaskExecutionPlan {
   hostId: string | null;
   platforms: ExecutionPlatform[];
   plans: ExecutionPlanView[];
+  warnings: string[];
 }
 
 export function taskExecutionPlanPath(rootPath: string, taskId: string): string {
@@ -73,6 +74,7 @@ export function buildTaskExecutionPlan(input: {
   env?: NodeJS.ProcessEnv;
   engine?: ExecutionEngine;
   createdAt?: string;
+  warnings?: readonly string[];
 }): TaskExecutionPlan {
   const platforms = input.platforms.filter(
     (platform): platform is ExecutionPlatform => platform === "ios" || platform === "android"
@@ -90,6 +92,7 @@ export function buildTaskExecutionPlan(input: {
         aliases: [...(input.aliases ?? [])],
         env: input.env
       })
-    )
+    ),
+    warnings: [...(input.warnings ?? [])]
   };
 }
