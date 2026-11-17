@@ -33,7 +33,7 @@
 | P2-1 | P2 | parity 缺预算/引擎维度，原始缺陷仍可判可比 | 已处理：步数预算已纳入；引擎差异有意不比较 |
 | P2-2 | P2 | data lease 租到递增前的值；无锁；默认关 | 已修复：递增后值 + 本地锁 + 中心原子租约 |
 | P2-3 | P2 | 证据整包 1MB 上限可能静默丢弃 | 已修复：裁剪+日志+审计事件 |
-| P2-4 | P2 | 复位四态/能力/degraded 未落地，失败不进 parity | 已处理：项目级 policy + Android fresh/none；iOS fresh 显式 unsupported |
+| P2-4 | P2 | 复位四态/能力/degraded 未落地，失败不进 parity | 已修复：项目级+任务级 policy；Android fresh/none；iOS fresh unsupported |
 | P2-5 | P2 | `ui-divergence`/报告 parity/plan 截图与引擎标注缺失 | 部分修复：截图/引擎/报告 parity 已修；ui-divergence/per-case plan 决策延后（§11） |
 | P2-6 | P2 | spec §14 验收仍含已 descope 的预算/数据 lease，与 §15 冲突 | 已回写基线（v0.3） |
 | P3-1 | P3 | `.env.example` 缺新增变量 | 已补（2026-11-16） |
@@ -134,7 +134,7 @@
 
 ### P2-4 复位策略与失败语义仍不完整
 
-**状态：已处理（2026-11-17）：项目级 `AOS_RESET_POLICY=fresh|app-internal-reset|reuse|none`；Android `fresh` 执行 `pm clear`，`none` 不执行；iOS `fresh` 显式 `ios-unsupported`；`capability/supported/degraded` 进入 plan/outcome/证据，reset 失败/不支持/degraded 进入 parity。任务级 override 尚未接。**
+**状态：已修复（2026-11-18）：项目级 `AOS_RESET_POLICY` + 任务级 `resetPolicy`（CLI `--reset-policy` / 面板 API，任务页显示；面板表单字段待接）；Android `fresh` 执行 `pm clear`，`none` 不执行；iOS `fresh` 显式 `ios-unsupported`；`capability/supported/degraded` 进入 plan/outcome/证据，reset 失败/不支持/degraded 进入 parity。**
 
 - **位置**：`src/figma/execution-plan.ts:10-14`、`src/device/reset.ts:19-31`、`src/figma/case-runner.ts:800-813/409-412`
 - **现象**：只有 `reuse` / `app-internal-reset`；`fresh/none`、`capability/supported/degraded` 未实现。reset 失败只记录 `ok/reason`，执行继续，不进入 parity reason；未产生 `ios-unsupported`/`fresh` 信号。
@@ -287,13 +287,13 @@
 - 同一 case 内相同值只租一次（`reg_email`/`reg_email_confirm` 不互相 `busy`）；活跃租约超过 TTL 可在下次分配时回收。
 - 测试：两个实例共享文件不能重复分配；hybrid client 中心分配/占用/释放；case-runner 控制模式优先中心租约（值为递增后的 `+203`，重复值只租一次）；TTL 回收。
 
-### P2-4（部分修复）
+### P2-4（已修复）
 
 - `AppResetOutcome` / `ExecutionPlanView.reset` 增加 `mode/capability/supported/degraded`；`execution-evidence.json` 写入同样字段；parity 增加 `reset-failed` / `reset-unsupported` / `reset-degraded`。
 - 测试：`execution-plan`（失败/不支持/degraded 不可比）、`reset`/`ios-reset`（reuse vs app-internal 的 mode/capability）。
 - 项目级 `AOS_RESET_POLICY` 已接：Android `fresh` = `pm clear` + 拉起；`none` 不执行；`app-internal-reset` 缺 URL 显式失败；iOS `fresh` 显式 `ios-unsupported`。
 - 测试：`reset`（fresh/none/缺 URL）、`ios-reset`（fresh unsupported/none）、`execution-plan`（policy 写入 plan）。
-- 仍待做：任务级 reset override（项目级已覆盖当前需求）。
+- 任务级 `resetPolicy` 已接：CLI `suite task create --reset-policy`、面板 API、任务记录/plan/执行上下文贯通；任务页显示“复位”；面板表单字段待接。
 
 ### P2-5 / P3-3（部分 / 已修复）
 
@@ -322,15 +322,15 @@
 
 ### 验证
 
-- `npm test`：**3452 通过 / 0 失败**；`npm run lint`：**0 error / 2 warning**；`npm run audit:catches`：无新增；`npm run test:types` 通过。
-- `npm run verify`：**全绿**（含 `bundle:mcp-runner` + `check:runner-bundle`）：win32-x64（`00c9226…`）、darwin-arm64（`1691c80…`）、win32-x64 offline 均通过契约检查。
+- `npm test`：**3456 通过 / 0 失败**；`npm run lint`：**0 error / 2 warning**；`npm run audit:catches`：无新增；`npm run test:types` 通过。
+- `npm run verify`：**全绿**（含 `bundle:mcp-runner` + `check:runner-bundle`）：win32-x64（`76fcd69…`）、darwin-arm64（`a595e75…`）、win32-x64 offline 均通过契约检查。
 - 未做跨机真机冒烟（§6 检查点仍待执行）。
 
 ### 仍打开
 
 - P0-3 账号/号码停用或轮换（决策 A；清单已备，App/UAT 团队执行）。
 - P1-2 iOS 心跳 `systemDialog`（跨机旁车同步已接；无证据假绿已修）。
-- P2-5 `ui-divergence`/per-case×device plan；P2-4 任务级 reset override（项目级已接）。
+- P2-5 `ui-divergence`/per-case×device plan。
 - P3 功能项已清；P3-5 跨机真机冒烟仍待做（P0-3 历史处置单独跟踪）。
 - P2-3 已通过审计事件暴露上传失败（面板审计页），任务行内嵌标记未做。
 
@@ -343,6 +343,6 @@
 | P1-2 iOS 心跳 `systemDialog` | **接受限制（Android-only）** | iOS 弹窗读取需要活跃 WDA/idb 会话；30s 心跳创建会话会与任务执行争抢设备，风险高于收益。Android `uiautomator dump` 成本低，保留。 | 面板 `host-alert` 门禁明确 Android-only；如需 iOS 心跳，另做低频/按需探测。 |
 | P2-5 `ui-divergence` 分类 | **延后** | 需要跨用例证据（截图/AX 证明控件存在）与产品判断；当前 parity 已能报告 `case-target-missing`，启发式分类容易误判。 | 等真实跨端样本与证据模型，再定 `ui-divergence`/`inconclusive` 规则。 |
 | P2-5 per-case×device plan | **延后** | `execution-evidence.json` 已按 case 记录实际 plan；任务级 plan 是派发时快照，再加 per-case×device 文件没有消费者。 | 如未来需要按 case 预算/数据门禁，再扩 plan schema。 |
-| P2-4 任务级 reset override | **延后** | 项目级 `AOS_RESET_POLICY` 已覆盖当前单策略项目；任务级需要 API/DB/面板三处改动。 | 出现同项目多策略需求时再设计。 |
+| P2-4 任务级 reset override | **已实现（2026-11-18）** | 项目级无法覆盖同项目多策略；任务级 `resetPolicy` 已贯通 DB/CLI/API/plan/执行上下文。 | 面板表单字段待接。 |
 | P3-5 跨机真机冒烟 | **外部依赖** | 需要中心 + 远程 runner + iOS/Android 真机与签名环境，CI 无法替代。 | 按 §6 检查点执行：第 1、2 步后做“一过一败”冒烟。 |
 | P0-3 公开历史 | **决策 A** | 接受历史暴露，不重写；通过账号轮换降低风险。 | 按[账号处置清单](p0-3-account-disposal-checklist.md)执行，owner 关闭。 |

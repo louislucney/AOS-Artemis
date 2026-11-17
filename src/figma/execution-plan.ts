@@ -1,4 +1,4 @@
-import { resolveResetPolicy } from "../device/reset-policy.js";
+import { resolveResetPolicy, type ResetPolicy } from "../device/reset-policy.js";
 import type { SuiteCaseResult } from "./suite-runner.js";
 
 export type ExecutionEngine = "proxy" | "ios-llm" | "native-ios" | "native-android";
@@ -41,13 +41,14 @@ export function buildExecutionPlan(input: {
   aliases: string[];
   env?: NodeJS.ProcessEnv;
   screenshots?: boolean;
+  resetPolicy?: ResetPolicy | null;
 }): ExecutionPlanView {
   const env = input.env ?? process.env;
   const entry =
     input.platform === "ios"
       ? (env.AOS_IOS_RESET_URL ?? "").trim()
       : (env.AOS_ANDROID_RESET_URL ?? "").trim();
-  const policy = resolveResetPolicy(env);
+  const policy = input.resetPolicy ?? resolveResetPolicy(env);
   const effectiveReset = policy ?? (entry === "" ? "reuse" : "app-internal-reset");
   const resetSupported =
     effectiveReset === "app-internal-reset"

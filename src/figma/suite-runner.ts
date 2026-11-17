@@ -11,6 +11,7 @@ import { isIosTraceDir, readIosRunPayload } from "../ios/trace-store.js";
 import { logWarn } from "../log.js";
 import { AdbLogcatCollector, type LogcatWindowResult } from "../device/logcat.js";
 import { resetApp, type AppResetOptions, type AppResetOutcome, type AppResetRequest } from "../device/reset.js";
+import type { ResetPolicy } from "../device/reset-policy.js";
 import { adbInstallAndroidApk } from "../device/install.js";
 import { materializeAppPathUrl } from "../device/app-artifacts.js";
 import type { IosDevice } from "../device/ios-actions.js";
@@ -150,6 +151,8 @@ export interface SuiteRunOptions {
   /** secret 测试资料（alias→value）；用例 taskDesc/actions 中的 `<secret:alias>` 执行前替换。 */
   secrets?: SecretEntry[];
   regressionTaskId?: string | null;
+  /** 任务级复位策略；缺省按项目 env / RESET_URL 推导。 */
+  resetPolicy?: ResetPolicy | null;
   model?: string;
   /** Opt-in: compare screens visited by each case against per-screen design. */
   uiDiff?: boolean;
@@ -637,6 +640,7 @@ export async function runGeneratedTests(
       appPath: caseAppPath,
       secrets: options.secrets,
       regressionTaskId: options.regressionTaskId ?? null,
+      resetPolicy: options.resetPolicy ?? null,
       quarantined,
       failOnApiErrors: options.failOnApiErrors === true,
       apiCatalog,

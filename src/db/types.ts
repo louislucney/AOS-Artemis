@@ -1,6 +1,7 @@
 import type { TaskExecutionPlan } from "../figma/task-execution-plan.js";
 import type { StoredSystemDialog } from "../figma/system-dialog-store.js";
 import type { DataLeaseRecord, DataResource, DataRiskLevel } from "../figma/data-lease.js";
+import type { ResetPolicy } from "../device/reset-policy.js";
 
 export interface ProjectRecord {
   id: string;
@@ -760,6 +761,8 @@ export interface RegressionTaskRecord {
   appVersionCheck: AppVersionCheck | null;
   /** 版本读取/校验时间（ISO）。 */
   appVersionCheckedAt: string | null;
+  /** 任务级复位策略；null＝按项目 env / RESET_URL 推导。 */
+  resetPolicy: ResetPolicy | null;
   /** 测试结束时间（ISO）；runner 终态写入。 */
   finishedAt: string | null;
   /** 可选测试资料资产 id（materials，secret=true 时按 alias=value/JSON 解析为占位符）；runner 执行前下载。 */
@@ -1245,6 +1248,7 @@ export interface CreateRegressionTaskInput {
   appVersionActual?: string | null;
   appVersionCheck?: AppVersionCheck | null;
   appVersionCheckedAt?: string | null;
+  resetPolicy?: ResetPolicy | null;
   finishedAt?: string | null;
   materialsAssetId?: string | null;
   caseIds?: string[];

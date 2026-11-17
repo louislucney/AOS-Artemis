@@ -481,6 +481,7 @@ export class MemoryStore implements ProjectStore {
       appVersionActual: input.appVersionActual ?? null,
       appVersionCheck: input.appVersionCheck ?? null,
       appVersionCheckedAt: input.appVersionCheckedAt ?? null,
+      resetPolicy: input.resetPolicy ?? null,
       finishedAt: input.finishedAt ?? null,
       materialsAssetId: input.materialsAssetId ?? null,
       caseIds: [...(input.caseIds ?? [])],
@@ -553,6 +554,7 @@ export class MemoryStore implements ProjectStore {
       appVersionActual?: string | null;
       appVersionCheck?: RegressionTaskRecord["appVersionCheck"];
       appVersionCheckedAt?: string | null;
+      resetPolicy?: RegressionTaskRecord["resetPolicy"];
       progress?: import("./types.js").TaskProgress | null;
       expectDeviceSerialEmpty?: boolean;
       expectStatuses?: RegressionTaskStatus[];
@@ -591,6 +593,7 @@ export class MemoryStore implements ProjectStore {
     if (patch.appVersionCheckedAt !== undefined) {
       task.appVersionCheckedAt = patch.appVersionCheckedAt;
     }
+    if (patch.resetPolicy !== undefined) task.resetPolicy = patch.resetPolicy;
     if (patch.progress !== undefined) {
       const next = patch.progress;
       if (next === null || task.progress === null || next.seq >= task.progress.seq) {

@@ -69,6 +69,18 @@ test("execution plan: AOS_RESET_POLICY=fresh/none 写入 plan", () => {
   assert.equal(none.reset.supported, true);
 });
 
+test("execution plan: task resetPolicy 覆盖项目 env", () => {
+  const planView = buildExecutionPlan({
+    platform: "android",
+    engine: "proxy",
+    aliases: [],
+    env: { AOS_RESET_POLICY: "none" },
+    resetPolicy: "fresh"
+  });
+  assert.equal(planView.reset.mode, "fresh");
+  assert.equal(planView.reset.supported, true);
+});
+
 test("execution parity: 同条件才 comparable", () => {
   const base = {
     caseId: "case-1",

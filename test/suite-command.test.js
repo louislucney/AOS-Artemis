@@ -11,6 +11,7 @@ import { loadLatestRunManifest } from "../dist/figma/run-manifest.js";
 import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
 import {
   buildTaskExecutionPlan,
+  readTaskExecutionPlan,
   writeTaskExecutionPlan
 } from "../dist/figma/task-execution-plan.js";
 import { writeSystemDialog } from "../dist/figma/system-dialog-store.js";
@@ -1980,6 +1981,40 @@ test("suite task create: >50 份仍识别窗口外功能（正确性路径全量
   const { code, logs, errors } = await runCli(runtime, ["task", "create", "--ref", "f-old"]);
   assert.equal(code, 0, errors.join(" | "));
   assert.ok(logs.some((line) => line.includes("目标功能")));
+});
+
+test("suite task create: --reset-policy 写入任务与 plan", async () => {
+  const { runtime, store } = await setupRun({ cases: null });
+  await seedCaseSets(store, runtime.project.rootDir, path.join(runtime.configDirAbs, "design"));
+  const { code, errors } = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-old",
+    "--platform",
+    "android",
+    "--reset-policy",
+    "none"
+  ]);
+  assert.equal(code, 0, errors.join(" | "));
+  const tasks = await store.listRegressionTasks(runtime.project.rootDir);
+  assert.equal(tasks[0]?.resetPolicy, "none");
+  const plan = readTaskExecutionPlan(runtime.project.rootDir, tasks[0].id);
+  assert.equal(plan?.plans[0]?.reset.mode, "none");
+});
+
+test("suite task create: --reset-policy 非法值 exit 2", async () => {
+  const { runtime, store } = await setupRun({ cases: null });
+  await seedCaseSets(store, runtime.project.rootDir, path.join(runtime.configDirAbs, "design"));
+  const { code } = await runCli(runtime, [
+    "task",
+    "create",
+    "--ref",
+    "f-old",
+    "--reset-policy",
+    "bogus"
+  ]);
+  assert.equal(code, 2);
 });
 
 test("suite run --task: >50 份仍可执行窗口外引用（不误报不可用）", async () => {

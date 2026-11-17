@@ -94,6 +94,7 @@ import { buildUiContract, type UiContract, type UiScreenContract } from "./ui/co
 import { runUiLint } from "./ui/lint.js";
 import { auditUiParity } from "./ui/parity.js";
 import { evaluateTaskExecutionParity } from "./figma/execution-parity.js";
+import { parseResetPolicy } from "./device/reset-policy.js";
 import {
   loadUiParityBaseline,
   partitionByBaseline,
@@ -438,7 +439,7 @@ Usage:
   mobile-testing-mcp suite reconcile list|confirm|reject [options]
                                      对账资产审阅：列举差异并人工确认（human-confirmed）或驳回（rejected）
   mobile-testing-mcp suite task create|list|show|release|cancel [options]
-                                     回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--skip-ios-install --expect-version <v>]（引用取该功能最新用例集；--app-asset 执行前安装；--skip-ios-install 使用设备已安装应用）
+                                     回归任务：create --ref <featureKey>… [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--skip-ios-install --expect-version <v>] [--reset-policy fresh|app-internal-reset|reuse|none]（引用取该功能最新用例集；--app-asset 执行前安装；--skip-ios-install 使用设备已安装应用）
                                      中心模式：create|list|cancel --host <id|hostname> [--project <rootPath>]（只连 PG，不构建本机 Runtime）
                                      release <taskId> [--force]：管理侧救济，claimed/running → 待执行（默认要求执行机离线）
                                      cancel <taskId> [--note <text>]：取消任务（pending → 已取消；执行中 → 停止中，待执行机确认）
@@ -971,6 +972,7 @@ async function suiteRunTask(
       hostId: task.targetHostId,
       platforms: task.platforms,
       env: runtime.baseEnv,
+      resetPolicy: task.resetPolicy ?? null,
       warnings: ["plan-rebuilt:no-sidecar"]
     });
     try {
@@ -1259,6 +1261,7 @@ async function suiteRunTask(
   }
   const baseOptions = suiteRunOptions(flags, logcatCollector, iosLogCollector);
   baseOptions.regressionTaskId = task.id;
+  baseOptions.resetPolicy = task.resetPolicy ?? null;
   if (taskMaterials.secrets.length > 0) {
     baseOptions.secrets = taskMaterials.secrets;
     say(`测试资料：${taskMaterials.filename}（secret，${taskMaterials.secrets.length} 个字段）`);
@@ -3445,7 +3448,7 @@ async function suiteTaskCreate(
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--skip-ios-install] [--expect-version <v>] [--materials <id>]"
+      "用法: suite task create --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--skip-ios-install] [--expect-version <v>] [--materials <id>] [--reset-policy fresh|app-internal-reset|reuse|none]"
     );
     return 2;
   }
@@ -3488,6 +3491,12 @@ async function suiteTaskCreate(
   if (!validateAppAssetPlatform(appAssetFilename, uniquePlatforms, io)) return 2;
   const skipIosInstall = flags.bool("skip-ios-install");
   const appVersionExpected = (flags.get("expect-version") ?? "").trim() || null;
+  const rawResetPolicy = (flags.get("reset-policy") ?? "").trim();
+  const resetPolicy = rawResetPolicy === "" ? null : parseResetPolicy(rawResetPolicy);
+  if (rawResetPolicy !== "" && resetPolicy === null) {
+    io.errorLog("--reset-policy 仅支持 fresh/app-internal-reset/reuse/none");
+    return 2;
+  }
   const installPlan = resolveAppInstallPlan({
     platforms: uniquePlatforms,
     appAssetFilename,
@@ -3517,6 +3526,7 @@ async function suiteTaskCreate(
     appInstallMode: installPlan.plan.appInstallMode,
     appVersionExpected: installPlan.plan.appVersionExpected,
     appVersionCheck: installPlan.plan.appVersionCheck,
+    resetPolicy,
     materialsAssetId
   });
   try {
@@ -3527,6 +3537,7 @@ async function suiteTaskCreate(
         hostId: task.targetHostId,
         platforms: uniquePlatforms,
         env: runtime.baseEnv,
+        resetPolicy: task.resetPolicy ?? null,
         warnings: installPlan.plan.warnings
       })
     );
@@ -3887,14 +3898,14 @@ async function suiteTaskCreateOnHost(
   const rootPath = rawProject === null ? null : normalizeRootPath(rawProject);
   if (rootPath === null || rootPath === "") {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--skip-ios-install] [--expect-version <v>] [--materials <id>]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--skip-ios-install] [--expect-version <v>] [--materials <id>] [--reset-policy fresh|app-internal-reset|reuse|none]"
     );
     return 2;
   }
   const refs = splitList(flags.list("ref"));
   if (refs.length === 0) {
     io.errorLog(
-      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--skip-ios-install] [--expect-version <v>] [--materials <id>]"
+      "用法: suite task create --host <id|hostname> --project <rootPath> --ref <featureKey> [--ref …] [--platform ios|android]… [--baseline latest|none] [--app-asset <id>] [--app <package>] [--skip-ios-install] [--expect-version <v>] [--materials <id>] [--reset-policy fresh|app-internal-reset|reuse|none]"
     );
     return 2;
   }
@@ -3963,6 +3974,12 @@ async function suiteTaskCreateOnHost(
   if (!validateAppAssetPlatform(appAssetFilename, targeting.platforms, io)) return 2;
   const skipIosInstall = flags.bool("skip-ios-install");
   const appVersionExpected = (flags.get("expect-version") ?? "").trim() || null;
+  const rawResetPolicy = (flags.get("reset-policy") ?? "").trim();
+  const resetPolicy = rawResetPolicy === "" ? null : parseResetPolicy(rawResetPolicy);
+  if (rawResetPolicy !== "" && resetPolicy === null) {
+    io.errorLog("--reset-policy 仅支持 fresh/app-internal-reset/reuse/none");
+    return 2;
+  }
   const installPlan = resolveAppInstallPlan({
     platforms: targeting.platforms,
     appAssetFilename,
@@ -3990,6 +4007,7 @@ async function suiteTaskCreateOnHost(
     appInstallMode: installPlan.plan.appInstallMode,
     appVersionExpected: installPlan.plan.appVersionExpected,
     appVersionCheck: installPlan.plan.appVersionCheck,
+    resetPolicy,
     materialsAssetId
   });
   try {
@@ -4000,6 +4018,7 @@ async function suiteTaskCreateOnHost(
         hostId: task.targetHostId,
         platforms: targeting.platforms,
         env,
+        resetPolicy: task.resetPolicy ?? null,
         warnings: installPlan.plan.warnings
       })
     );

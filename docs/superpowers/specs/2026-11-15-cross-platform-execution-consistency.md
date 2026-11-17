@@ -373,7 +373,7 @@ reset: {
 - 要求 fresh 的用例：`supported=false`，标 `not-comparable` 或按项目策略跳过；
 - 可降级 reuse 的用例：显式 `degraded=true`，报告中披露，不假装已清数据；
 - 不能直接假设 `fullReset` 一定可用。
-- 当前实现已支持 `AOS_IOS_RESET_URL` 与 `AOS_ANDROID_RESET_URL`（launch → 内建复位入口 → wait → launch）；这是 `app-internal-reset` 的第一版适配器。plan/outcome/证据已记录 `mode/capability/supported/degraded`，reset 失败/不支持/degraded 进入 parity；项目级 `AOS_RESET_POLICY=fresh|app-internal-reset|reuse|none` 已接：Android `fresh` 执行 `pm clear`，iOS `fresh` 显式 unsupported；任务级 override 仍待接入。
+- 当前实现已支持 `AOS_IOS_RESET_URL` 与 `AOS_ANDROID_RESET_URL`（launch → 内建复位入口 → wait → launch）；这是 `app-internal-reset` 的第一版适配器。plan/outcome/证据已记录 `mode/capability/supported/degraded`，reset 失败/不支持/degraded 进入 parity；项目级 `AOS_RESET_POLICY=fresh|app-internal-reset|reuse|none` 已接：Android `fresh` 执行 `pm clear`，iOS `fresh` 显式 unsupported；任务级 `resetPolicy`（CLI `--reset-policy` / 面板 API）覆盖项目 env，任务记录/plan/执行上下文贯通。
 
 ### 9.3 不支持时要显式
 
@@ -655,6 +655,6 @@ Phase 1 的每一步都可独立回滚；第 1 步不改变执行结果，只改
 - **P1**：`suite parity --task` 文本模式忽略 `--fail-on-*`（只有 `--json` 生效）；弹窗无捕获记录时返回 `comparable=true`，跨机弹窗旁车也不同步。
 - **P2**：parity 只比较 reset/policy/aliases/steps，预算与引擎维度缺失（iOS 30 步 vs Android 不限仍可能 `comparable=true`）；data lease 租到递增前的值且默认关闭；证据整包 1MB 上限可能静默丢弃；`fresh/none/capability/degraded`、`ui-divergence`、报告 parity 未落地。
 - **待办优先级**：plan 跨机 → 终态证据上传 → parity 返回码/语义 → lease 与弹窗同步 → 文档与门禁集成测试。
-- **2026-11-16 修复**：P0-1（plan 随 bundle/缺失重建/创建入口）、P0-2（终态 evidence 上传 + 预算裁剪）、P1-1（文本模式 fail 门禁）已修复；P1-2 部分修复（无证据不判一致、clear 记录、跨机同步已接；iOS 心跳待做）；P2-1 已处理（步数预算已纳入；引擎差异按设计不比较）；`npm test` 3452 绿；静默 catch 审计无新增。
-- **2026-11-17 追加**：P2-2 本地锁 + 中心原子租约、P2-3 上传失败审计、P2-4 项目级 reset policy（Android fresh/none；iOS fresh unsupported）、P2-5 任务报告 parity、P3-1/3/4/6/7/8 已处理；**P0-3 决策 A**（接受公开历史暴露 + 账号处置，不重写历史；清单见 `docs/reports/p0-3-account-disposal-checklist.md`）。剩余项决策见审计报告 §11。
+- **2026-11-16 修复**：P0-1（plan 随 bundle/缺失重建/创建入口）、P0-2（终态 evidence 上传 + 预算裁剪）、P1-1（文本模式 fail 门禁）已修复；P1-2 部分修复（无证据不判一致、clear 记录、跨机同步已接；iOS 心跳待做）；P2-1 已处理（步数预算已纳入；引擎差异按设计不比较）；`npm test` 3456 绿；静默 catch 审计无新增。
+- **2026-11-17 追加**：P2-2 本地锁 + 中心原子租约、P2-3 上传失败审计、P2-4 项目级+任务级 reset policy（Android fresh/none；iOS fresh unsupported）、P2-5 任务报告 parity、P3-1/3/4/6/7/8 已处理；**P0-3 决策 A**（接受公开历史暴露 + 账号处置，不重写历史；清单见 `docs/reports/p0-3-account-disposal-checklist.md`）。剩余项决策见审计报告 §11。
 

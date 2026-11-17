@@ -39,8 +39,10 @@ async function setup({
   fs.writeFileSync(path.join(designDir, "tests.json"), JSON.stringify({ flows: cases }));
 
   const resetCalls = [];
-  const resetFn = async (request) => {
+  const resetOptions = [];
+  const resetFn = async (request, options) => {
     resetCalls.push(request);
+    resetOptions.push(options);
     return reset
       ? reset(request)
       : {
@@ -57,7 +59,7 @@ async function setup({
       pollIntervalMs: 0,
       ...overrides
     });
-  return { dir, runtime, store, proxy, resetCalls, run };
+  return { dir, runtime, store, proxy, resetCalls, resetOptions, run };
 }
 
 test("suite runner: Android 提交前剔除 iOS 脚本断言块，iOS 保留", async () => {
@@ -209,6 +211,16 @@ test("suite runner: uploads failure evidence when the store supports it", async 
     "execution-evidence.json",
     "stderr.log"
   ]);
+});
+
+test("suite runner: task reset policy overrides project env", async () => {
+  const { resetOptions, run } = await setup({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  await run({ lockedAppPackage: "com.example.app", resetPolicy: "none" });
+  assert.equal(resetOptions.length, 1);
+  assert.equal(resetOptions[0].env.AOS_RESET_POLICY, "none");
 });
 
 test("suite runner: data lease uses the sequenced secret value", async () => {

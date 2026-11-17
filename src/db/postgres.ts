@@ -7,6 +7,7 @@ import {
 } from "../host/online.js";
 import { hostStrictFrom } from "../host/strict.js";
 import { errorMessage } from "../util.js";
+import { parseResetPolicy } from "../device/reset-policy.js";
 import {
   budgetPeriodKey,
   llmReservationTtlMs,
@@ -276,6 +277,7 @@ const SCHEMA = [
      app_version_actual TEXT,
      app_version_check TEXT,
      app_version_checked_at TEXT,
+     reset_policy TEXT,
      finished_at TEXT,
      materials_asset_id TEXT,
      case_ids TEXT NOT NULL DEFAULT '[]',
@@ -673,6 +675,7 @@ const MIGRATIONS = [
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_version_actual TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_version_check TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS app_version_checked_at TEXT`,
+  `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS reset_policy TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS finished_at TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS materials_asset_id TEXT`,
   `ALTER TABLE regression_tasks ADD COLUMN IF NOT EXISTS case_ids TEXT NOT NULL DEFAULT '[]'`,
@@ -1273,8 +1276,9 @@ export class PostgresStore implements ProjectStore {
          (id, project_id, created_at, created_by, refs, platforms, baseline, status, run_ids,
           target_host_id, created_host_id, priority, job_spec, execution_mode, device_serial, device_lease_id,
           app_asset_id, app_package, app_install_mode, app_version_expected, app_version_actual,
-          app_version_check, app_version_checked_at, finished_at, materials_asset_id, case_ids, progress_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)`,
+          app_version_check, app_version_checked_at, finished_at, materials_asset_id, case_ids, progress_json,
+          reset_policy)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)`,
       [
         id,
         project?.id ?? null,
@@ -1302,7 +1306,8 @@ export class PostgresStore implements ProjectStore {
         input.finishedAt ?? null,
         input.materialsAssetId ?? null,
         JSON.stringify(input.caseIds ?? []),
-        input.progress === undefined || input.progress === null ? null : JSON.stringify(input.progress)
+        input.progress === undefined || input.progress === null ? null : JSON.stringify(input.progress),
+        input.resetPolicy ?? null
       ]
     );
     return {
@@ -1342,6 +1347,7 @@ export class PostgresStore implements ProjectStore {
       appVersionActual: input.appVersionActual ?? null,
       appVersionCheck: input.appVersionCheck ?? null,
       appVersionCheckedAt: input.appVersionCheckedAt ?? null,
+      resetPolicy: input.resetPolicy ?? null,
       finishedAt: input.finishedAt ?? null,
       materialsAssetId: input.materialsAssetId ?? null,
       caseIds: [...(input.caseIds ?? [])],
@@ -1417,6 +1423,7 @@ export class PostgresStore implements ProjectStore {
       appVersionActual?: string | null;
       appVersionCheck?: RegressionTaskRecord["appVersionCheck"];
       appVersionCheckedAt?: string | null;
+      resetPolicy?: RegressionTaskRecord["resetPolicy"];
       progress?: import("./types.js").TaskProgress | null;
       expectDeviceSerialEmpty?: boolean;
       expectStatuses?: RegressionTaskStatus[];
@@ -1453,6 +1460,7 @@ export class PostgresStore implements ProjectStore {
     if (patch.appVersionCheckedAt !== undefined) {
       add("app_version_checked_at", patch.appVersionCheckedAt);
     }
+    if (patch.resetPolicy !== undefined) add("reset_policy", patch.resetPolicy);
     if (patch.progress !== undefined) {
       add(
         "progress_json",
@@ -3009,8 +3017,8 @@ export class PostgresStore implements ProjectStore {
             run_ids, attempts, cancel_source, cancelled_by, cancelled_host_id, cancelled_at, cancel_note,
             cancel_requested_at, job_spec, device_serial, device_lease_id, app_asset_id, app_package,
             app_install_mode, app_version_expected, app_version_actual, app_version_check,
-            app_version_checked_at, finished_at, materials_asset_id, case_ids, progress_json)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
+            app_version_checked_at, finished_at, materials_asset_id, case_ids, progress_json, reset_policy)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
          ON CONFLICT (id) DO NOTHING
          RETURNING id`,
         [
@@ -3045,7 +3053,8 @@ export class PostgresStore implements ProjectStore {
           entry.finishedAt ?? null,
           entry.materialsAssetId ?? null,
           JSON.stringify(entry.caseIds ?? []),
-          entry.progress === null || entry.progress === undefined ? null : JSON.stringify(entry.progress)
+          entry.progress === null || entry.progress === undefined ? null : JSON.stringify(entry.progress),
+          entry.resetPolicy ?? null
         ]
       );
       regressionTasks.inserted += Number(inserted.rowCount ?? 0);
@@ -4896,6 +4905,7 @@ function mapRegressionTask(row: Record<string, unknown>): RegressionTaskRecord {
     appVersionActual: nullableString(row.app_version_actual),
     appVersionCheck: nullableString(row.app_version_check) as RegressionTaskRecord["appVersionCheck"],
     appVersionCheckedAt: nullableString(row.app_version_checked_at),
+    resetPolicy: parseResetPolicy(row.reset_policy),
     finishedAt: nullableString(row.finished_at),
     materialsAssetId: nullableString(row.materials_asset_id),
     caseIds: parseStringArray(row.case_ids),

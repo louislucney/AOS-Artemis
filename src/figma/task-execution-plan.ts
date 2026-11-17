@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { writeFileAtomic } from "../util.js";
+import type { ResetPolicy } from "../device/reset-policy.js";
 import { pruneJsonSidecars, sidecarRetentionFromEnv } from "./task-sidecar-retention.js";
 import {
   buildExecutionPlan,
@@ -73,17 +74,24 @@ export function validateTaskExecutionPlan(
 /** 创建任务后写旁车：所有创建入口共用，避免重跑/定时/Web job 漏写。 */
 export function writeTaskExecutionPlanForTask(
   rootPath: string,
-  task: { id: string; platforms: readonly string[]; targetHostId: string | null },
+  task: {
+    id: string;
+    platforms: readonly string[];
+    targetHostId: string | null;
+    resetPolicy?: ResetPolicy | null;
+  },
   options: {
     env?: NodeJS.ProcessEnv;
     warnings?: readonly string[];
     createdAt?: string;
+    resetPolicy?: ResetPolicy | null;
   } = {}
 ): TaskExecutionPlan {
   const plan = buildTaskExecutionPlan({
     taskId: task.id,
     hostId: task.targetHostId,
     platforms: task.platforms,
+    resetPolicy: task.resetPolicy ?? options.resetPolicy ?? null,
     ...(options.env === undefined ? {} : { env: options.env }),
     ...(options.warnings === undefined ? {} : { warnings: options.warnings }),
     ...(options.createdAt === undefined ? {} : { createdAt: options.createdAt })
@@ -106,6 +114,7 @@ export function buildTaskExecutionPlan(input: {
   aliases?: readonly string[];
   env?: NodeJS.ProcessEnv;
   engine?: ExecutionEngine;
+  resetPolicy?: ResetPolicy | null;
   createdAt?: string;
   warnings?: readonly string[];
 }): TaskExecutionPlan {
@@ -126,7 +135,8 @@ export function buildTaskExecutionPlan(input: {
         engine: input.engine ?? (platform === "ios" ? "ios-llm" : "proxy"),
         aliases: [...(input.aliases ?? [])],
         env,
-        screenshots
+        screenshots,
+        resetPolicy: input.resetPolicy ?? null
       })
     ),
     warnings: [...(input.warnings ?? [])]

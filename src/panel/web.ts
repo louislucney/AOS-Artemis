@@ -2947,7 +2947,7 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
       task.progress === null || task.progress === undefined
         ? ""
         : `<p>进度：<strong>${escapeHtml(taskProgressLabel(task.progress) ?? "—")}</strong> · 更新 ${relativeTime(task.progress.at)}${failureEvidence}</p>`,
-      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · ${runSummary}${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
+      `<p>状态：${escapeHtml(taskStatusLabel(task.status))}（<code>${escapeHtml(task.status)}</code>）${claimLine}${cancelLine} · 目标端 ${escapeHtml(task.platforms.join(", "))} · 基线 ${escapeHtml(task.baseline)} · 复位 ${task.resetPolicy === null ? "项目默认" : escapeHtml(task.resetPolicy)} · 优先级 P${task.priority} · 创建 ${relativeTime(task.createdAt)} · ${runSummary}${task.attempts > 1 ? ` · 已尝试 ${task.attempts} 次` : ""}${task.createdBy === null ? "" : ` · 来源 ${sourceHtml(task.createdBy)}`}</p>`,
       (() => {
         const badge = cBadge({ label: taskStatusLabel(task.status), tone: taskStatusTone(task.status) });
         const priorityBadge = cBadge({

@@ -79,6 +79,7 @@ import {
 } from "../console/dispatch.js";
 import { auditActionLabel } from "../console/vocab.js";
 import { writeTaskExecutionPlanForTask } from "../figma/task-execution-plan.js";
+import { parseResetPolicy } from "../device/reset-policy.js";
 import { resolveAppInstallPlan } from "../tasks/app-install.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 import {
@@ -1893,6 +1894,14 @@ async function createTask(
     return json(400, { error: "baseline 仅支持 latest/none" });
   }
   const baseline = payload.baseline === "none" ? "none" : "latest";
+  const rawResetPolicy =
+    typeof payload.resetPolicy === "string" ? payload.resetPolicy.trim() : "";
+  const resetPolicy = rawResetPolicy === "" ? null : parseResetPolicy(rawResetPolicy);
+  if (rawResetPolicy !== "" && resetPolicy === null) {
+    return json(400, {
+      error: "resetPolicy 仅支持 fresh/app-internal-reset/reuse/none"
+    });
+  }
   const priority = taskPriority(payload.priority);
   if (priority === null) {
     return json(400, { error: "优先级须为 0–100 的整数（priority）" });
@@ -2117,6 +2126,7 @@ async function createTask(
     appInstallMode: installPlan.plan.appInstallMode,
     appVersionExpected: installPlan.plan.appVersionExpected,
     appVersionCheck: installPlan.plan.appVersionCheck,
+    resetPolicy,
     materialsAssetId,
     caseIds
   });
@@ -2935,6 +2945,7 @@ async function rerunTask(
     priority: task.priority,
     appAssetId: task.appAssetId,
     appPackage: task.appPackage,
+    resetPolicy: task.resetPolicy,
     materialsAssetId: task.materialsAssetId,
     caseIds
   });

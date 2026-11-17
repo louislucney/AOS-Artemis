@@ -41,6 +41,7 @@ import { DataLeaseError, DataLeaseRegistry, type DataResource } from "./data-lea
 import { readAndroidTraceObservations } from "../artemis/android-trace.js";
 import type { LogcatWindowResult } from "../device/logcat.js";
 import type { AppResetOutcome } from "../device/reset.js";
+import type { ResetPolicy } from "../device/reset-policy.js";
 import type { Runtime } from "../runtime.js";
 import { logWarn } from "../log.js";
 import { errorMessage, writeFileAtomic } from "../util.js";
@@ -205,6 +206,8 @@ export interface CaseRunContext {
   secrets?: SecretEntry[];
   /** 回归任务 id；用于失败证据上传，手动 suite run 可为空。 */
   regressionTaskId?: string | null;
+  /** 任务级复位策略；缺省按项目 env / RESET_URL 推导。 */
+  resetPolicy?: ResetPolicy | null;
   quarantined: boolean;
   failOnApiErrors: boolean;
   apiCatalog: ApiCatalog;
@@ -840,7 +843,12 @@ async function executeCaseInner(
         { packageName: context.lockedAppPackage, serial: context.deviceSerial },
         {
           ...(context.iosDeviceWda !== null ? { device: context.iosDeviceWda } : {}),
-          env: runtimeEnv(context.runtime)
+          env: {
+            ...runtimeEnv(context.runtime),
+            ...(context.resetPolicy === null || context.resetPolicy === undefined
+              ? {}
+              : { AOS_RESET_POLICY: context.resetPolicy })
+          }
         }
       );
     } catch (error) {
