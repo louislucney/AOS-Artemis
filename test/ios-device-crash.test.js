@@ -31,7 +31,7 @@ test("ios device crash: 拉取、窗口与进程过滤", async () => {
   };
   const copied = await collectIosDeviceCrashes(
     {
-      udid: "00008101-000359440C69001E",
+      udid: "00008101-0000000000000000",
       startMs: inWindow - 60_000,
       endMs: inWindow + 60_000,
       processName: "com.example.app"

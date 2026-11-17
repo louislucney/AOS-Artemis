@@ -845,7 +845,7 @@ test("app_path 明确拒绝并写入任务行", async () => {
 
 test("app_path（真机 .ipa）：安装失败终止并记录", async () => {
   const { runtime } = await makeRuntime();
-  const deviceUdid = "00008110-001A2C681E22801E";
+  const deviceUdid = "00008110-0000000000000000";
   const ipaPath = path.join(runtime.project.rootDir, "app.ipa");
   fs.writeFileSync(ipaPath, "ipa");
   const calls = [];
@@ -880,7 +880,7 @@ test("app_path（真机 .ipa）：安装失败终止并记录", async () => {
 
 test("app_path（真机 .ipa URL）：远端产物走安装通道，不做本地存在性校验（ADR-0011）", async () => {
   const { runtime } = await makeRuntime();
-  const deviceUdid = "00008110-001A2C681E22801E";
+  const deviceUdid = "00008110-0000000000000000";
   const url = "https://ci.example.com/builds/app.ipa";
   const calls = [];
   const { chat } = scriptedChat([JSON.stringify({ thought: "完成", action: "done", summary: "ok" })]);
@@ -1530,7 +1530,7 @@ test("验证模型：AOS_IOS_VERIFY_LLM 不可用回退主模型（调用失败 
 
 test("失败日志：真机环形缓冲快照按时间窗过滤并落盘", async () => {
   const { runtime } = await makeRuntime();
-  const deviceUdid = "00008110-001A2C681E22801E";
+  const deviceUdid = "00008110-0000000000000000";
   const now = new Date();
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const pad = (value) => String(value).padStart(2, "0");

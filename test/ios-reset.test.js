@@ -52,6 +52,10 @@ test("resetIosApp: terminate(best-effort)+launch 成功", async () => {
     { platform: "darwin", device }
   );
   assert.equal(outcome.ok, true);
+  assert.equal(outcome.mode, "reuse");
+  assert.equal(outcome.capability, "unsupported");
+  assert.equal(outcome.supported, true);
+  assert.equal(outcome.degraded, false);
   assert.deepEqual(device.calls, [
     ["terminate", "com.apple.Preferences"],
     ["launch", "com.apple.Preferences"]
@@ -63,7 +67,7 @@ test("resetIosApp: terminate(best-effort)+launch 成功", async () => {
 test("resetIosApp: 真机 UDID 接受（best-effort）", async () => {
   const device = fakeDevice();
   const outcome = await resetIosApp(
-    { packageName: "com.apple.Preferences", serial: "00008110-001A2C681E22801E" },
+    { packageName: "com.apple.Preferences", serial: "00008110-0000000000000000" },
     { platform: "darwin", device }
   );
   assert.equal(outcome.ok, true);
@@ -73,7 +77,7 @@ test("resetIosApp: 真机 UDID 未注入设备 → 明确报错（不再错造�
   await assert.rejects(
     () =>
       resetIosApp(
-        { packageName: "com.apple.Preferences", serial: "00008110-001A2C681E22801E" },
+        { packageName: "com.apple.Preferences", serial: "00008110-0000000000000000" },
         { platform: "darwin" }
       ),
     /WDA provider/
@@ -112,6 +116,26 @@ test("resetIosApp: AOS_IOS_RESET_ALERTS 处理系统弹窗", async () => {
   ]);
 });
 
+test("resetIosApp: AOS_RESET_POLICY=fresh 显式 unsupported；none 不执行", async () => {
+  const fresh = await resetIosApp(
+    { packageName: "com.apple.Preferences", serial: UDID },
+    { platform: "darwin", device: fakeDevice(), env: { AOS_RESET_POLICY: "fresh" } }
+  );
+  assert.equal(fresh.ok, false);
+  assert.equal(fresh.reason, "ios-unsupported");
+  assert.equal(fresh.mode, "fresh");
+  assert.equal(fresh.supported, false);
+
+  const device = fakeDevice();
+  const none = await resetIosApp(
+    { packageName: "com.apple.Preferences", serial: UDID },
+    { platform: "darwin", device, env: { AOS_RESET_POLICY: "none" } }
+  );
+  assert.equal(none.ok, true);
+  assert.equal(none.mode, "none");
+  assert.deepEqual(device.calls, []);
+});
+
 test("resetIosApp: AOS_IOS_RESET_URL 走 App 内建复位并重新 launch", async () => {
   const device = fakeDevice();
   const outcome = await resetIosApp(
@@ -126,6 +150,8 @@ test("resetIosApp: AOS_IOS_RESET_URL 走 App 内建复位并重新 launch", asyn
     }
   );
   assert.equal(outcome.ok, true);
+  assert.equal(outcome.mode, "app-internal-reset");
+  assert.equal(outcome.capability, "deep-link");
   assert.deepEqual(device.calls, [
     ["terminate", "com.apple.Preferences"],
     ["launch", "com.apple.Preferences"],

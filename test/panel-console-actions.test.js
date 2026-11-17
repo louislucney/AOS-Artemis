@@ -181,6 +181,13 @@ test("console actions: 释放/停止/重新派发三动作（claimed 可释放�
   assert.deepEqual(rerunTask.refs, task.refs);
   assert.deepEqual(rerunTask.platforms, task.platforms);
   assert.equal(rerunTask.baseline, task.baseline);
+  const rerunPlan = JSON.parse(
+    await readFile(
+      join(rootPath, ".artemis", "design", "task-plans", `${rerunTask.id}.json`),
+      "utf8"
+    )
+  );
+  assert.equal(rerunPlan.taskId, rerunTask.id);
 
   const unknown = await handlePanelActionRequest(
     request("/panel/api/tasks/release", { project: rootPath, taskId: "nope" }),
@@ -366,6 +373,10 @@ test("console actions: 服务端重解析（case-set/keyword 不信客户端 ref
   assert.equal(bySet.status, 200);
   const task = JSON.parse(bySet.body).task;
   assert.deepEqual(task.refs, [{ caseSetId: sets[0].id, featureKey: "f-1" }], "refs 由服务端解析");
+  const taskPlan = JSON.parse(
+    await readFile(join(rootPath, ".artemis", "design", "task-plans", `${task.id}.json`), "utf8")
+  );
+  assert.equal(taskPlan.taskId, task.id);
 
   const stale = await handlePanelActionRequest(
     request("/panel/api/tasks", { project: rootPath, source: "case-set", ref: "cs-gone" }),

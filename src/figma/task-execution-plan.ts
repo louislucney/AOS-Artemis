@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { writeFileAtomic } from "../util.js";
+import { pruneJsonSidecars, sidecarRetentionFromEnv } from "./task-sidecar-retention.js";
 import {
   buildExecutionPlan,
   type ExecutionEngine,
@@ -69,6 +70,35 @@ export function validateTaskExecutionPlan(
   return reasons;
 }
 
+/** 创建任务后写旁车：所有创建入口共用，避免重跑/定时/Web job 漏写。 */
+export function writeTaskExecutionPlanForTask(
+  rootPath: string,
+  task: { id: string; platforms: readonly string[]; targetHostId: string | null },
+  options: {
+    env?: NodeJS.ProcessEnv;
+    warnings?: readonly string[];
+    createdAt?: string;
+  } = {}
+): TaskExecutionPlan {
+  const plan = buildTaskExecutionPlan({
+    taskId: task.id,
+    hostId: task.targetHostId,
+    platforms: task.platforms,
+    ...(options.env === undefined ? {} : { env: options.env }),
+    ...(options.warnings === undefined ? {} : { warnings: options.warnings }),
+    ...(options.createdAt === undefined ? {} : { createdAt: options.createdAt })
+  });
+  writeTaskExecutionPlan(rootPath, plan);
+  try {
+    const policy = sidecarRetentionFromEnv(options.env ?? process.env);
+    pruneJsonSidecars(path.dirname(taskExecutionPlanPath(rootPath, plan.taskId)), policy);
+    pruneJsonSidecars(path.join(rootPath, ".artemis", "design", "system-dialogs"), policy);
+  } catch {
+    /* 保留期清理 best effort，不影响任务创建 */
+  }
+  return plan;
+}
+
 export function buildTaskExecutionPlan(input: {
   taskId: string;
   hostId: string | null;
@@ -82,6 +112,8 @@ export function buildTaskExecutionPlan(input: {
   const platforms = input.platforms.filter(
     (platform): platform is ExecutionPlatform => platform === "ios" || platform === "android"
   );
+  const env = input.env ?? process.env;
+  const screenshots = (env.AOS_RUNNER_EVIDENCE_SCREENSHOTS ?? "1").trim() !== "0";
   return {
     schemaVersion: 1,
     taskId: input.taskId,
@@ -91,9 +123,10 @@ export function buildTaskExecutionPlan(input: {
     plans: platforms.map((platform) =>
       buildExecutionPlan({
         platform,
-        engine: input.engine ?? "proxy",
+        engine: input.engine ?? (platform === "ios" ? "ios-llm" : "proxy"),
         aliases: [...(input.aliases ?? [])],
-        env: input.env
+        env,
+        screenshots
       })
     ),
     warnings: [...(input.warnings ?? [])]

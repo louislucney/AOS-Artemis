@@ -1,7 +1,8 @@
 # Android / iOS 测试过程一致性设计
 
-> 2026-11-15 · 状态：**v0.2 · review 反馈已吸收，待确认后进入 Phase 0（只写方案，不改代码）**  
-> 关联：`docs/reports/ios-regression-2026-11-13.md`（周五 iOS 追溯）、`DESIGN.md` §5.3/§5.4、`src/figma/case-runner.ts`、`src/ios/run-loop.ts`、`src/artemis/failure-taxonomy.ts`
+> 2026-11-15 · 状态：**v0.2 已进入实现（Phase 1 主体落地）**；2026-11-16 只读审计确认同机链路闭环、跨机链路与 parity 仍有缺口，见[实现审计](../reports/cross-platform-consistency-audit-2026-11-16.md)
+>
+> 关联：`docs/reports/ios-regression-2026-11-13.md`（周五 iOS 追溯）、[实现审计](../reports/cross-platform-consistency-audit-2026-11-16.md)、`DESIGN.md` §5.3/§5.4、`src/figma/case-runner.ts`、`src/ios/run-loop.ts`、`src/artemis/failure-taxonomy.ts`
 
 ## 0. 一句话目标
 
@@ -27,7 +28,7 @@
 
 周五 iOS 的结果暴露了三类跨端问题：
 
-1. **数据隔离**：注册成功用例使用了 `testwithgu+202@gmail.com` 和固定手机号；后续用例直接进入登录/阻塞。
+1. **数据隔离**：注册成功用例使用了固定测试邮箱（`<redacted-email>`）和固定手机号；后续用例直接进入登录/阻塞。
 2. **步数预算**：iOS LLM 默认 30 步，长注册流程报“超出步数上限”；Android 没有同一个限制。
 3. **证据不足**：远端主要只有 `status.json`，没有逐步骤 `run.json`、截图、AX；取消后 trace 还可能停在 `running`。
 
@@ -178,10 +179,10 @@ Suite task
 - platform / engine
 - reset.mode（当前能确定 `app-internal-reset` 或 `reuse`）
 - data.policy=`per-platform` + aliases
-- budget=null（按要求不启软/硬 Token 预算）
+- budget=最小步数视图（iOS proxy `maxSteps/maxStepsEffective` 取 `AOS_IOS_MAX_STEPS`，默认 30；Android proxy 显式 `null` 表示未知；Token 软/硬预算仍未启用）
 - evidence.steps / screenshots
 
-完整 plan 生成、派发前门禁、raw secret 绑定仍未接入。
+plan 旁车与执行前门禁已接入；per-case×device plan、raw secret 绑定、fresh 四态仍未接入。
 
 ### 6.4 兼容性
 
@@ -372,7 +373,7 @@ reset: {
 - 要求 fresh 的用例：`supported=false`，标 `not-comparable` 或按项目策略跳过；
 - 可降级 reuse 的用例：显式 `degraded=true`，报告中披露，不假装已清数据；
 - 不能直接假设 `fullReset` 一定可用。
-- 当前实现已支持 `AOS_IOS_RESET_URL` 与 `AOS_ANDROID_RESET_URL`（launch → 内建复位入口 → wait → launch）；这是 `app-internal-reset` 的第一版适配器，完整 plan/capability 字段仍待接入。
+- 当前实现已支持 `AOS_IOS_RESET_URL` 与 `AOS_ANDROID_RESET_URL`（launch → 内建复位入口 → wait → launch）；这是 `app-internal-reset` 的第一版适配器。plan/outcome/证据已记录 `mode/capability/supported/degraded`，reset 失败/不支持/degraded 进入 parity；项目级 `AOS_RESET_POLICY=fresh|app-internal-reset|reuse|none` 已接：Android `fresh` 执行 `pm clear`，iOS `fresh` 显式 unsupported；任务级 override 仍待接入。
 
 ### 9.3 不支持时要显式
 
@@ -524,7 +525,7 @@ reset: {
 - 两端都执行 + 同一 data namespace/policy + 同预算维度 + 同复位模式 + 证据完整 → `comparable=true`。
 - 任一条件不同 → `not-comparable`，**不进入产品缺陷统计**。
 - 不要求 `ios.status == android.status`；通过率差异仍需人工/统计观察。
-- 已提供 `src/figma/execution-plan.ts` 的纯函数 parity 评估，并接入 `suite parity --task <id>`（默认 report-only，显式 `--fail-on-not-comparable` / `--fail-on-diff` / `--fail-on-dialog-diff` 可门禁；弹窗内容按 title/message/buttons 跨端比较）与面板任务页；任务报告仍未接入。
+- 已提供 `src/figma/execution-plan.ts` 的纯函数 parity 评估，并接入 `suite parity --task <id>`（默认 report-only，显式 `--fail-on-not-comparable` / `--fail-on-diff` / `--fail-on-dialog-diff` 可门禁；弹窗内容按 title/message/buttons 跨端比较，无捕获记录返回 `no-dialog-evidence`、两端 clear 才判一致；步数预算差异报 `budget-mismatch`）与面板任务页；任务报告仍未接入。
 - `ui-divergence` 必须由截图/AX 证据支撑：两端失败均为 `case-target-missing`，但截图/AX 显示控件实际存在/可见，才能归为“用例未适配跨端 UI”（`case-defect`）；缺证据时标 `inconclusive`，不能猜。
 - 原始控件差异（Picker、Permission Dialog、Navigation Bar 等）应由 adapter 归一化或 target 层适配，不直接判产品缺陷。
 
@@ -555,6 +556,8 @@ reset: {
 - 任务未带 plan 时，runner 生成 legacy plan；`executionParity` 默认 `not-comparable`，避免历史数据假比较。
 
 ## 14. 验收标准
+
+> **2026-11-16 v1 范围基线**：v1 门禁以 §15 Phase 1 + [实现审计](../reports/cross-platform-consistency-audit-2026-11-16.md) 为准。下列一期第 1/2 项（plan 数据 lease、预算映射）与二期第 5/6 项（Token 预算、OTP 冷却）转为 backlog，不计入 v1 完成度；Data Broker/OTP 见 §7.3 范围调整。v1 必须满足：证据在跨机拓扑可上传、parity 可判定（缺证据不得判 comparable）、plan 门禁在主拓扑生效、host-state 派发门禁、取消终态。
 
 一期（不依赖真实设备/PG）：
 
@@ -637,4 +640,21 @@ Phase 1 的每一步都可独立回滚；第 1 步不改变执行结果，只改
 - 失败语义增加 `otp-rate-limited`、`host-state`、`ui-divergence`。
 - 增加 Phase 0 数据/OTP 与 Token/中断恢复两个 Spike；随后按测试范围将 Data Broker/OTP 标为按需/可跳过。
 - 明确 v1 parity 只报告；只有 `comparable=true` 且结果不一致时才考虑发布阻断。
+
+### v0.3（2026-11-16，范围基线回写 + 审计）
+
+- 明确 v1 门禁范围：§14 一期第 1/2 项与二期第 5/6 项转为 backlog；v1 以 §15 Phase 1 为准。
+- 记录 2026-11-16 实现审计：同机链路闭环，跨机 plan/证据链、parity 文本门禁、弹窗假绿等未闭环；见[实现审计](../reports/cross-platform-consistency-audit-2026-11-16.md)。
+- 工作树脱敏：移除真实 UAT 邮箱/手机号与设备 UDID（公开历史处置见审计 P0-3）。
+
+## 19. 2026-11-16 实现审计：未闭环项
+
+只读审计（`66d2e75..HEAD`，45 提交）结论：同机执行链路基本闭环；**中心 + 远程 runner** 主拓扑仍未闭环。完整证据、行号与修复验收见[实现审计报告](../../reports/cross-platform-consistency-audit-2026-11-16.md)。摘要：
+
+- **P0**：task plan 未随跨机 bundle 下发，runner 侧门禁静默跳过；重跑/定时/Web job 创建任务不写 plan。通过用例不上传 `execution-evidence.json`，导致“一过一败”时 parity 缺证据。
+- **P1**：`suite parity --task` 文本模式忽略 `--fail-on-*`（只有 `--json` 生效）；弹窗无捕获记录时返回 `comparable=true`，跨机弹窗旁车也不同步。
+- **P2**：parity 只比较 reset/policy/aliases/steps，预算与引擎维度缺失（iOS 30 步 vs Android 不限仍可能 `comparable=true`）；data lease 租到递增前的值且默认关闭；证据整包 1MB 上限可能静默丢弃；`fresh/none/capability/degraded`、`ui-divergence`、报告 parity 未落地。
+- **待办优先级**：plan 跨机 → 终态证据上传 → parity 返回码/语义 → lease 与弹窗同步 → 文档与门禁集成测试。
+- **2026-11-16 修复**：P0-1（plan 随 bundle/缺失重建/创建入口）、P0-2（终态 evidence 上传 + 预算裁剪）、P1-1（文本模式 fail 门禁）已修复；P1-2 部分修复（无证据不判一致、clear 记录、跨机同步已接；iOS 心跳待做）；P2-1 已处理（步数预算已纳入；引擎差异按设计不比较）；`npm test` 3452 绿；静默 catch 审计无新增。
+- **2026-11-17 追加**：P2-2 本地锁 + 中心原子租约、P2-3 上传失败审计、P2-4 项目级 reset policy（Android fresh/none；iOS fresh unsupported）、P2-5 任务报告 parity、P3-1/3/4/6/7/8 已处理；**P0-3 决策 A**（接受公开历史暴露 + 账号处置，不重写历史；清单见 `docs/reports/p0-3-account-disposal-checklist.md`）。剩余项决策见审计报告 §11。
 

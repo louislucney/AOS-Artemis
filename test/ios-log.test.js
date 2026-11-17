@@ -12,7 +12,7 @@ import {
 } from "../dist/device/ios-log.js";
 
 const UDID = "65584900-E161-4125-8928-587499DD6457";
-const DEVICE_UDID = "00008101-000359440C69001E";
+const DEVICE_UDID = "00008101-0000000000000000";
 
 function fakeExec(result) {
   const calls = [];

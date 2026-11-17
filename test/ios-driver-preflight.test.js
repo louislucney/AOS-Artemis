@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { iosDriverPreflight } from "../dist/ios/appium/preflight.js";
 
-const DEVICE = "00008110-001A2C681E22801E";
+const DEVICE = "00008110-0000000000000000";
 const SIMULATOR = "CC8A4E1E-F87F-4EED-ADFB-A218C4294C2A";
 
 function detection({ found = true, installed = false } = {}) {

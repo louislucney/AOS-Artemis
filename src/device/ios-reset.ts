@@ -9,6 +9,7 @@ import {
   type AppResetOutcome,
   type AppResetRequest
 } from "./reset.js";
+import { resolveResetPolicy } from "./reset-policy.js";
 
 export interface IosResetOptions extends IosDeviceOptions {
   device?: IosDevice;
@@ -35,9 +36,29 @@ export async function resetIosApp(
   const serial = request.serial ?? null;
   const packageName = request.packageName?.trim() ?? "";
   const commands: string[][] = [];
+  const resetUrl = (env.AOS_IOS_RESET_URL ?? "").trim();
+  const policy = resolveResetPolicy(env);
+  const effective = policy ?? (resetUrl === "" ? "reuse" : "app-internal-reset");
+  const meta = {
+    mode: effective,
+    capability:
+      effective === "fresh"
+        ? ("full-reset" as const)
+        : effective === "app-internal-reset"
+          ? ("deep-link" as const)
+          : ("unsupported" as const),
+    supported:
+      effective === "fresh"
+        ? false
+        : effective === "app-internal-reset"
+          ? resetUrl !== ""
+          : true,
+    degraded: false
+  };
 
   if (!APP_PACKAGE_PATTERN.test(packageName)) {
     return {
+      ...meta,
       ok: false,
       reason: "invalid-package",
       message: `非法应用包名：${request.packageName}`,
@@ -48,6 +69,7 @@ export async function resetIosApp(
   }
   if (platform !== "darwin") {
     return {
+      ...meta,
       ok: false,
       reason: "ios-unsupported",
       message: "iOS 复位仅支持 macOS。",
@@ -58,9 +80,36 @@ export async function resetIosApp(
   }
   if (!serial || !classifyIosSerial(serial)) {
     return {
+      ...meta,
       ok: false,
       reason: "ios-unsupported",
       message: "iOS 复位需要 iOS 设备 UDID（模拟器或真机）。",
+      serial,
+      adb: MISSING_ADB,
+      commands
+    };
+  }
+
+  if (effective === "none") {
+    return { ...meta, ok: true, serial, adb: MISSING_ADB, commands };
+  }
+  if (effective === "fresh") {
+    return {
+      ...meta,
+      ok: false,
+      reason: "ios-unsupported",
+      message: "iOS 不支持 fresh 复位；请使用 app-internal-reset 或 reuse。",
+      serial,
+      adb: MISSING_ADB,
+      commands
+    };
+  }
+  if (effective === "app-internal-reset" && resetUrl === "") {
+    return {
+      ...meta,
+      ok: false,
+      reason: "app-internal-reset-failed",
+      message: "AOS_RESET_POLICY=app-internal-reset 需要 AOS_IOS_RESET_URL",
       serial,
       adb: MISSING_ADB,
       commands
@@ -79,6 +128,7 @@ export async function resetIosApp(
     }));
   if (device === null) {
     return {
+      ...meta,
       ok: false,
       reason: "ios-unsupported",
       message: "无法解析 iOS 设备。",
@@ -109,6 +159,7 @@ export async function resetIosApp(
     await device.launch(packageName);
   } catch (error) {
     return {
+      ...meta,
       ok: false,
       reason: "launch-failed",
       message: errorMessage(error),
@@ -125,6 +176,7 @@ export async function resetIosApp(
       await device.handleAlerts({ mode: alertMode });
     } catch (error) {
       return {
+        ...meta,
         ok: false,
         reason: "launch-failed",
         message: `系统弹窗处理失败：${errorMessage(error)}`,
@@ -135,13 +187,13 @@ export async function resetIosApp(
     }
   }
 
-  const resetUrl = (env.AOS_IOS_RESET_URL ?? "").trim();
-  if (resetUrl !== "") {
+  if (effective === "app-internal-reset") {
     commands.push(["openUrl", resetUrl]);
     try {
       await device.openUrl(resetUrl);
     } catch (error) {
       return {
+        ...meta,
         ok: false,
         reason: "app-internal-reset-failed",
         message: `应用内建复位入口打开失败：${errorMessage(error)}`,
@@ -156,6 +208,7 @@ export async function resetIosApp(
       await device.launch(packageName);
     } catch (error) {
       return {
+        ...meta,
         ok: false,
         reason: "app-internal-reset-failed",
         message: `应用内建复位后重新启动失败：${errorMessage(error)}`,
@@ -166,5 +219,5 @@ export async function resetIosApp(
     }
   }
 
-  return { ok: true, serial, adb: MISSING_ADB, commands };
+  return { ...meta, ok: true, serial, adb: MISSING_ADB, commands };
 }

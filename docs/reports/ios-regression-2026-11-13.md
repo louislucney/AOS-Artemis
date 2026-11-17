@@ -1,9 +1,11 @@
 # iOS 回归追溯（2026-11-13 星期五）
 
+> 脱敏说明（2026-11-16）：本报告中的测试邮箱、手机号与设备 UDID 已替换为占位符；原始值仅保留在受控测试资料中。历史提交中的原值需按 [审计报告](cross-platform-consistency-audit-2026-11-16.md) P0-3 处理。
+
 ## 1. 范围与证据
 
 - 项目：`ESSO-GU`
-- 平台：iOS 真机 `00008101-000359440C69001E`（iPhone 10,2 / iOS 16.7.16）
+- 平台：iOS 真机 `00008101-…（已脱敏）`（iPhone 10,2 / iOS 16.7.16）
 - 时间：2026-11-13 16:30–20:07（Asia/Shanghai）
 - 执行机：`local-mac`，runner 版本从 `0.3.26` → `0.3.31`
 - 测试用例：
@@ -97,7 +99,7 @@
 | 用例 | 结果 | 说明 |
 |---|---|---|
 | ii.Successful registration | failed | 最终停在 Home：没有 In-App Terms & Conditions、没有 Register_Done、没有 Points Earned；无法证明注册成功 |
-| iii.Failed registration -- Reject Tnc | failed | `testwithgu+202@gmail.com` 已在 UAT 后端存在，应用连续 3 次进入 Login 密码页而非注册选卡页，环境数据阻塞 |
+| iii.Failed registration -- Reject Tnc | failed | `<redacted-email>` 已在 UAT 后端存在，应用连续 3 次进入 Login 密码页而非注册选卡页，环境数据阻塞 |
 
 ## 5. 需要提高的地方
 
@@ -122,7 +124,7 @@
 
 失败链路非常明确：
 
-1. 第一轮使用 `testwithgu+202@gmail.com` 和手机号 `6953512` 进入注册。
+1. 第一轮使用 `<redacted-email>` 和手机号 `<redacted-phone>` 进入注册。
 2. 后续轮次同一个邮箱已被注册，应用直接进入 Login 密码页，`Reject Tnc` 无法复现。
 3. 同一个已注册手机号提交后仍进入验证码页，没有出现“已注册”弹窗。
 
@@ -135,13 +137,13 @@
 建议：
 
 - 用 `0.3.33` 重跑并确认 `reg_email` 每用例递增（`+203`、`+204`…）。
-- 增加手机号/OTP 的测试数据池或清理接口；没有清理能力时，注册类用例必须使用一次性号码，不能复用 `6953512`。
+- 增加手机号/OTP 的测试数据池或清理接口；没有清理能力时，注册类用例必须使用一次性号码，不能复用 `<redacted-phone>`。
 - 为失败注册/TNC 这类“需要未注册账号”的用例单独准备数据，不要和成功注册用例共用邮箱/手机号。
 - 数据序号最好由中心分配或同步，而不是只在执行机本地递增。
 
 ### P0-3 先确认三个产品问题，避免把自动化问题当产品缺陷
 
-1. **已注册手机号仍进入 OTP**：`6953512` 已注册，但应用仍允许继续到验证码页，没有 `Mobile number has already been registered.` 弹窗。
+1. **已注册手机号仍进入 OTP**：`<redacted-phone>` 已注册，但应用仍允许继续到验证码页，没有 `Mobile number has already been registered.` 弹窗。
 2. **Forgot email 弹窗不出现**：两轮/iOS 真机多次点击后页面完全不变。
 3. **注册成功缺少关键证据**：最终在 Home，但没有 T&C、Register_Done、Points Earned。
 
@@ -207,7 +209,7 @@ Virtual Card 检查中发现：
 
 ### P2 其他改进
 
-- 登录用例需要已注册测试账号（`uat.tester@smilesguam.com` 返回未注册），应在任务资料中固定提供可用账号或注册/清理接口。
+- 登录用例需要已注册测试账号（`<redacted-email-2>` 返回未注册），应在任务资料中固定提供可用账号或注册/清理接口。
 - 同一天先跑 Landing/Login，再跑注册，注册用例污染了后续数据；建议按“只读用例 → 注册成功 → 注册失败”分组，或每组独立环境。
 - 运行记录 `total` 包含未执行用例，`passed/failed` 不能直接表达“执行了几条”；建议增加 `executed/skipped/notRun`。
 - 任务被取消后，最终 `suite-partial` 与“通过 1/3”应明确区分“人工取消”，不要混在失败域里。

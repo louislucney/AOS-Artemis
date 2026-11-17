@@ -44,7 +44,7 @@ async function setupIos({ statuses = {} } = {}) {
 
 test("suiteResetFor: iOS 设备 UDID 用 iOS 复位，其余用 adb", () => {
   assert.equal(suiteResetFor(UDID), resetIosApp);
-  assert.equal(suiteResetFor("00008110-001A2C681E22801E"), resetIosApp);
+  assert.equal(suiteResetFor("00008110-0000000000000000"), resetIosApp);
   assert.equal(suiteResetFor("emulator-5554"), resetApp);
   assert.equal(suiteResetFor(null), resetApp);
 });
@@ -149,7 +149,7 @@ test("suite runner: 多条用例的测试邮箱自动递增（+203、+204）", a
     writeStatus(dir, trace, { trace_id: trace, status: "completed", device_serial: UDID });
   }
   const secrets = [
-    { alias: "reg_email", value: "testwithgu+202@gmail.com", kind: "account" }
+    { alias: "reg_email", value: "qa+202@example.com", kind: "account" }
   ];
   const report = await runGeneratedTests(runtime, {
     deviceSerial: UDID,
@@ -174,13 +174,13 @@ test("suite runner: 多条用例的测试邮箱自动递增（+203、+204）", a
   assert.equal(report.ok, true);
   const submits = proxy.calls.filter((call) => call.name === "mobile_run_task");
   assert.equal(submits.length, 2);
-  assert.match(submits[0].args.task_desc, /testwithgu\+203@gmail\.com/);
-  assert.match(submits[1].args.task_desc, /testwithgu\+204@gmail\.com/);
-  assert.equal(secrets[0].value, "testwithgu+202@gmail.com");
+  assert.match(submits[0].args.task_desc, /qa\+203@example\.com/);
+  assert.match(submits[1].args.task_desc, /qa\+204@example\.com/);
+  assert.equal(secrets[0].value, "qa+202@example.com");
   const state = JSON.parse(
     fs.readFileSync(path.join(runtime.configDirAbs, "secret-sequences.json"), "utf8")
   );
-  assert.equal(state["testwithgu@gmail.com#202"].last, 204);
+  assert.equal(state["qa@example.com#202"].last, 204);
 });
 
 test("suite runner: 已显式引用 alias 不重复注入", async () => {
@@ -447,7 +447,7 @@ test("suite runner: iOS 探索命中写入对账资产（same trace 幂等）", 
 
 test("suite runner: iOS 真机 IPA 只在套件开始安装一次，用例内不再带 app_path", async () => {
   __resetIosTasks();
-  const REAL = "00008110-001A2C681E22801E";
+  const REAL = "00008110-0000000000000000";
   const { dir, proxy, runtime } = await setupIos();
   fs.writeFileSync(
     path.join(runtime.configDirAbs, "design", "tests.json"),

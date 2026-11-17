@@ -5,6 +5,21 @@ import type { ProjectStore, TaskEvidenceUpload } from "../../db/types.js";
 import { configDirAbs } from "../../artemis/assembly.js";
 import { loadProject } from "../../config/loader.js";
 import { designFlowsPath } from "../../figma/design-source.js";
+import {
+  DataLeaseError,
+  DataLeaseRegistry,
+  type DataLeaseRecord,
+  type DataResource,
+  type DataRiskLevel
+} from "../../figma/data-lease.js";
+import {
+  normalizeStoredSystemDialog,
+  writeSystemDialog
+} from "../../figma/system-dialog-store.js";
+import {
+  readTaskExecutionPlan,
+  writeTaskExecutionPlanForTask
+} from "../../figma/task-execution-plan.js";
 import { leaseTokenMatches } from "./lease-token.js";
 import { writeFileAtomic } from "../../util.js";
 import { RunnerControlError } from "./errors.js";
@@ -194,6 +209,7 @@ export class SuiteControlService {
       caseSets: selected,
       documents,
       flows,
+      taskPlan: readTaskExecutionPlan(rootPath, taskId),
       appAsset,
       materialsAsset
     };
@@ -274,10 +290,15 @@ export class SuiteControlService {
     return await this.store.updateRegressionTask(rootPath, taskId, patch);
   }
 
-  async uploadEvidence(args: Record<string, unknown>): Promise<{ saved: string[] }> {
+  async uploadEvidence(
+    args: Record<string, unknown>
+  ): Promise<{ saved: string[]; skipped: string[] }> {
     const input = requireObject<TaskEvidenceUpload>(args, "input");
     await this.assertRunnerProject(input.rootPath, this.hostId);
     await assertTaskVisible(this.store, input.rootPath, input.taskId, this.hostId);
+    if (!/^[A-Za-z0-9._-]+$/.test(input.taskId)) {
+      throw new RunnerControlError("invalid-state", "taskId 含非法字符");
+    }
     if (!/^[A-Za-z0-9._-]+$/.test(input.traceId)) {
       throw new RunnerControlError("invalid-state", "traceId 含非法字符");
     }
@@ -295,9 +316,19 @@ export class SuiteControlService {
     const screenshotName = /^evidence-shot-\d+\.(png|jpe?g)$/i;
     const dir = path.join(input.rootPath, ".artemis", "remote-evidence", input.taskId, input.traceId);
     fs.mkdirSync(dir, { recursive: true });
+    const priority = (name: string): number =>
+      name === "execution-evidence.json"
+        ? 0
+        : name === "ax-final.json"
+          ? 1
+          : screenshotName.test(name)
+            ? 3
+            : 2;
+    const ordered = [...input.files].sort((a, b) => priority(a.name) - priority(b.name));
     const saved: string[] = [];
+    const skipped: string[] = [];
     let total = 0;
-    for (const file of input.files) {
+    for (const file of ordered) {
       if (!allowed.has(file.name) && !screenshotName.test(file.name)) {
         throw new RunnerControlError("invalid-state", `不允许上传证据文件：${file.name}`);
       }
@@ -305,15 +336,144 @@ export class SuiteControlService {
       if (buffer.length > 256 * 1024) {
         throw new RunnerControlError("invalid-state", `证据文件超过 256KB：${file.name}`);
       }
-      total += buffer.length;
-      if (total > 1024 * 1024) {
-        throw new RunnerControlError("invalid-state", "证据包超过 1MB");
+      if (total + buffer.length > 1024 * 1024) {
+        skipped.push(file.name);
+        continue;
       }
+      total += buffer.length;
       const target = path.join(dir, file.name);
       writeFileAtomic(target, buffer);
       saved.push(path.relative(input.rootPath, target));
     }
-    return { saved };
+    return { saved, skipped };
+  }
+
+  private dataLeaseFile(rootPath: string): string {
+    const configured = (this.env.AOS_DATA_LEASE_FILE ?? "").trim();
+    if (configured !== "") {
+      return path.isAbsolute(configured) ? configured : path.join(rootPath, configured);
+    }
+    return path.join(rootPath, ".artemis", "design", "data-leases.json");
+  }
+
+  private dataLeaseLockTimeout(): number {
+    const parsed = Number.parseInt(this.env.AOS_DATA_LEASE_LOCK_TIMEOUT_MS ?? "", 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : 5_000;
+  }
+
+  private dataLeaseTtl(): number | undefined {
+    const parsed = Number.parseInt(this.env.AOS_DATA_LEASE_TTL_MS ?? "", 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+  }
+
+  private leaseError(error: DataLeaseError): RunnerControlError {
+    return new RunnerControlError(
+      `data-lease-${error.code}` as
+        | "data-lease-busy"
+        | "data-lease-cooldown"
+        | "data-lease-not-found"
+        | "data-lease-already-released",
+      error.message
+    );
+  }
+
+  async allocateDataLease(args: Record<string, unknown>): Promise<DataLeaseRecord> {
+    const input = requireObject<{
+      rootPath: string;
+      taskId: string;
+      resource: string;
+      value: string;
+      provider?: string;
+      riskLevel?: string;
+      cooldownMs?: number;
+    }>(args, "input");
+    await this.assertRunnerProject(input.rootPath, this.hostId);
+    await assertTaskVisible(this.store, input.rootPath, input.taskId, this.hostId);
+    await this.assertTaskInstance(input.rootPath, input.taskId);
+    const resources: DataResource[] = ["email", "phone", "otp", "card", "account"];
+    if (!resources.includes(input.resource as DataResource)) {
+      throw new RunnerControlError("invalid-state", `未知数据资源：${input.resource}`);
+    }
+    if (input.value.trim() === "") {
+      throw new RunnerControlError("invalid-state", "数据值为空");
+    }
+    const risks: DataRiskLevel[] = ["low", "medium", "high"];
+    const riskLevel = risks.includes(input.riskLevel as DataRiskLevel)
+      ? (input.riskLevel as DataRiskLevel)
+      : undefined;
+    const registry = new DataLeaseRegistry({
+      file: this.dataLeaseFile(input.rootPath),
+      lockTimeoutMs: this.dataLeaseLockTimeout(),
+      ...(this.dataLeaseTtl() === undefined ? {} : { leaseTtlMs: this.dataLeaseTtl() })
+    });
+    try {
+      return registry.allocate({
+        resource: input.resource as DataResource,
+        value: input.value,
+        taskId: input.taskId,
+        ...(input.provider === undefined ? {} : { provider: input.provider }),
+        ...(riskLevel === undefined ? {} : { riskLevel }),
+        ...(input.cooldownMs === undefined ? {} : { cooldownMs: input.cooldownMs })
+      });
+    } catch (error) {
+      if (error instanceof DataLeaseError) throw this.leaseError(error);
+      throw error;
+    }
+  }
+
+  async releaseDataLease(args: Record<string, unknown>): Promise<DataLeaseRecord> {
+    const input = requireObject<{
+      rootPath: string;
+      taskId: string;
+      leaseId: string;
+    }>(args, "input");
+    await this.assertRunnerProject(input.rootPath, this.hostId);
+    await assertTaskVisible(this.store, input.rootPath, input.taskId, this.hostId);
+    await this.assertTaskInstance(input.rootPath, input.taskId);
+    const registry = new DataLeaseRegistry({
+      file: this.dataLeaseFile(input.rootPath),
+      lockTimeoutMs: this.dataLeaseLockTimeout(),
+      ...(this.dataLeaseTtl() === undefined ? {} : { leaseTtlMs: this.dataLeaseTtl() })
+    });
+    const lease = registry.get(input.leaseId);
+    if (lease === null) {
+      throw new RunnerControlError("data-lease-not-found", `未知租约：${input.leaseId}`);
+    }
+    if (lease.taskId !== undefined && lease.taskId !== input.taskId) {
+      throw new RunnerControlError("forbidden", "租约不属于该任务");
+    }
+    try {
+      return registry.release(input.leaseId);
+    } catch (error) {
+      if (error instanceof DataLeaseError) throw this.leaseError(error);
+      throw error;
+    }
+  }
+
+  async recordSystemDialog(args: Record<string, unknown>): Promise<{ saved: boolean }> {
+    const input = requireObject<{
+      rootPath: string;
+      taskId: string;
+      dialog: unknown;
+    }>(args, "input");
+    await this.assertRunnerProject(input.rootPath, this.hostId);
+    const task = await this.store.getRegressionTask(input.rootPath, input.taskId);
+    if (task === null) {
+      throw new RunnerControlError("not-found", `未知任务 ${input.taskId}`);
+    }
+    await assertTaskVisible(this.store, input.rootPath, input.taskId, this.hostId);
+    await this.assertTaskInstance(input.rootPath, input.taskId);
+    const dialog = normalizeStoredSystemDialog(input.dialog);
+    if (dialog === null) {
+      throw new RunnerControlError("invalid-state", "系统弹窗记录格式非法");
+    }
+    if (!task.platforms.includes(dialog.platform)) {
+      throw new RunnerControlError(
+        "invalid-state",
+        `系统弹窗平台 ${dialog.platform} 不在任务目标端`
+      );
+    }
+    return { saved: writeSystemDialog(input.rootPath, input.taskId, dialog) };
   }
 
   async listCaseSets(args: Record<string, unknown>): Promise<unknown> {
@@ -560,7 +720,16 @@ export class SuiteControlService {
       "input"
     );
     await this.assertRunnerProject(input.rootPath, this.hostId);
-    return await this.store.createRegressionTask({ ...input, createdHostId: this.hostId });
+    const task = await this.store.createRegressionTask({
+      ...input,
+      createdHostId: this.hostId
+    });
+    try {
+      writeTaskExecutionPlanForTask(input.rootPath, task, { env: this.env });
+    } catch {
+      /* plan sidecar 不阻断已创建任务 */
+    }
+    return task;
   }
 
   async recordAudit(args: Record<string, unknown>): Promise<unknown> {
@@ -603,6 +772,12 @@ export class SuiteControlService {
         return await this.updateTask(args);
       case "uploadEvidence":
         return await this.uploadEvidence(args);
+      case "recordSystemDialog":
+        return await this.recordSystemDialog(args);
+      case "allocateDataLease":
+        return await this.allocateDataLease(args);
+      case "releaseDataLease":
+        return await this.releaseDataLease(args);
       case "listCaseSets":
         return await this.listCaseSets(args);
       case "recordRun":

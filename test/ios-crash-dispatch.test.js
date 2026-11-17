@@ -4,7 +4,7 @@ import test from "node:test";
 import { collectIosCrashesFor } from "../dist/crash/ios-dispatch.js";
 
 const SIM_UDID = "65584900-E161-4125-8928-587499DD6457";
-const DEVICE_UDID = "00008110-001A2C681E22801E";
+const DEVICE_UDID = "00008110-0000000000000000";
 const EMPTY = { records: [], scanned: 0, skipped: null };
 
 test("collectIosCrashesFor: 模拟器 serial → simulator 采集器（source diagnostic-reports）", async () => {

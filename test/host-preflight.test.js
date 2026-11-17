@@ -95,7 +95,7 @@ import { checkIosDeviceStorage } from "../dist/figma/host-preflight.js";
 
 test("host preflight: iOS 真机 disk_usage 低于阈值阻断", async () => {
   const result = await checkIosDeviceStorage({
-    serial: "00008101-000359440C69001E",
+    serial: "00008101-0000000000000000",
     env: { AOS_IDEVICEINFO_PATH: "/bin/echo" },
     exec: dfExec("TotalDataAvailable: 50\nTotalDataCapacity: 1000\n")
   });
@@ -107,7 +107,7 @@ test("host preflight: iOS 真机 disk_usage 低于阈值阻断", async () => {
 
 test("host preflight: iOS disk_usage 不可解析不阻断", async () => {
   const result = await checkIosDeviceStorage({
-    serial: "00008101-000359440C69001E",
+    serial: "00008101-0000000000000000",
     env: { AOS_IDEVICEINFO_PATH: "/bin/echo" },
     exec: dfExec("unexpected")
   });

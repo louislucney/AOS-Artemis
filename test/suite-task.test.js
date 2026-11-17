@@ -965,7 +965,7 @@ test("suite run --task: 设备已安装模式版本不一致 → 执行前失败
   });
   const { code, errors } = await runCli(
     runtime,
-    ["run", "--task", task.id, "--device", "00008110-001A2C681E22801E"],
+    ["run", "--task", task.id, "--device", "00008110-0000000000000000"],
     {
       iosAppVersionReader: async () => ({
         ok: true,
@@ -1004,7 +1004,7 @@ test("suite run --task: iOS 真机缺 XCUITest 驱动 → 环境预检失败 exi
     "--task",
     task.id,
     "--device",
-    "00008110-001A2C681E22801E"
+    "00008110-0000000000000000"
   ]);
   assert.equal(code, 2);
   assert.match(errors.join("\n"), /appium driver install xcuitest/);

@@ -1,12 +1,14 @@
 import type { ProjectStore } from "../db/types.js";
 import { recordAuditSafe } from "../db/audit-event.js";
 import { latestFeatureRefs, type ResolvedTaskRef } from "../tasks/feature-refs.js";
+import { writeTaskExecutionPlanForTask } from "../figma/task-execution-plan.js";
 import { errorMessage } from "../util.js";
 
 export interface FireSchedulesOptions {
   store: ProjectStore;
   rootPath: string;
   now?: () => number;
+  env?: NodeJS.ProcessEnv;
   io?: { log: (line: string) => void; errorLog: (line: string) => void };
 }
 
@@ -79,6 +81,13 @@ export async function fireDueSchedules(options: FireSchedulesOptions): Promise<n
           baseline: schedule.baseline,
           createdBy: `schedule:${schedule.name}`
         });
+        try {
+          writeTaskExecutionPlanForTask(options.rootPath, task, {
+            env: options.env ?? process.env
+          });
+        } catch {
+          /* plan sidecar 不阻断已创建任务 */
+        }
         fired += 1;
         io.log(`[schedule] 触发 ${schedule.name} → 任务 ${task.id}`);
         await recordAuditSafe(options.store, options.rootPath, {

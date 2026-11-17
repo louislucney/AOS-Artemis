@@ -35,12 +35,12 @@ test("ios capabilities: 默认值与 env 覆盖", () => {
 
   assert.equal("appium:showXcodeLog" in defaults, false, "模拟器不开启 xcodebuild 日志");
   const real = buildIosCapabilities({
-    udid: "00008110-001A2C681E22801E",
+    udid: "00008110-0000000000000000",
     env: { AOS_IOS_XCODE_ORG_ID: "TEAM123" }
   });
   assert.equal(real["appium:showXcodeLog"], true, "真机默认记录 xcodebuild 输出");
   const silent = buildIosCapabilities({
-    udid: "00008110-001A2C681E22801E",
+    udid: "00008110-0000000000000000",
     env: { AOS_IOS_XCODE_ORG_ID: "TEAM123", AOS_IOS_SHOW_XCODE_LOG: "0" }
   });
   assert.equal("appium:showXcodeLog" in silent, false);

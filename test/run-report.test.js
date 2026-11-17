@@ -12,6 +12,8 @@ import {
   updateTestsWorkbookWithResults
 } from "../dist/figma/run-report.js";
 import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
+import { buildExecutionPlan } from "../dist/figma/execution-plan.js";
+import { writeSystemDialog } from "../dist/figma/system-dialog-store.js";
 import { baseConfig, loadTestRuntime, makeTempProject, StubProxy } from "./helpers.js";
 
 const TEST_RESULT_HEADERS = [
@@ -436,6 +438,81 @@ test("task report: 逐例来自 suite_runs、单功能命名、功能/端列", a
   assert.equal(sheet.getRow(1).getCell(4).value, "功能");
   assert.equal(sheet.getRow(2).getCell(4).value, "登录流程");
   assert.equal(sheet.getRow(2).getCell(5).value, "android");
+});
+
+test("task report: 跨端一致性进入 JSON 与 xlsx sheet", async () => {
+  const { runtime, store } = await setup();
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: "cs-1", featureKey: "f-1" }],
+    platforms: ["ios", "android"],
+    baseline: "latest",
+    createdBy: "cli"
+  });
+  for (const platform of ["ios", "android"]) {
+    const traceId = `trace-${platform}`;
+    const dir = path.join(
+      runtime.project.rootDir,
+      ".artemis",
+      "remote-evidence",
+      task.id,
+      traceId
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "execution-evidence.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        plan: buildExecutionPlan({
+          platform,
+          engine: platform === "ios" ? "ios-llm" : "proxy",
+          aliases: ["reg_email"],
+          env: {}
+        }),
+        stepsAvailable: true,
+        reset: { ok: true }
+      })
+    );
+    writeSystemDialog(runtime.project.rootDir, task.id, {
+      platform,
+      status: "clear",
+      title: null,
+      message: null,
+      buttons: [],
+      at: "2026-11-16T00:00:00.000Z"
+    });
+    const input = taskRunInput(task.id, "f-1", "登录流程", [
+      { caseId: "case-1", name: "Case 1", status: "passed", traceId }
+    ]);
+    input.run.platform = platform;
+    input.run.device = platform === "ios" ? "ios-device" : "emulator-5554";
+    input.cases.forEach((entry) => {
+      entry.platform = platform;
+    });
+    await store.recordSuiteRun({
+      rootPath: runtime.project.rootDir,
+      ...input
+    });
+  }
+
+  const report = await buildTaskRunReport(runtime, { taskId: task.id, stamp: "20261116-120000" });
+  assert.equal(report.ok, true);
+  assert.equal(report.executionParity?.length, 1);
+  assert.equal(report.executionParity?.[0].comparable, true);
+  assert.ok(report.executionParity?.[0].limitations.includes("budget-unknown"));
+  assert.equal(report.systemDialogParity?.comparable, true);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fs.readFileSync(report.saved.xlsx));
+  const sheet = workbook.getWorksheet("跨端一致性");
+  assert.ok(sheet, "跨端一致性 sheet");
+  assert.equal(sheet.getRow(1).getCell(1).value, "用例");
+  assert.equal(sheet.getRow(2).getCell(1).value, "case-1");
+  assert.ok(
+    Array.from({ length: sheet.rowCount }, (_, index) =>
+      String(sheet.getRow(index + 1).getCell(1).value ?? "")
+    ).includes("弹窗")
+  );
 });
 
 test("task report: 多功能 → 多功能N项 命名", async () => {

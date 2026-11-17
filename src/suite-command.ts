@@ -67,7 +67,10 @@ import {
 } from "./figma/host-preflight.js";
 import { readAndroidSystemDialog } from "./figma/android-system-dialog.js";
 import { readIosSystemDialog } from "./figma/ios-system-dialog.js";
-import { compareSystemDialogs, readSystemDialogs, writeSystemDialog } from "./figma/system-dialog-store.js";
+import {
+  writeSystemDialog,
+  type StoredSystemDialog
+} from "./figma/system-dialog-store.js";
 import {
   buildTaskExecutionPlan,
   readTaskExecutionPlan,
@@ -90,6 +93,7 @@ import {
 import { buildUiContract, type UiContract, type UiScreenContract } from "./ui/contract.js";
 import { runUiLint } from "./ui/lint.js";
 import { auditUiParity } from "./ui/parity.js";
+import { evaluateTaskExecutionParity } from "./figma/execution-parity.js";
 import {
   loadUiParityBaseline,
   partitionByBaseline,
@@ -107,11 +111,7 @@ import {
 import { runTextWeightCalibration } from "./ui/text-calibrate.js";
 import { runReferenceCalibration } from "./web/reference-calibrate.js";
 import { compareParityDocs, readParityDoc } from "./figma/parity.js";
-import {
-  compareExecutionParity,
-  type ExecutionParityRecord,
-  type ExecutionPlanView
-} from "./figma/execution-plan.js";
+
 import { readPenTextBounds } from "./pen/bounds.js";
 import type { WarningSummary } from "./design/warnings.js";
 import {
@@ -188,6 +188,9 @@ export interface SuiteCliDeps {
   iosLogCollector?: IosLogCollectorFn;
   /** Injected for tests; defaults to `readIosInstalledAppVersion`. */
   iosAppVersionReader?: typeof readIosInstalledAppVersion;
+  /** Injected for tests; defaults to `readAndroidSystemDialog` / `readIosSystemDialog`. */
+  androidSystemDialogReader?: typeof readAndroidSystemDialog;
+  iosSystemDialogReader?: typeof readIosSystemDialog;
   /** Injected for tests; defaults to `xcrun xcresulttool get test-results tests`. */
   xcresultReader?: (xcresultPath: string) => Promise<unknown>;
   /** runner 子命令注入缝（测试）。 */
@@ -407,6 +410,9 @@ type SuiteIo = {
   leaseTimers?: ManualLeaseTimers;
   /** 测试注入：读取真机已安装版本（默认 readIosInstalledAppVersion）。 */
   iosAppVersionReader?: typeof readIosInstalledAppVersion;
+  /** 测试注入：系统弹窗读取（默认 readAndroidSystemDialog / readIosSystemDialog）。 */
+  androidSystemDialogReader?: typeof readAndroidSystemDialog;
+  iosSystemDialogReader?: typeof readIosSystemDialog;
 };
 
 export function printSuiteUsage(log: (line: string) => void): void {
@@ -449,7 +455,7 @@ Usage:
                                      语义一致性：分类树/截断/IA/覆盖率/动态资产；单屏只给部分覆盖，unverified/offscreen > 0 不返回 layout-compatible（exit 0/1/2）
   mobile-testing-mcp suite ui-lint [options] 检查源码圆角/颜色/字号/字重/字体族字面量是否来自 ui-contract token；--per-screen 按 screen-map 逐屏收窄、--require-mapping 要求 extracted 屏有显式映射、--fail-on-stale-contract 契约指纹过期即失败（--contract/--allowlist/--screen-map/--changed/--require-complete/--fail-on-expiring/--expiry-warn-days <n>/--max-total-bytes <n>；--json；exit 0/1/2）
   mobile-testing-mcp suite parity --a <tests.json> --b <tests.json> [--json] 对比两端人类层用例（semanticId/步骤/预期/屏幕），忽略 taskDesc/i18n/a11y）
-  mobile-testing-mcp suite parity --task <id> [--json] [--fail-on-not-comparable] [--fail-on-diff] [--fail-on-dialog-diff]
+  mobile-testing-mcp suite parity --task <id> [--json] [--fail-on-not-comparable] [--fail-on-diff] [--fail-on-dialog-diff] [--require-dialog-evidence]
                                      只读评估该任务两端 execution-evidence 的条件可比性（默认 report-only；两个 --fail-* 为显式门禁）
   mobile-testing-mcp suite text-weight-calibrate --manifest <json> [--out <dir>] [--no-save] [--strict] [--json]
                                      离线字重校准：成对图片 → 混淆矩阵/高置信误报/delta 分布/阈值建议
@@ -531,11 +537,22 @@ function logIntegrationReadiness(
 
 /** 中心下发的 case set JSON/flows 落到 runner 本地设计目录，并把 refs 指向本地文件。 */
 export function materializeTaskDocuments(
-  runtime: Pick<Runtime, "configDirAbs">,
+  runtime: Pick<Runtime, "configDirAbs" | "project">,
   bundle: Awaited<ReturnType<NonNullable<ProjectStore["getTaskBundle"]>>> | null
 ): Map<string, string> {
   const paths = new Map<string, string>();
   if (bundle === null) return paths;
+  if (
+    bundle.taskPlan !== undefined &&
+    bundle.taskPlan !== null &&
+    bundle.taskPlan.taskId === bundle.task.id
+  ) {
+    try {
+      writeTaskExecutionPlan(runtime.project.rootDir, bundle.taskPlan);
+    } catch {
+      /* 只读/满盘项目：不阻断，suite run 会按任务重建 */
+    }
+  }
   if (bundle.documents !== undefined && bundle.documents.length > 0) {
     const dir = path.join(runtime.configDirAbs, "design", "case-sets");
     fs.mkdirSync(dir, { recursive: true });
@@ -552,6 +569,30 @@ export function materializeTaskDocuments(
     writeFileAtomic(path.join(dir, "flows.json"), bundle.flows.content);
   }
   return paths;
+}
+
+/** 系统弹窗旁车：本地必写；控制面模式再同步到中心（失败不阻断预检）。 */
+async function persistSystemDialog(
+  runtime: Runtime,
+  taskId: string,
+  dialog: StoredSystemDialog
+): Promise<void> {
+  try {
+    writeSystemDialog(runtime.project.rootDir, taskId, dialog);
+  } catch (error) {
+    logWarn(`系统弹窗旁车写入失败：task=${taskId} · ${errorMessage(error)}`);
+  }
+  const remote = runtime.store.recordSystemDialog;
+  if (remote === undefined) return;
+  try {
+    await remote.call(runtime.store, {
+      rootPath: runtime.project.rootDir,
+      taskId,
+      dialog
+    });
+  } catch (error) {
+    logWarn(`系统弹窗同步中心失败：task=${taskId} · ${errorMessage(error)}`);
+  }
 }
 
 function writeFileAtomicBuffer(target: string, buffer: Buffer): void {
@@ -923,26 +964,39 @@ async function suiteRunTask(
 
   const progress = new TaskProgressReporter(runtime, task);
   await progress.report("preflight", 5, { message: "环境预检" });
-  const taskPlan = readTaskExecutionPlan(runtime.project.rootDir, task.id);
-  if (taskPlan !== null) {
-    const planReasons = validateTaskExecutionPlan(taskPlan, {
+  let taskPlan = readTaskExecutionPlan(runtime.project.rootDir, task.id);
+  if (taskPlan === null) {
+    taskPlan = buildTaskExecutionPlan({
+      taskId: task.id,
+      hostId: task.targetHostId,
       platforms: task.platforms,
-      targetHostId: task.targetHostId
+      env: runtime.baseEnv,
+      warnings: ["plan-rebuilt:no-sidecar"]
     });
-    if (planReasons.length > 0) {
-      const message = `执行计划门禁未通过：${planReasons.join("、")}`;
-      await progress
-        .report("failed", 5, { message, errorCode: "host-state" })
-        .catch(() => undefined);
-      await runtime.store
-        .updateRegressionTask(runtime.project.rootDir, task.id, {
-          status: "failed",
-          expectStatuses: ["pending", "claimed", "running"]
-        })
-        .catch(() => false);
-      io.errorLog(`环境错误：${message}`);
-      return 2;
+    try {
+      writeTaskExecutionPlan(runtime.project.rootDir, taskPlan);
+    } catch {
+      /* 旁车写入失败不阻断；本次仍用内存 plan 校验 */
     }
+    say("注意: 未找到任务执行计划旁车，已按任务字段重建（legacy/跨机任务）");
+  }
+  const planReasons = validateTaskExecutionPlan(taskPlan, {
+    platforms: task.platforms,
+    targetHostId: task.targetHostId
+  });
+  if (planReasons.length > 0) {
+    const message = `执行计划门禁未通过：${planReasons.join("、")}`;
+    await progress
+      .report("failed", 5, { message, errorCode: "host-state" })
+      .catch(() => undefined);
+    await runtime.store
+      .updateRegressionTask(runtime.project.rootDir, task.id, {
+        status: "failed",
+        expectStatuses: ["pending", "claimed", "running"]
+      })
+      .catch(() => false);
+    io.errorLog(`环境错误：${message}`);
+    return 2;
   }
   const hostDisk = await checkHostDisk({
     rootPath: runtime.project.rootDir,
@@ -979,13 +1033,14 @@ async function suiteRunTask(
       io.errorLog(`环境错误：${boot.message}`);
       return 2;
     }
-    const dialog = await readAndroidSystemDialog({
+    const dialog = await (io.androidSystemDialogReader ?? readAndroidSystemDialog)({
       serial: device,
       env: runtime.baseEnv
     });
     if (dialog.status === "dialog") {
-      writeSystemDialog(runtime.project.rootDir, task.id, {
+      await persistSystemDialog(runtime, task.id, {
         platform: "android",
+        status: "dialog",
         title: dialog.dialog.title,
         message: dialog.dialog.message,
         buttons: dialog.dialog.buttons,
@@ -1007,6 +1062,15 @@ async function suiteRunTask(
         return 2;
       }
       io.log(`警告：${detail}（AOS_RUNNER_SYSTEM_DIALOG_POLICY=warn）`);
+    } else if (dialog.status === "none") {
+      await persistSystemDialog(runtime, task.id, {
+        platform: "android",
+        status: "clear",
+        title: null,
+        message: null,
+        buttons: [],
+        at: new Date().toISOString()
+      });
     }
     const storage = await checkAndroidDeviceStorage({
       serial: device,
@@ -1043,10 +1107,14 @@ async function suiteRunTask(
     try {
       const iosDevice = await runtime.iosDevice(device);
       if (iosDevice === null) continue;
-      const dialog = await readIosSystemDialog({ device: iosDevice, env: runtime.iosEnvironment() });
+      const dialog = await (io.iosSystemDialogReader ?? readIosSystemDialog)({
+        device: iosDevice,
+        env: runtime.iosEnvironment()
+      });
       if (dialog.status === "dialog") {
-        writeSystemDialog(runtime.project.rootDir, task.id, {
+        await persistSystemDialog(runtime, task.id, {
           platform: "ios",
+          status: "dialog",
           title: dialog.dialog.title,
           message: dialog.dialog.message,
           buttons: dialog.dialog.buttons,
@@ -1068,6 +1136,15 @@ async function suiteRunTask(
           return 2;
         }
         io.log(`警告：${detail}（AOS_RUNNER_SYSTEM_DIALOG_POLICY=warn）`);
+      } else if (dialog.status === "none") {
+        await persistSystemDialog(runtime, task.id, {
+          platform: "ios",
+          status: "clear",
+          title: null,
+          message: null,
+          buttons: [],
+          at: new Date().toISOString()
+        });
       }
     } catch {
       /* 设备解析失败交给后续 Appium preflight，不在弹窗检查里重复报错 */
@@ -5184,72 +5261,17 @@ async function suiteTextWeightCalibrate(
 }
 
 
-const PARITY_CASE_STATUSES = new Set<SuiteCaseResult["status"]>([
-  "passed",
-  "failed",
-  "timeout",
-  "submit-error"
-]);
-
-function parityCaseStatus(value: string): SuiteCaseResult["status"] {
-  return PARITY_CASE_STATUSES.has(value as SuiteCaseResult["status"])
-    ? (value as SuiteCaseResult["status"])
-    : "failed";
-}
-
-function readParityPlan(
-  rootPath: string,
-  traceId: string,
-  runtime: Runtime,
-  taskId: string
-): { plan: ExecutionPlanView | null; stepsAvailable: boolean } {
-  const candidates = [
-    path.join(rootPath, ".artemis", "remote-evidence", taskId, traceId, "execution-evidence.json"),
-    path.join(runtime.traceDir(traceId), "execution-evidence.json")
-  ];
-  for (const file of candidates) {
-    try {
-      const payload: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (payload === null || typeof payload !== "object" || Array.isArray(payload)) continue;
-      const record = payload as Record<string, unknown>;
-      const plan = record.plan;
-      if (plan !== null && typeof plan === "object" && !Array.isArray(plan)) {
-        const candidate = plan as Record<string, unknown>;
-        const reset = candidate.reset;
-        const data = candidate.data;
-        if (
-          candidate.schemaVersion === 1 &&
-          (candidate.platform === "ios" || candidate.platform === "android") &&
-          (candidate.engine === "proxy" ||
-            candidate.engine === "native-ios" ||
-            candidate.engine === "native-android") &&
-          reset !== null &&
-          typeof reset === "object" &&
-          !Array.isArray(reset) &&
-          data !== null &&
-          typeof data === "object" &&
-          !Array.isArray(data) &&
-          Array.isArray((data as Record<string, unknown>).aliases)
-        ) {
-          return {
-            plan: candidate as unknown as ExecutionPlanView,
-            stepsAvailable: record.stepsAvailable === true
-          };
-        }
-      }
-      return { plan: null, stepsAvailable: record.stepsAvailable === true };
-    } catch {
-      /* try next candidate */
-    }
-  }
-  return { plan: null, stepsAvailable: false };
-}
-
 async function suiteExecutionParity(
   runtime: Runtime,
   taskId: string,
   io: { log: (line: string) => void; errorLog: (line: string) => void },
-  options: { json: boolean; failOnNotComparable: boolean; failOnDiff: boolean; failOnDialogDiff: boolean }
+  options: {
+    json: boolean;
+    failOnNotComparable: boolean;
+    failOnDiff: boolean;
+    failOnDialogDiff: boolean;
+    requireDialogEvidence: boolean;
+  }
 ): Promise<number> {
   const task = await runtime.store.getRegressionTask(runtime.project.rootDir, taskId).catch(() => null);
   if (task === null) {
@@ -5263,27 +5285,11 @@ async function suiteExecutionParity(
     io.errorLog(`任务 ${taskId} 没有已登记批次`);
     return 2;
   }
-  const records = new Map<string, ExecutionParityRecord>();
-  for (const run of runs) {
-    for (const entry of run.cases) {
-      const platform = entry.platform === "ios" ? "ios" : entry.platform === "android" ? "android" : null;
-      if (platform === null || entry.caseId === "") continue;
-      const key = `${entry.caseId}\u0000${platform}`;
-      if (records.has(key)) continue;
-      const traceId = entry.traceId;
-      const evidence =
-        traceId === null ? { plan: null, stepsAvailable: false } : readParityPlan(runtime.project.rootDir, traceId, runtime, taskId);
-      records.set(key, {
-        caseId: entry.caseId,
-        platform,
-        status: parityCaseStatus(entry.status),
-        plan: evidence.plan,
-        stepsAvailable: evidence.stepsAvailable
-      });
-    }
-  }
-  const results = compareExecutionParity([...records.values()]);
-  const systemDialog = compareSystemDialogs(readSystemDialogs(runtime.project.rootDir, taskId));
+  const { cases: results, systemDialog } = evaluateTaskExecutionParity(
+    runtime,
+    taskId,
+    runs
+  );
   const comparable = results.filter((entry) => entry.comparable).length;
   const notComparable = results.length - comparable;
   const differing = results.filter(
@@ -5293,10 +5299,17 @@ async function suiteExecutionParity(
       entry.platforms.android !== undefined &&
       entry.platforms.ios.status !== entry.platforms.android.status
   ).length;
+  const dialogMismatch = systemDialog.reasons.some(
+    (reason) => reason === "dialog-content-mismatch" || reason === "dialog-presence-mismatch"
+  );
+  const dialogEvidenceMissing = systemDialog.reasons.some(
+    (reason) => reason === "no-dialog-evidence" || reason.startsWith("missing-dialog")
+  );
   const failed =
     (options.failOnNotComparable && notComparable > 0) ||
     (options.failOnDiff && differing > 0) ||
-    (options.failOnDialogDiff && !systemDialog.comparable);
+    (options.failOnDialogDiff && dialogMismatch) ||
+    (options.requireDialogEvidence && dialogEvidenceMissing);
   if (options.json) {
     io.log(
       JSON.stringify(
@@ -5308,15 +5321,24 @@ async function suiteExecutionParity(
     return failed ? 1 : 0;
   }
   io.log(`执行一致性: 用例 ${results.length} · comparable ${comparable} · not-comparable ${notComparable} · 结果不同 ${differing}`);
-  io.log(`弹窗一致性: ${systemDialog.comparable ? "一致" : `不一致（${systemDialog.reasons.join(",")}）`}`);
+  const dialogSummary = systemDialog.comparable
+    ? "一致"
+    : systemDialog.reasons.some(
+          (reason) => reason === "no-dialog-evidence" || reason.startsWith("missing-dialog")
+        )
+      ? `未捕获/缺端（${systemDialog.reasons.join(",")}），不判定一致`
+      : `不一致（${systemDialog.reasons.join(",")}）`;
+  io.log(`弹窗一致性: ${dialogSummary}`);
   for (const entry of results) {
     const platforms = ["ios", "android"]
       .filter((platform) => entry.platforms[platform as "ios" | "android"] !== undefined)
       .map((platform) => `${platform}:${entry.platforms[platform as "ios" | "android"]!.status}`)
       .join(" / ");
-    io.log(`  ${entry.caseId} · ${platforms || "无平台"} · ${entry.comparable ? "comparable" : "not-comparable"}${entry.reasons.length > 0 ? ` · ${entry.reasons.join(",")}` : ""}`);
+    const caveat =
+      entry.limitations.length > 0 ? ` · 受限：${entry.limitations.join(",")}` : "";
+    io.log(`  ${entry.caseId} · ${platforms || "无平台"} · ${entry.comparable ? "comparable" : "not-comparable"}${caveat}${entry.reasons.length > 0 ? ` · ${entry.reasons.join(",")}` : ""}`);
   }
-  return 0;
+  return failed ? 1 : 0;
 }
 
 async function suiteParity(
@@ -5330,7 +5352,8 @@ async function suiteParity(
       json: flags.bool("json"),
       failOnNotComparable: flags.bool("fail-on-not-comparable"),
       failOnDiff: flags.bool("fail-on-diff"),
-      failOnDialogDiff: flags.bool("fail-on-dialog-diff")
+      failOnDialogDiff: flags.bool("fail-on-dialog-diff"),
+      requireDialogEvidence: flags.bool("require-dialog-evidence")
     });
   }
   const a = flags.get("a");
@@ -5507,7 +5530,9 @@ export async function runSuiteCommand(argv: string[], deps: SuiteCliDeps = {}): 
           shouldAbort: deps.shouldAbort,
           leasesHeld: deps.leasesHeld === true,
           leaseTimers: deps.leaseTimers,
-          iosAppVersionReader: deps.iosAppVersionReader
+          iosAppVersionReader: deps.iosAppVersionReader,
+          androidSystemDialogReader: deps.androidSystemDialogReader,
+          iosSystemDialogReader: deps.iosSystemDialogReader
         },
         deps.logcatCollector,
         deps.iosLogCollector

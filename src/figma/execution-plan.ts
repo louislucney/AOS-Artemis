@@ -1,23 +1,34 @@
+import { resolveResetPolicy } from "../device/reset-policy.js";
 import type { SuiteCaseResult } from "./suite-runner.js";
 
-export type ExecutionEngine = "proxy" | "native-ios" | "native-android";
+export type ExecutionEngine = "proxy" | "ios-llm" | "native-ios" | "native-android";
 export type ExecutionPlatform = "ios" | "android";
+
+export interface ExecutionPlanBudget {
+  maxWallMs: number | null;
+  maxSteps: number | null;
+  maxStepsEffective: number | null;
+  maxActions: number | null;
+}
 
 export interface ExecutionPlanView {
   schemaVersion: 1;
   platform: ExecutionPlatform;
   engine: ExecutionEngine;
   reset: {
-    /** 当前实现可确定的模式；完整 fresh 计划仍待接入。 */
-    mode: "app-internal-reset" | "reuse";
+    /** 四态保留；当前实现产出 reuse / app-internal-reset，fresh/none 待任务策略。 */
+    mode: "fresh" | "app-internal-reset" | "reuse" | "none";
     entryConfigured: boolean;
+    capability: "debug-menu" | "deep-link" | "test-api" | "full-reset" | "unsupported";
+    supported: boolean;
+    degraded: boolean;
   };
   data: {
     policy: "per-platform";
     aliases: string[];
   };
-  /** 当前显式不设 token 预算（用户决定）；字段保留供后续计划接入。 */
-  budget: null;
+  /** 最小预算视图：iOS LLM 记录步数；Android proxy 显式未知；legacy 证据可为 null。 */
+  budget: ExecutionPlanBudget | null;
   evidence: {
     steps: boolean;
     screenshots: boolean;
@@ -36,24 +47,62 @@ export function buildExecutionPlan(input: {
     input.platform === "ios"
       ? (env.AOS_IOS_RESET_URL ?? "").trim()
       : (env.AOS_ANDROID_RESET_URL ?? "").trim();
+  const policy = resolveResetPolicy(env);
+  const effectiveReset = policy ?? (entry === "" ? "reuse" : "app-internal-reset");
+  const resetSupported =
+    effectiveReset === "app-internal-reset"
+      ? entry !== ""
+      : effectiveReset === "fresh"
+        ? input.platform === "android"
+        : true;
+  const rawMaxSteps = Number.parseInt(env.AOS_IOS_MAX_STEPS ?? "", 10);
+  const iosMaxSteps =
+    input.platform === "ios" && (input.engine === "proxy" || input.engine === "ios-llm")
+      ? Number.isInteger(rawMaxSteps) && rawMaxSteps > 0
+        ? Math.max(1, Math.min(200, rawMaxSteps))
+        : 30
+      : null;
   return {
     schemaVersion: 1,
     platform: input.platform,
     engine: input.engine,
     reset: {
-      mode: entry === "" ? "reuse" : "app-internal-reset",
-      entryConfigured: entry !== ""
+      mode: effectiveReset,
+      entryConfigured: entry !== "",
+      capability:
+        effectiveReset === "fresh"
+          ? "full-reset"
+          : effectiveReset === "app-internal-reset"
+            ? "deep-link"
+            : "unsupported",
+      supported: resetSupported,
+      degraded: false
     },
     data: {
       policy: "per-platform",
       aliases: [...input.aliases]
     },
-    budget: null,
+    budget: {
+      maxWallMs: null,
+      maxSteps: iosMaxSteps,
+      maxStepsEffective: iosMaxSteps,
+      maxActions: null
+    },
     evidence: {
       steps: true,
       screenshots: input.screenshots === true
     }
   };
+}
+
+function budgetKey(budget: ExecutionPlanBudget | null | undefined): string {
+  if (budget == null) return "legacy";
+  return JSON.stringify([
+    budget.maxWallMs,
+    budget.maxSteps,
+    budget.maxStepsEffective,
+    budget.maxActions
+  ]);
 }
 
 export interface ExecutionParityRecord {
@@ -62,12 +111,16 @@ export interface ExecutionParityRecord {
   status: SuiteCaseResult["status"];
   plan: ExecutionPlanView | null;
   stepsAvailable: boolean;
+  /** 该 case 实际复位结果；null/未提供表示旧证据或未执行复位。 */
+  resetOk?: boolean | null;
 }
 
 export interface ExecutionParityResult {
   caseId: string;
   comparable: boolean;
   reasons: string[];
+  /** 可比但条件信息不完整（如 Android 步数预算未知）；不阻断 --fail-on-not-comparable。 */
+  limitations: string[];
   platforms: Partial<
     Record<ExecutionPlatform, { status: SuiteCaseResult["status"]; stepsAvailable: boolean }>
   >;
@@ -84,6 +137,7 @@ export function compareExecutionParity(records: readonly ExecutionParityRecord[]
   const out: ExecutionParityResult[] = [];
   for (const [caseId, entries] of byCase) {
     const reasons: string[] = [];
+    const limitations: string[] = [];
     const platforms: ExecutionParityResult["platforms"] = {};
     for (const entry of entries) {
       platforms[entry.platform] = {
@@ -100,19 +154,39 @@ export function compareExecutionParity(records: readonly ExecutionParityRecord[]
       if (plans.some((entry) => entry.plan.reset.mode !== first.reset.mode)) {
         reasons.push("plan-reset-mismatch");
       }
+      if (plans.some((entry) => entry.plan.reset.supported === false)) {
+        reasons.push("reset-unsupported");
+      }
+      if (plans.some((entry) => entry.plan.reset.degraded === true)) {
+        reasons.push("reset-degraded");
+      }
       if (plans.some((entry) => entry.plan.data.policy !== first.data.policy)) {
         reasons.push("data-policy-mismatch");
       }
       if (plans.some((entry) => JSON.stringify(entry.plan.data.aliases) !== JSON.stringify(first.data.aliases))) {
         reasons.push("data-aliases-mismatch");
       }
-      if (plans.some((entry) => entry.plan.budget !== first.budget)) reasons.push("budget-mismatch");
+      const budgets = plans.map((entry) => entry.plan.budget);
+      const budgetUnknown = budgets.some(
+        (budget) =>
+          budget == null ||
+          (budget.maxSteps == null &&
+            budget.maxStepsEffective == null &&
+            budget.maxActions == null)
+      );
+      if (budgetUnknown) {
+        limitations.push("budget-unknown");
+      } else if (budgets.some((budget) => budgetKey(budget) !== budgetKey(first.budget))) {
+        reasons.push("budget-mismatch");
+      }
     }
+    if (entries.some((entry) => entry.resetOk === false)) reasons.push("reset-failed");
     if (entries.some((entry) => !entry.stepsAvailable)) reasons.push("steps-unavailable");
     out.push({
       caseId,
       comparable: reasons.length === 0,
       reasons,
+      limitations,
       platforms
     });
   }

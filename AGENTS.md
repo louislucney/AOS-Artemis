@@ -34,6 +34,7 @@ mobile-testing（AOS × ARTEMIS 合并）MCP 服务：Figma 设计上下文（�
 | 名称过滤 | `npm run test:name -- "<pattern>"`（先构建） |
 | 覆盖率 | `npm run test:coverage`（Node 内置 `--experimental-test-coverage`，无第三方依赖） |
 | Lint | `npm run lint` |
+| 静默 catch 审计 | `npm run audit:catches`（基线 `scripts/silent-catch-baseline.json`；新增超基线 exit 1；`--update-baseline` 更新；存量按基线保留） |
 | 体检 | `node dist/cli.js doctor` |
 | 挂载客户端 | `node dist/cli.js install [--mode local\|docker\|http] [--force]` |
 | 用户管理（CLI） | `node dist/cli.js user add <name> --role <viewer\|dispatcher\|maintainer\|admin> [--token <t>] \| list \| revoke <name> \| enable <name> \| role <name> --role <r> \| rotate <name>`（`--file <path>`、`--json`、`revoke/role` 的 `--allow-last-admin`；默认 `~/.aos/http-users.json`/`AOS_HTTP_USERS_FILE`，只存 token SHA-256、权限 0600；明文令牌仅 add/rotate 显示一次；HTTP 按 mtime 热加载；最后启用管理员默认受保护；exit 0/1/2，见 DESIGN §13.217/§13.225） |

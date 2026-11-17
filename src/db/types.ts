@@ -1,3 +1,7 @@
+import type { TaskExecutionPlan } from "../figma/task-execution-plan.js";
+import type { StoredSystemDialog } from "../figma/system-dialog-store.js";
+import type { DataLeaseRecord, DataResource, DataRiskLevel } from "../figma/data-lease.js";
+
 export interface ProjectRecord {
   id: string;
   hostId: string | null;
@@ -1319,6 +1323,8 @@ export interface ProjectStore {
     }>;
     /** flows.json 内容（可选；runner 用于设计上下文/UI diff）。 */
     flows?: { path: string; content: string } | null;
+    /** 中心生成的任务执行计划旁车；runner 落盘后由 suite run 执行前门禁读取。 */
+    taskPlan?: TaskExecutionPlan | null;
     /** 任务选择的安装包元数据（runner 通过控制面下载；不含中心路径）。 */
     appAsset?: { id: string; filename: string; sha256: string; size: number } | null;
     /** 任务选择的测试资料元数据（runner 通过控制面下载；secret 决定是否解析占位符）。 */
@@ -1406,7 +1412,28 @@ export interface ProjectStore {
     }
   ): Promise<boolean>;
   /** runner 主动上传失败证据（status/stderr/stdout 小文件）；缺省 store 不支持。 */
-  uploadTaskEvidence?(input: TaskEvidenceUpload): Promise<{ saved: string[] }>;
+  uploadTaskEvidence?(input: TaskEvidenceUpload): Promise<{ saved: string[]; skipped?: string[] }>;
+  /** runner 控制面：把预检系统弹窗旁车同步到中心（仅远程 client 实现）。 */
+  recordSystemDialog?(input: {
+    rootPath: string;
+    taskId: string;
+    dialog: StoredSystemDialog;
+  }): Promise<{ saved: boolean }>;
+  /** runner 控制面：中心原子数据租约（仅远程 client 实现）。 */
+  allocateDataLease?(input: {
+    rootPath: string;
+    taskId: string;
+    resource: DataResource;
+    value: string;
+    provider?: string;
+    riskLevel?: DataRiskLevel;
+    cooldownMs?: number;
+  }): Promise<DataLeaseRecord>;
+  releaseDataLease?(input: {
+    rootPath: string;
+    taskId: string;
+    leaseId: string;
+  }): Promise<DataLeaseRecord>;
   /** 原子领取：任务端 ⊆ runner 端且 status='pending' 的最旧任务 → claimed（竞争失败 → null）。
    * `allowPartial === true && onlineBefore 提供` 时，无完全覆盖候选则按交集≥1 部分领取
    * （仅当无他者在线 runner 完全覆盖该任务端时）；否则严格旧行为。

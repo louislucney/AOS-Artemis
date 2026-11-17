@@ -44,7 +44,7 @@ test("isSimulatorUdid: 仅接受规范 UUID", () => {
 
 test("classifyIosSerial: 模拟器 UUID / 真机 UDID（现代 8-16 与旧 40-hex）", () => {
   assert.equal(classifyIosSerial(UDID), "simulator");
-  assert.equal(classifyIosSerial("00008110-001A2C681E22801E"), "device");
+  assert.equal(classifyIosSerial("00008110-0000000000000000"), "device");
   assert.equal(classifyIosSerial("A".repeat(40)), "device");
   assert.equal(classifyIosSerial("emulator-5554"), null);
   assert.equal(classifyIosSerial(""), null);
@@ -52,7 +52,7 @@ test("classifyIosSerial: 模拟器 UUID / 真机 UDID（现代 8-16 与旧 40-he
 
 test("maybeIosDeviceState: 真机 UDID 跳过 simctl 校验（best-effort）", async () => {
   const { dir, runtime } = await makeRuntime();
-  const deviceUdid = "00008110-001A2C681E22801E";
+  const deviceUdid = "00008110-0000000000000000";
   let listCalls = 0;
   const result = await maybeIosDeviceState(runtime, { view_type: "screenshot", device_serial: deviceUdid }, {
     listSimulators: async () => {
@@ -70,7 +70,7 @@ test("maybeIosDeviceState: 真机 UDID 跳过 simctl 校验（best-effort）", a
 
 test("maybeIosDeviceState: 真机截图 busy → 返回新鲜缓存帧并标注 capturedAt（无陈旧标注）", async () => {
   const { runtime } = await makeRuntime();
-  const deviceUdid = "00008110-001A2C681E22801E";
+  const deviceUdid = "00008110-0000000000000000";
   const now = Date.now();
   const frame = {
     png: PNG_BYTES,
@@ -107,7 +107,7 @@ test("maybeIosDeviceState: 真机截图 busy → 陈旧缓存帧标注已陈旧"
   };
   const result = await maybeIosDeviceState(
     runtime,
-    { view_type: "screenshot", device_serial: "00008110-001A2C681E22801E" },
+    { view_type: "screenshot", device_serial: "00008110-0000000000000000" },
     {
       observe: {
         wdaScreenshot: async () => {
@@ -123,7 +123,7 @@ test("maybeIosDeviceState: 真机截图 busy 且无缓存帧 → 结构化报错
   const { runtime } = await makeRuntime();
   const result = await maybeIosDeviceState(
     runtime,
-    { view_type: "screenshot", device_serial: "00008110-001A2C681E22801E" },
+    { view_type: "screenshot", device_serial: "00008110-0000000000000000" },
     {
       observe: {
         wdaScreenshot: async () => {
@@ -139,7 +139,7 @@ test("maybeIosDeviceState: 真机层级 busy → device_busy 结构化提示", a
   const { runtime } = await makeRuntime();
   const result = await maybeIosDeviceState(
     runtime,
-    { view_type: "hierarchy", device_serial: "00008110-001A2C681E22801E" },
+    { view_type: "hierarchy", device_serial: "00008110-0000000000000000" },
     {
       observe: {
         wdaNodes: async () => ({ ok: false, error: "busy", busy: true, cachedFrame: null })

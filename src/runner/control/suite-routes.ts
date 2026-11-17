@@ -120,6 +120,11 @@ export function resolveSuiteResource(
   }
 
   if (method !== "POST") return null;
+  if (parts[0] === "data-leases" && parts.length === 2) {
+    if (parts[1] === "allocate") return { op: "allocateDataLease", args: { input } };
+    if (parts[1] === "release") return { op: "releaseDataLease", args: { input } };
+    return null;
+  }
   const action = parts[2];
   if (parts[0] === "tasks" && parts[1] === "claim" && parts.length === 2) {
     return { op: "claimTask", args: { input } };
@@ -142,6 +147,7 @@ export function resolveSuiteResource(
     }
     if (action === "cancel") return { op: "cancelTask", args: { input } };
     if (action === "evidence") return { op: "uploadEvidence", args: { input } };
+    if (action === "system-dialog") return { op: "recordSystemDialog", args: { input } };
     return null;
   }
   if (parts[0] === "runs" && parts.length === 1) return { op: "recordRun", args: { input } };

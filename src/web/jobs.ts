@@ -3,6 +3,7 @@ import { deviceLeaseTtlMs } from "../db/types.js";
 import { loadLlmCases } from "./llm/cases.js";
 import { getLlmWorkerStatus, llmWorkerTtlFrom } from "./llm/heartbeat.js";
 import { isRunnerOnline, runnerTtlFrom } from "../runner/status.js";
+import { writeTaskExecutionPlanForTask } from "../figma/task-execution-plan.js";
 import {
   selectWebAssignment,
   type WebAssignmentFailureCode,
@@ -236,7 +237,7 @@ async function createPendingTask(
   input: CreateWebJobInput,
   spec: WebJobSpec
 ): Promise<RegressionTaskRecord> {
-  return input.store.createRegressionTask({
+  const task = await input.store.createRegressionTask({
     rootPath: input.rootPath,
     refs: [],
     platforms: [spec.requirements.platform],
@@ -249,6 +250,12 @@ async function createPendingTask(
     deviceSerial: spec.deviceSerial,
     deviceLeaseId: null
   });
+  try {
+    writeTaskExecutionPlanForTask(input.rootPath, task, { env: input.env ?? process.env });
+  } catch {
+    /* plan sidecar 不阻断已创建任务 */
+  }
+  return task;
 }
 
 /**
@@ -436,6 +443,11 @@ export async function createWebJob(input: CreateWebJobInput): Promise<CreateWebJ
     deviceSerial: null,
     deviceLeaseId: null
   });
+  try {
+    writeTaskExecutionPlanForTask(input.rootPath, task, { env: input.env ?? process.env });
+  } catch {
+    /* plan sidecar 不阻断已创建任务 */
+  }
 
   const cleanup = async (message: string): Promise<void> => {
     await input.store.releaseDeviceLeases({

@@ -21,6 +21,9 @@ import { errorMessage, writeFileAtomic } from "../util.js";
 import { resolveDesignWarnings, type WarningSummary } from "../design/warnings.js";
 import { loadDesignFlowGraph, loadGeneratedCases, type GeneratedCase } from "./design-store.js";
 import { designFlowsPath } from "./design-source.js";
+import { evaluateTaskExecutionParity } from "./execution-parity.js";
+import type { ExecutionParityResult } from "./execution-plan.js";
+import type { SystemDialogParity } from "./system-dialog-store.js";
 import {
   buildTraceability,
   type TraceabilityCaseInput,
@@ -74,6 +77,10 @@ export interface RunReport {
   pending: number;
   cases: RunReportCase[];
   traceability: TraceabilityReport | null;
+  /** 任务报告的跨端条件可比性（suite_runs + 执行证据）；非任务报告缺省。 */
+  executionParity?: ExecutionParityResult[];
+  /** 任务报告的弹窗一致性（system-dialogs 旁车）；非任务报告缺省。 */
+  systemDialogParity?: SystemDialogParity;
   /** 当前设计源警告摘要（tests 快照优先、flows 回退）；读取失败 → null。 */
   designWarnings: WarningSummary | null;
   saved?: { xlsx: string; junit: string };
@@ -365,6 +372,55 @@ async function renderWorkbook(report: RunReport): Promise<Buffer> {
     }
     for (const caseId of report.traceability.casesWithoutEvidence) {
       trace.addRow({ kind: "用例", name: caseId, cases: caseId, traces: "", note: "无证据" });
+    }
+  }
+  if (report.executionParity !== undefined) {
+    const parity = workbook.addWorksheet("跨端一致性", {
+      views: [{ state: "frozen", ySplit: 1 }]
+    });
+    parity.columns = [
+      { header: "用例", key: "case", width: 24 },
+      { header: "iOS", key: "ios", width: 24 },
+      { header: "Android", key: "android", width: 24 },
+      { header: "可比性", key: "comparable", width: 14 },
+      { header: "受限", key: "limitations", width: 24 },
+      { header: "原因", key: "reasons", width: 40 }
+    ];
+    parity.getRow(1).font = { bold: true };
+    for (const entry of report.executionParity) {
+      const ios = entry.platforms.ios;
+      const android = entry.platforms.android;
+      parity.addRow({
+        case: entry.caseId,
+        ios: ios === undefined ? "—" : `${ios.status}${ios.stepsAvailable ? "" : "（无步骤）"}`,
+        android:
+          android === undefined
+            ? "—"
+            : `${android.status}${android.stepsAvailable ? "" : "（无步骤）"}`,
+        comparable: entry.comparable
+          ? entry.limitations.length > 0
+            ? "可比（受限）"
+            : "可比"
+          : "不可比",
+        limitations: entry.limitations.join(", "),
+        reasons: entry.reasons.join(", ")
+      });
+    }
+    if (report.systemDialogParity !== undefined) {
+      const dialog = report.systemDialogParity;
+      parity.addRow({});
+      parity.addRow({
+        case: "弹窗",
+        ios: dialog.ios
+          ? `${dialog.ios.title ?? "—"}${dialog.ios.buttons.length > 0 ? ` [${dialog.ios.buttons.join("/")}]` : ""}`
+          : "—",
+        android: dialog.android
+          ? `${dialog.android.title ?? "—"}${dialog.android.buttons.length > 0 ? ` [${dialog.android.buttons.join("/")}]` : ""}`
+          : "—",
+        comparable: dialog.comparable ? "可比" : "不可比",
+        limitations: "",
+        reasons: dialog.reasons.join(", ")
+      });
     }
   }
   const rendered = await workbook.xlsx.writeBuffer();
@@ -828,6 +884,7 @@ export async function buildTaskRunReport(
     taskId: options.taskId,
     limit: 100
   });
+  const parity = evaluateTaskExecutionParity(runtime, options.taskId, runs);
   const results: RunReportCase[] = [];
   for (const run of runs) {
     for (const entry of run.cases) {
@@ -881,6 +938,8 @@ export async function buildTaskRunReport(
     pending,
     cases: results,
     traceability: null,
+    executionParity: parity.cases,
+    systemDialogParity: parity.systemDialog,
     designWarnings: designWarningsOf(runtime)
   };
   if (options.save !== false) {

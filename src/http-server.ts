@@ -30,6 +30,7 @@ import { handlePanelActionRequest, panelActionsEnabled } from "./panel/actions.j
 import { handleRunnerJobRequest, matchRunnerJobPath } from "./panel/actions.js";
 import { handleLlmProxyRequest } from "./runner/control/llm-proxy.js";
 import { handleSuiteControlRequest } from "./runner/control/suite-http.js";
+import { authenticateRunner } from "./runner/control/auth.js";
 import { panelRoleFrom, panelRoleScopes } from "./panel/roles.js";
 import {
   MAX_PANEL_ASSET_UPLOAD_BYTES,
@@ -369,8 +370,16 @@ export async function createAosHttpServer(options: HttpServerOptions = {}): Prom
         if (url.pathname.startsWith("/panel/api/runners/suite/")) {
           let suiteBody: unknown;
           if (req.method === "POST" || req.method === "PATCH") {
+            const preAuth = authenticateRunner(req.headers, process.env);
+            if (!preAuth.ok) {
+              res.writeHead(preAuth.status, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify({ ok: false, code: preAuth.code, error: preAuth.error })
+              );
+              return;
+            }
             try {
-              suiteBody = await readBody(req, 1024 * 1024);
+              suiteBody = await readBody(req, MAX_BODY_BYTES);
             } catch (error) {
               if (error instanceof BodyTooLargeError) {
                 res.writeHead(413, { "Content-Type": "application/json" });

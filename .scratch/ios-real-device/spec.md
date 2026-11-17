@@ -68,7 +68,7 @@ AOS 的 iOS 后端目前只服务模拟器：截图/层级走 idb（1.6.5 对真
 
 ## Further Notes
 
-- 环境实测（2026-10-08）：Xcode 27.0 + iOS SDK 27、Apple Development 身份 2 个、Appium 3.8.0（xcuitest 12.15.0、appium-ios-remotexpc 已装）、`appium driver doctor xcuitest` 0 必需修复（applesimutils 可选缺失，仅 setPermission 用）；测试设备 iPhone 12（iOS 26.6.2，UDID 00008101-000359440C69001E）。
+- 环境实测（2026-10-08）：Xcode 27.0 + iOS SDK 27、Apple Development 身份 2 个、Appium 3.8.0（xcuitest 12.15.0、appium-ios-remotexpc 已装）、`appium driver doctor xcuitest` 0 必需修复（applesimutils 可选缺失，仅 setPermission 用）；测试设备 iPhone 12（iOS 26.6.2，UDID 00008101-0000000000000000）。
 - idb 1.6.5 对真机：`ui` 命令明确拒绝（`Target is not a simulator`），screenshotr 失败（与 iOS 26 不兼容或设备锁屏/信任状态无关的版本问题）；真机能力以 WDA 为准。
 - 隧道（iOS 18+）：官方要求 `sudo appium driver run xcuitest tunnel-creation`，隧道进程需保持运行（独立常驻；主机重启/设备重连/新增设备后重跑）；AOS 只给指引，不代为 sudo 启动。
 - 真机冒烟目标：系统 App（设置/Safari）；Jira 两端验收在 M9b 后接真机 `mobile_run_task`。

@@ -27,6 +27,10 @@ test("resetApp: force-stops then relaunches with the given serial", async () => 
     { exec }
   );
   assert.equal(outcome.ok, true);
+  assert.equal(outcome.mode, "reuse");
+  assert.equal(outcome.capability, "unsupported");
+  assert.equal(outcome.supported, true);
+  assert.equal(outcome.degraded, false);
   assert.equal(outcome.serial, "emulator-5554");
   assert.deepEqual(calls[0].args, [
     "-s",
@@ -154,6 +158,49 @@ test("resetApp: AOS_ANDROID_RESET_ALERTS=1 关闭系统弹窗", async () => {
   ]);
 });
 
+test("resetApp: AOS_RESET_POLICY=fresh 先 pm clear 再拉起", async () => {
+  const { calls, exec } = recordingExec(() => ok());
+  const outcome = await resetApp(
+    { packageName: "com.example.app", serial: "emulator-5554" },
+    { exec, env: { AOS_RESET_POLICY: "fresh" } }
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.mode, "fresh");
+  assert.equal(outcome.capability, "full-reset");
+  assert.equal(outcome.supported, true);
+  assert.deepEqual(calls[0].args, [
+    "-s",
+    "emulator-5554",
+    "shell",
+    "pm",
+    "clear",
+    "com.example.app"
+  ]);
+  assert.equal(outcome.commands[0][3], "pm");
+});
+
+test("resetApp: AOS_RESET_POLICY=none 不执行任何命令", async () => {
+  const { calls, exec } = recordingExec(() => ok());
+  const outcome = await resetApp(
+    { packageName: "com.example.app", serial: "emulator-5554" },
+    { exec, env: { AOS_RESET_POLICY: "none" } }
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.mode, "none");
+  assert.equal(calls.length, 0);
+});
+
+test("resetApp: AOS_RESET_POLICY=app-internal-reset 缺 URL 显式失败", async () => {
+  const { exec } = recordingExec(() => ok());
+  const outcome = await resetApp(
+    { packageName: "com.example.app", serial: "emulator-5554" },
+    { exec, env: { AOS_RESET_POLICY: "app-internal-reset" } }
+  );
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.reason, "app-internal-reset-failed");
+  assert.equal(outcome.supported, false);
+});
+
 test("resetApp: AOS_ANDROID_RESET_URL 走 App 内建复位并重新拉起", async () => {
   const { calls, exec } = recordingExec(() => ok());
   const outcome = await resetApp(
@@ -167,6 +214,8 @@ test("resetApp: AOS_ANDROID_RESET_URL 走 App 内建复位并重新拉起", asyn
     }
   );
   assert.equal(outcome.ok, true);
+  assert.equal(outcome.mode, "app-internal-reset");
+  assert.equal(outcome.capability, "deep-link");
   assert.equal(calls.length, 4);
   assert.deepEqual(calls[2].args, [
     "-s",

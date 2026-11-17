@@ -4,7 +4,7 @@ import test from "node:test";
 import { resolveIosDevice } from "../dist/device/ios-facade.js";
 
 const SIM_UDID = "65584900-E161-4125-8928-587499DD6457";
-const DEVICE_UDID = "00008110-001A2C681E22801E";
+const DEVICE_UDID = "00008110-0000000000000000";
 
 test("resolveIosDevice: 非 iOS serial → null（不触任何 provider）", async () => {
   let wdaCalls = 0;

@@ -42,16 +42,16 @@ test("ios wda service: 直连模式截图/层级/回收", async () => {
     fetchImpl
   });
 
-  const shot = await service.screenshot("00008101-000359440C69001E");
+  const shot = await service.screenshot("00008101-0000000000000000");
   assert.equal(shot.ok, true);
   assert.deepEqual(shot.value, Buffer.from("png"));
 
-  const nodes = await service.nodes("00008101-000359440C69001E");
+  const nodes = await service.nodes("00008101-0000000000000000");
   assert.equal(nodes.ok, true);
   assert.equal(nodes.value.length, 2);
   assert.equal(nodes.value[1].label, "OK");
 
-  const installed = await service.installIpa("00008101-000359440C69001E", "/tmp/app.ipa");
+  const installed = await service.installIpa("00008101-0000000000000000", "/tmp/app.ipa");
   assert.equal(installed.ok, true);
   const execCall = fetchImpl.calls.find((call) => call.url.endsWith("/execute/sync"));
   assert.ok(execCall);
@@ -82,7 +82,7 @@ test("ios wda service: 会话创建失败返回结构化错误", async () => {
 
 test("device-source: 真机走 WDA 分支与失败指引", async () => {
   const runtime = {};
-  const captured = await captureLiveScreenshot(runtime, "00008101-000359440C69001E", {
+  const captured = await captureLiveScreenshot(runtime, "00008101-0000000000000000", {
     platform: "ios",
     captureWdaPng: async () => ({ ok: true, value: Buffer.from("wda-png") })
   });
@@ -90,7 +90,7 @@ test("device-source: 真机走 WDA 分支与失败指引", async () => {
   assert.match(captured.note, /真机 WDA/);
 
   await assert.rejects(
-    captureLiveScreenshot(runtime, "00008101-000359440C69001E", {
+    captureLiveScreenshot(runtime, "00008101-0000000000000000", {
       platform: "ios",
       captureWdaPng: async () => ({
         ok: false,
@@ -103,7 +103,7 @@ test("device-source: 真机走 WDA 分支与失败指引", async () => {
   );
 
   await assert.rejects(
-    captureLiveScreenshot(runtime, "00008101-000359440C69001E", {
+    captureLiveScreenshot(runtime, "00008101-0000000000000000", {
       platform: "ios",
       captureWdaPng: async () => ({ ok: false, error: "wda down" })
     }),
@@ -160,7 +160,7 @@ test("ios wda service: nodes 解析失败按 AOS_IOS_OBSERVE_RETRY 重试", asyn
     fetchImpl,
     sleep: async () => {}
   });
-  const nodes = await service.nodes("00008101-000359440C69001E");
+  const nodes = await service.nodes("00008101-0000000000000000");
   assert.equal(nodes.ok, true);
   assert.equal(nodes.value.length, 2);
   assert.equal(sourceCalls, 2);

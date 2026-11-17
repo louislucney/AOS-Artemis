@@ -78,7 +78,7 @@ import {
   precheckTask
 } from "../console/dispatch.js";
 import { auditActionLabel } from "../console/vocab.js";
-import { buildTaskExecutionPlan, writeTaskExecutionPlan } from "../figma/task-execution-plan.js";
+import { writeTaskExecutionPlanForTask } from "../figma/task-execution-plan.js";
 import { resolveAppInstallPlan } from "../tasks/app-install.js";
 import { resolveProjectKey, type PanelWebDeps, type PanelWebResponse } from "./web.js";
 import {
@@ -2121,16 +2121,10 @@ async function createTask(
     caseIds
   });
   try {
-    writeTaskExecutionPlan(
-      rootPath,
-      buildTaskExecutionPlan({
-        taskId: task.id,
-        hostId: targetHostId,
-        platforms: uniquePlatforms,
-        env: deps.env ?? process.env,
-        warnings
-      })
-    );
+    writeTaskExecutionPlanForTask(rootPath, task, {
+      env: deps.env ?? process.env,
+      warnings
+    });
   } catch {
     /* plan sidecar 是审计/门禁辅助，不阻断已创建任务 */
   }
@@ -2944,6 +2938,11 @@ async function rerunTask(
     materialsAssetId: task.materialsAssetId,
     caseIds
   });
+  try {
+    writeTaskExecutionPlanForTask(rootPath, created, { env: deps.env ?? process.env });
+  } catch {
+    /* plan sidecar 是审计/门禁辅助，不阻断重跑任务 */
+  }
   deps.cache?.clear();
   return json(200, { ok: true, task: created, sourceTaskId: task.id });
 }

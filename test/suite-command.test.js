@@ -9,6 +9,11 @@ import ExcelJS from "exceljs";
 import { MemoryStore } from "../dist/db/memory.js";
 import { loadLatestRunManifest } from "../dist/figma/run-manifest.js";
 import { renderTestsWorkbook } from "../dist/figma/test-xlsx.js";
+import {
+  buildTaskExecutionPlan,
+  writeTaskExecutionPlan
+} from "../dist/figma/task-execution-plan.js";
+import { writeSystemDialog } from "../dist/figma/system-dialog-store.js";
 import { runSuiteCommand } from "../dist/suite-command.js";
 import {
   baseConfig,
@@ -881,7 +886,7 @@ test("suite api-errors: 真机 UDID 走 idevicesyslog 并标注 source", async (
   writeStatus(runtime, "ios-2345", {
     status: "failed",
     platform: "ios",
-    device_serial: "00008110-001A2C681E22801E",
+    device_serial: "00008110-0000000000000000",
     start_time: 1000,
     end_time: 1010
   });
@@ -2046,6 +2051,123 @@ test("suite run --task: task caseIds only submits the selected case", async () =
   ]);
   assert.equal(code, 0, errors.join(" | "));
   assert.equal(proxy.submitted, 1);
+  const rebuiltFile = path.join(
+    runtime.project.rootDir,
+    ".artemis",
+    "design",
+    "task-plans",
+    `${task.id}.json`
+  );
+  assert.ok(fs.existsSync(rebuiltFile), "missing rebuilt task plan");
+  assert.deepEqual(JSON.parse(fs.readFileSync(rebuiltFile, "utf8")).warnings, [
+    "plan-rebuilt:no-sidecar"
+  ]);
+});
+
+test("suite run --task: mismatched plan blocks before execution", async () => {
+  const { runtime, store, proxy } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const set = await store.recordCaseSet({
+    rootPath: runtime.project.rootDir,
+    source: "test",
+    basename: "gate",
+    features: [
+      {
+        key: "f-gate",
+        name: "Gate",
+        caseCount: 1,
+        screens: [],
+        jsonPath: path.join(designDir, "tests.json"),
+        mdPath: "",
+        xlsxPath: path.join(designDir, "tests.xlsx")
+      }
+    ]
+  });
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: set.id, featureKey: "f-gate" }],
+    platforms: ["ios", "android"],
+    baseline: "none",
+    createdBy: "test"
+  });
+  writeTaskExecutionPlan(
+    runtime.project.rootDir,
+    buildTaskExecutionPlan({
+      taskId: task.id,
+      hostId: "host-b",
+      platforms: ["ios"],
+      env: {},
+      createdAt: "2026-11-16T00:00:00.000Z"
+    })
+  );
+  const { code, errors } = await runCli(runtime, [
+    "run",
+    "--task",
+    task.id,
+    "--device",
+    "emulator-1"
+  ]);
+  assert.equal(code, 2);
+  assert.match(errors.join(" "), /执行计划门禁未通过/);
+  assert.equal(proxy.submitted, 0);
+});
+
+test("suite run --task: preflight writes a clear dialog record when no dialog", async () => {
+  const { runtime, store } = await setupRun({
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  const designDir = path.join(runtime.configDirAbs, "design");
+  const set = await store.recordCaseSet({
+    rootPath: runtime.project.rootDir,
+    source: "test",
+    basename: "dialog-clear",
+    features: [
+      {
+        key: "f-dialog",
+        name: "Dialog",
+        caseCount: 1,
+        screens: [],
+        jsonPath: path.join(designDir, "tests.json"),
+        mdPath: "",
+        xlsxPath: path.join(designDir, "tests.xlsx")
+      }
+    ]
+  });
+  const task = await store.createRegressionTask({
+    rootPath: runtime.project.rootDir,
+    refs: [{ caseSetId: set.id, featureKey: "f-dialog" }],
+    platforms: ["android"],
+    baseline: "none",
+    createdBy: "test"
+  });
+  const dialogSyncs = [];
+  runtime.store.recordSystemDialog = async (input) => {
+    dialogSyncs.push(input);
+    return { saved: true };
+  };
+  const { code, errors } = await runCli(
+    runtime,
+    ["run", "--task", task.id, "--device", "emulator-1"],
+    {
+      androidSystemDialogReader: async () => ({ status: "none", dialog: null, reason: null })
+    }
+  );
+  assert.equal(code, 0, errors.join(" | "));
+  const file = path.join(
+    runtime.project.rootDir,
+    ".artemis",
+    "design",
+    "system-dialogs",
+    `${task.id}.json`
+  );
+  const records = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(records.find((record) => record.platform === "android")?.status, "clear");
+  assert.equal(dialogSyncs.length, 1);
+  assert.equal(dialogSyncs[0].dialog.status, "clear");
 });
 
 test("suite run --task: task appPackage passed as locked_app_package", async () => {
@@ -2444,7 +2566,12 @@ test("suite parity --task: 读取 execution-evidence 评估跨端条件可比性
     engine: "proxy",
     reset: { mode: "reuse", entryConfigured: false },
     data: { policy: "per-platform", aliases: ["reg_email"] },
-    budget: null,
+    budget: {
+      maxWallMs: null,
+      maxSteps: null,
+      maxStepsEffective: null,
+      maxActions: null
+    },
     evidence: { steps: true, screenshots: false }
   });
   for (const platform of ["ios", "android"]) {
@@ -2521,6 +2648,114 @@ test("suite parity --task: 读取 execution-evidence 评估跨端条件可比性
   assert.equal(payload.comparable, 1);
   assert.equal(payload.notComparable, 0);
   assert.equal(payload.cases[0].comparable, true);
+
+  const noDialogEvidence = await runCli(runtime, [
+    "parity",
+    "--task",
+    task.id,
+    "--fail-on-dialog-diff",
+    "--json"
+  ]);
+  assert.equal(noDialogEvidence.code, 0);
+  assert.equal(
+    JSON.parse(noDialogEvidence.logs.at(-1)).systemDialog.comparable,
+    false,
+    "no evidence must not be reported comparable"
+  );
+  const requireDialogEvidence = await runCli(runtime, [
+    "parity",
+    "--task",
+    task.id,
+    "--require-dialog-evidence",
+    "--json"
+  ]);
+  assert.equal(requireDialogEvidence.code, 1);
+
+  writeSystemDialog(runtime.project.rootDir, task.id, {
+    platform: "ios",
+    status: "dialog",
+    title: "Update",
+    message: null,
+    buttons: ["Later"],
+    at: "2026-11-16T00:00:00.000Z"
+  });
+  writeSystemDialog(runtime.project.rootDir, task.id, {
+    platform: "android",
+    status: "dialog",
+    title: "Update",
+    message: null,
+    buttons: ["OK"],
+    at: "2026-11-16T00:00:00.000Z"
+  });
+  const dialogDiff = await runCli(runtime, [
+    "parity",
+    "--task",
+    task.id,
+    "--fail-on-dialog-diff",
+    "--json"
+  ]);
+  assert.equal(dialogDiff.code, 1);
+  assert.equal(JSON.parse(dialogDiff.logs.at(-1)).systemDialog.comparable, false);
+
+  const dialogFile = path.join(
+    runtime.project.rootDir,
+    ".artemis",
+    "design",
+    "system-dialogs",
+    `${task.id}.json`
+  );
+  fs.rmSync(dialogFile, { force: true });
+  writeSystemDialog(runtime.project.rootDir, task.id, {
+    platform: "ios",
+    status: "clear",
+    title: null,
+    message: null,
+    buttons: [],
+    at: "2026-11-16T00:00:00.000Z"
+  });
+  writeSystemDialog(runtime.project.rootDir, task.id, {
+    platform: "android",
+    status: "dialog",
+    title: "Update",
+    message: null,
+    buttons: ["OK"],
+    at: "2026-11-16T00:00:00.000Z"
+  });
+  const dialogPresence = await runCli(runtime, [
+    "parity",
+    "--task",
+    task.id,
+    "--fail-on-dialog-diff",
+    "--json"
+  ]);
+  assert.equal(dialogPresence.code, 1);
+  assert.ok(
+    JSON.parse(dialogPresence.logs.at(-1)).systemDialog.reasons.includes(
+      "dialog-presence-mismatch"
+    )
+  );
+
+  fs.rmSync(dialogFile, { force: true });
+  for (const platform of ["ios", "android"]) {
+    writeSystemDialog(runtime.project.rootDir, task.id, {
+      platform,
+      status: "clear",
+      title: null,
+      message: null,
+      buttons: [],
+      at: "2026-11-16T00:00:00.000Z"
+    });
+  }
+  const dialogClear = await runCli(runtime, [
+    "parity",
+    "--task",
+    task.id,
+    "--fail-on-dialog-diff",
+    "--require-dialog-evidence",
+    "--json"
+  ]);
+  assert.equal(dialogClear.code, 0);
+  assert.equal(JSON.parse(dialogClear.logs.at(-1)).systemDialog.comparable, true);
 });
 
 test("suite parity --task --fail-on-not-comparable: 不可比时 exit 1", async () => {
@@ -2591,4 +2826,8 @@ test("suite parity --task --fail-on-not-comparable: 不可比时 exit 1", async 
   const payload = JSON.parse(logs.at(-1));
   assert.equal(payload.notComparable, 1);
   assert.equal(payload.failed, true);
+
+  const text = await runCli(runtime, ["parity", "--task", task.id, "--fail-on-not-comparable"]);
+  assert.equal(text.code, 1, "text mode must honor --fail-on-not-comparable");
+  assert.ok(text.logs.some((line) => line.includes("not-comparable")));
 });

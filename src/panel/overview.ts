@@ -27,9 +27,9 @@ import { designDir } from "../figma/design-store.js";
 import {
   compareExecutionParity,
   type ExecutionParityRecord,
-  type ExecutionParityResult,
-  type ExecutionPlanView
+  type ExecutionParityResult
 } from "../figma/execution-plan.js";
+import { readExecutionEvidence } from "../figma/execution-evidence.js";
 import {
   compareSystemDialogs,
   readSystemDialogs,
@@ -1540,6 +1540,16 @@ export async function buildPanelTaskDetail(
     }))
   );
 
+  let parityTracesDir = path.join(rootPath, ".artemis", "traces");
+  try {
+    const soft = await softReadProject(deps, rootPath);
+    parityTracesDir = projectTracesDir(soft.project.config, rootPath, deps.env ?? process.env);
+  } catch (error) {
+    warnings.push(
+      `项目配置读取失败：执行一致性证据按默认 .artemis/traces 解析：${errorMessage(error)}`
+    );
+  }
+
   const parityRecords = new Map<string, ExecutionParityRecord>();
   for (const run of runs) {
     for (const entry of run.cases) {
@@ -1548,36 +1558,17 @@ export async function buildPanelTaskDetail(
       const key = `${entry.caseId}\u0000${platform}`;
       if (parityRecords.has(key)) continue;
       const planAndSteps = (() => {
-        if (entry.traceId === null) return { plan: null, stepsAvailable: false };
+        if (entry.traceId === null) {
+          return { plan: null, stepsAvailable: false, resetOk: null };
+        }
         for (const file of [
           path.join(rootPath, ".artemis", "remote-evidence", taskId, entry.traceId, "execution-evidence.json"),
-          path.join(rootPath, ".artemis", "traces", entry.traceId, "execution-evidence.json")
+          path.join(parityTracesDir, entry.traceId, "execution-evidence.json")
         ]) {
-          try {
-            const payload: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-            if (payload === null || typeof payload !== "object" || Array.isArray(payload)) continue;
-            const record = payload as Record<string, unknown>;
-            const plan = record.plan;
-            if (plan !== null && typeof plan === "object" && !Array.isArray(plan)) {
-              const candidate = plan as Record<string, unknown>;
-              const reset = candidate.reset;
-              const data = candidate.data;
-              if (
-                candidate.schemaVersion === 1 &&
-                (candidate.platform === "ios" || candidate.platform === "android") &&
-                reset !== null && typeof reset === "object" && !Array.isArray(reset) &&
-                data !== null && typeof data === "object" && !Array.isArray(data) &&
-                Array.isArray((data as Record<string, unknown>).aliases)
-              ) {
-                return { plan: candidate as unknown as ExecutionPlanView, stepsAvailable: record.stepsAvailable === true };
-              }
-            }
-            return { plan: null, stepsAvailable: record.stepsAvailable === true };
-          } catch {
-            /* try next */
-          }
+          const summary = readExecutionEvidence(file);
+          if (summary !== null) return summary;
         }
-        return { plan: null, stepsAvailable: false };
+        return { plan: null, stepsAvailable: false, resetOk: null };
       })();
       const status = ["passed", "failed", "timeout", "submit-error"].includes(entry.status)
         ? (entry.status as "passed" | "failed" | "timeout" | "submit-error")
@@ -1587,7 +1578,8 @@ export async function buildPanelTaskDetail(
         platform,
         status,
         plan: planAndSteps.plan,
-        stepsAvailable: planAndSteps.stepsAvailable
+        stepsAvailable: planAndSteps.stepsAvailable,
+        resetOk: planAndSteps.resetOk
       });
     }
   }

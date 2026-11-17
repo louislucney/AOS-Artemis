@@ -76,7 +76,7 @@ test("failure taxonomy: App 内建复位失败归 environment", () => {
     reset: {
       ok: false,
       reason: "app-internal-reset-failed",
-      serial: "00008101-000359440C69001E",
+      serial: "00008101-0000000000000000",
       adb: { path: null, source: "missing" },
       commands: []
     }

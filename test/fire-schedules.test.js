@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
 import { MemoryStore } from "../dist/db/memory.js";
@@ -75,6 +77,12 @@ test("fireDueSchedules: 首次到期 → 建任务（最新份引用）+ 推进�
   assert.deepEqual(tasks[0].platforms, ["android"]);
   assert.equal(tasks[0].baseline, "none");
   assert.equal(tasks[0].status, "pending");
+  assert.ok(
+    fs.existsSync(
+      path.join(rootPath, ".artemis", "design", "task-plans", `${tasks[0].id}.json`)
+    ),
+    "schedule-created task must have a plan"
+  );
   const after = await store.getSchedule(rootPath, schedule.id);
   assert.equal(after.lastFiredAt, NOON);
   assert.equal(after.lastNote, null);

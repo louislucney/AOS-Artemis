@@ -119,7 +119,9 @@ function resetFailure(error: unknown, serial: string | null): AppResetOutcome {
     message: errorMessage(error),
     serial,
     adb: { path: null, source: "missing" },
-    commands: []
+    commands: [],
+    supported: false,
+    degraded: false
   };
 }
 
@@ -281,7 +283,7 @@ interface ExecutionEvidenceInput {
   caseId: string;
   caseName: string;
   platform: "ios" | "android";
-  engine: "proxy" | "native-ios" | "native-android";
+  engine: ExecutionEngine;
   status: SuiteCaseResult["status"];
   testSummary: SuiteCaseResult["testSummary"];
   failure: FailureClassification | null;
@@ -408,7 +410,11 @@ function writeExecutionEvidence(input: ExecutionEvidenceInput): void {
           },
           reset: input.reset === null ? null : {
             ok: input.reset.ok,
-            reason: input.reset.reason ?? null
+            reason: input.reset.reason ?? null,
+            mode: input.reset.mode ?? null,
+            capability: input.reset.capability ?? null,
+            supported: input.reset.supported ?? null,
+            degraded: input.reset.degraded ?? null
           },
           data: { aliases: input.aliases },
           plan: input.plan,
@@ -433,48 +439,83 @@ function writeExecutionEvidence(input: ExecutionEvidenceInput): void {
   }
 }
 
-function uploadFailureEvidence(
+async function uploadCaseEvidence(
   context: CaseRunContext,
   caseId: string,
-  traceId: string
-): void {
+  traceId: string,
+  full: boolean
+): Promise<void> {
   const taskId = context.regressionTaskId ?? null;
-  const upload = context.runtime.store.uploadTaskEvidence;
+  const upload = context.runtime.store?.uploadTaskEvidence;
   if (taskId === null || upload === undefined) return;
   const files: Array<{ name: string; contentBase64: string }> = [];
-  for (const name of [
-    "status.json",
-    "stderr.log",
-    "stdout.log",
-    "native-ios.json",
-    "native-android.json",
-    EXECUTION_EVIDENCE_FILE,
-    "ax-final.json"
-  ]) {
+  const names = full
+    ? [
+        EXECUTION_EVIDENCE_FILE,
+        "ax-final.json",
+        "status.json",
+        "stderr.log",
+        "stdout.log",
+        "native-ios.json",
+        "native-android.json"
+      ]
+    : [EXECUTION_EVIDENCE_FILE];
+  for (const name of names) {
     try {
       const buffer = fs.readFileSync(path.join(context.runtime.traceDir(traceId), name));
       if (buffer.length <= 256 * 1024) {
         files.push({ name, contentBase64: buffer.toString("base64") });
+      } else {
+        logWarn(`证据文件超过 256KB，已跳过：trace=${traceId} · ${name}`);
       }
     } catch {
       /* 缺文件不阻断 */
     }
   }
-  const env = runtimeEnv(context.runtime);
-  const traceDir = context.runtime.traceDir(traceId);
-  files.push(...collectEvidenceScreenshots(traceDir, env));
-  const ax = collectEvidenceAx(traceDir, context.secrets ?? [], env);
-  if (ax !== null) files.push({ name: "evidence-ax.json", contentBase64: Buffer.from(ax, "utf8").toString("base64") });
+  if (full) {
+    const env = runtimeEnv(context.runtime);
+    const traceDir = context.runtime.traceDir(traceId);
+    files.push(...collectEvidenceScreenshots(traceDir, env));
+    const ax = collectEvidenceAx(traceDir, context.secrets ?? [], env);
+    if (ax !== null) {
+      files.push({
+        name: "evidence-ax.json",
+        contentBase64: Buffer.from(ax, "utf8").toString("base64")
+      });
+    }
+  }
   if (files.length === 0) return;
-  void upload
-    .call(context.runtime.store, {
+  try {
+    const result = await upload.call(context.runtime.store, {
       rootPath: context.runtime.project.rootDir,
       taskId,
       caseId,
       traceId,
       files
-    })
-    .catch(() => undefined);
+    });
+    if ((result?.skipped?.length ?? 0) > 0) {
+      logWarn(`证据包超预算，已跳过：trace=${traceId} · ${result?.skipped?.join(",")}`);
+    }
+  } catch (error) {
+    const message = errorMessage(error);
+    logWarn(`证据上传失败：trace=${traceId} · ${message}`);
+    try {
+      if (typeof context.runtime.store.recordAudit === "function") {
+        void context.runtime.store
+          .recordAudit(context.runtime.project.rootDir, {
+            domain: "evidence",
+            action: "upload-failed",
+            result: "failed",
+            summary: `证据上传失败：trace=${traceId} · ${message}`.slice(0, 300),
+            refs: { taskId, traceId, caseId },
+            channel: "runner"
+          })
+          .catch(() => undefined);
+      }
+    } catch {
+      /* 审计写入失败不阻断用例结果 */
+    }
+  }
 }
 
 function nativeFailure(
@@ -767,7 +808,7 @@ async function executeNativeCase(
       ...(step.resolvedBy === undefined ? {} : { resolvedBy: step.resolvedBy })
     }))
   });
-  if (!passed) uploadFailureEvidence(context, testCase.id, traceId);
+  await uploadCaseEvidence(context, testCase.id, traceId, !passed);
   return { result, submitted: true, submitError: null, terminal: true };
 }
 
@@ -792,13 +833,6 @@ async function executeCaseInner(
   context: CaseRunContext
 ): Promise<CaseRunOutcome> {
   const { runtime, sleep, now } = context;
-  const caseSecrets =
-    context.secrets === undefined
-      ? undefined
-      : allocateSequencedSecrets({
-          secrets: context.secrets,
-          stateFile: path.join(runtime.configDirAbs, "secret-sequences.json")
-        });
   let reset: AppResetOutcome | null = null;
   if (context.lockedAppPackage) {
     try {
@@ -827,18 +861,16 @@ async function executeCaseInner(
     if (context.deviceSerial === null) {
       return nativeSubmitError(testCase, context, "native 用例缺少 device_serial", reset);
     }
-    const nativeContext =
-      caseSecrets === undefined ? context : { ...context, secrets: caseSecrets };
     if (nativeTargetKind !== null) {
-      return await executeNativeIosCase(testCase, nativeContext, reset);
+      return await executeNativeIosCase(testCase, context, reset);
     }
-    return await executeNativeAndroidCase(testCase, nativeContext, reset);
+    return await executeNativeAndroidCase(testCase, context, reset);
   }
   const taskDesc = resolvePlaceholders(
-    `${templatedTaskDesc}${secretContextBlock(templatedTaskDesc, caseSecrets ?? [])}`,
-    caseSecrets ?? []
+    `${templatedTaskDesc}${secretContextBlock(templatedTaskDesc, context.secrets ?? [])}`,
+    context.secrets ?? []
   );
-  const adherenceTaskDesc = resolvePlaceholders(testCase.taskDesc, caseSecrets ?? []);
+  const adherenceTaskDesc = resolvePlaceholders(testCase.taskDesc, context.secrets ?? []);
   const missingAliases = unresolvedSecretAliases(taskDesc);
   if (missingAliases.length > 0) {
     await runtime.recordTaskSubmission({
@@ -1207,7 +1239,7 @@ async function executeCaseInner(
     caseId: testCase.id,
     caseName: testCase.name,
     platform: iosTarget ? "ios" : "android",
-    engine: "proxy",
+    engine: iosTarget ? "ios-llm" : "proxy",
     status: caseResult.status,
     testSummary: caseResult.testSummary,
     failure: caseResult.failure,
@@ -1215,16 +1247,14 @@ async function executeCaseInner(
     aliases: (context.secrets ?? []).map((entry) => entry.alias),
     plan: buildExecutionPlan({
       platform: (iosTarget ? "ios" : "android") satisfies ExecutionPlatform,
-      engine: "proxy" satisfies ExecutionEngine,
+      engine: (iosTarget ? "ios-llm" : "proxy") satisfies ExecutionEngine,
       aliases: (context.secrets ?? []).map((entry) => entry.alias),
       env: runtimeEnv(context.runtime),
       screenshots: (runtimeEnv(context.runtime).AOS_RUNNER_EVIDENCE_SCREENSHOTS ?? "1").trim() !== "0"
     }),
     steps: readProxyExecutionSteps(traceDir)
   });
-  if (caseResult.status !== "passed") {
-    uploadFailureEvidence(context, testCase.id, traceId);
-  }
+  await uploadCaseEvidence(context, testCase.id, traceId, caseResult.status !== "passed");
   return { result: caseResult, submitted: true, submitError: null, terminal };
 }
 
@@ -1277,28 +1307,91 @@ export async function executeCase(
   testCase: GeneratedCase,
   context: CaseRunContext
 ): Promise<CaseRunOutcome> {
+  const caseSecrets =
+    context.secrets === undefined
+      ? undefined
+      : allocateSequencedSecrets({
+          secrets: context.secrets,
+          stateFile: path.join(context.runtime.configDirAbs, "secret-sequences.json")
+        });
+  const innerContext =
+    caseSecrets === undefined ? context : { ...context, secrets: caseSecrets };
   const env = runtimeEnv(context.runtime);
-  const file = (env.AOS_DATA_LEASE_FILE ?? "").trim();
-  if (file === "") return await executeCaseInner(testCase, context);
-  const absolute = path.isAbsolute(file) ? file : path.join(context.runtime.project.rootDir, file);
-  const registry = new DataLeaseRegistry({ file: absolute });
   const cooldownMs = Math.max(
     0,
     Number.parseInt(env.AOS_DATA_LEASE_COOLDOWN_MS ?? "", 10) || 0
   );
+  const taskId = context.regressionTaskId ?? null;
+  const centerAllocate = context.runtime.store?.allocateDataLease;
+  const centerRelease = context.runtime.store?.releaseDataLease;
+  if (centerAllocate !== undefined && centerRelease !== undefined && taskId !== null) {
+    const leases: string[] = [];
+    const leasedValues = new Set<string>();
+    try {
+      for (const entry of innerContext.secrets ?? []) {
+        const resource = leaseResourceOf(entry);
+        if (resource === null) continue;
+        const value = entry.value.trim();
+        if (leasedValues.has(value)) continue;
+        leasedValues.add(value);
+        try {
+          const lease = await centerAllocate.call(context.runtime.store, {
+            rootPath: context.runtime.project.rootDir,
+            taskId,
+            resource,
+            value,
+            cooldownMs
+          });
+          leases.push(lease.id);
+        } catch (error) {
+          if (error instanceof DataLeaseError) return dataLeaseFailure(testCase, context, error);
+          throw error;
+        }
+      }
+      return await executeCaseInner(testCase, innerContext);
+    } finally {
+      for (const id of leases) {
+        try {
+          await centerRelease.call(context.runtime.store, {
+            rootPath: context.runtime.project.rootDir,
+            taskId,
+            leaseId: id
+          });
+        } catch (error) {
+          logWarn(`释放中心数据租约失败：lease=${id} · ${errorMessage(error)}`);
+        }
+      }
+    }
+  }
+  const file = (env.AOS_DATA_LEASE_FILE ?? "").trim();
+  if (file === "") return await executeCaseInner(testCase, innerContext);
+  const absolute = path.isAbsolute(file) ? file : path.join(context.runtime.project.rootDir, file);
+  const rawLockTimeout = Number.parseInt(env.AOS_DATA_LEASE_LOCK_TIMEOUT_MS ?? "", 10);
+  const rawTtl = Number.parseInt(env.AOS_DATA_LEASE_TTL_MS ?? "", 10);
+  const registry = new DataLeaseRegistry({
+    file: absolute,
+    ...(Number.isInteger(rawLockTimeout) && rawLockTimeout >= 0
+      ? { lockTimeoutMs: rawLockTimeout }
+      : {}),
+    ...(Number.isInteger(rawTtl) && rawTtl >= 0 ? { leaseTtlMs: rawTtl } : {})
+  });
   const leases: string[] = [];
+  const leasedValues = new Set<string>();
   try {
-    for (const entry of context.secrets ?? []) {
+    for (const entry of innerContext.secrets ?? []) {
       const resource = leaseResourceOf(entry);
       if (resource === null) continue;
+      const value = entry.value.trim();
+      if (leasedValues.has(value)) continue;
+      leasedValues.add(value);
       try {
-        leases.push(registry.allocate({ resource, value: entry.value, cooldownMs }).id);
+        leases.push(registry.allocate({ resource, value, cooldownMs }).id);
       } catch (error) {
         if (error instanceof DataLeaseError) return dataLeaseFailure(testCase, context, error);
         throw error;
       }
     }
-    return await executeCaseInner(testCase, context);
+    return await executeCaseInner(testCase, innerContext);
   } finally {
     for (const id of leases) {
       try {

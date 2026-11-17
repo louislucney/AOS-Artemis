@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -21,11 +22,18 @@ function caseEntry(index, overrides = {}) {
   };
 }
 
-async function setup({ cases = [caseEntry(1)], statuses = {}, runError = null, reset, store = new MemoryStore() } = {}) {
+async function setup({
+  cases = [caseEntry(1)],
+  statuses = {},
+  runError = null,
+  reset,
+  store = new MemoryStore(),
+  baseEnv
+} = {}) {
   const dir = makeTempProject({ config: baseConfig() });
   const proxy = new SuiteProxy({ statuses, runError });
   const crashCollector = { collect: async () => ({ status: "skipped", reason: "disabled" }) };
-  const { runtime } = await loadTestRuntime(dir, { proxy, store, crashCollector });
+  const { runtime } = await loadTestRuntime(dir, { proxy, store, crashCollector, baseEnv });
   const designDir = path.join(runtime.configDirAbs, "design");
   fs.mkdirSync(designDir, { recursive: true });
   fs.writeFileSync(path.join(designDir, "tests.json"), JSON.stringify({ flows: cases }));
@@ -201,6 +209,161 @@ test("suite runner: uploads failure evidence when the store supports it", async 
     "execution-evidence.json",
     "stderr.log"
   ]);
+});
+
+test("suite runner: data lease uses the sequenced secret value", async () => {
+  const leaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "aos-lease-seq-"));
+  const leaseFile = path.join(leaseDir, "leases.json");
+  try {
+    const { run } = await setup({
+      baseEnv: { ...process.env, AOS_DATA_LEASE_FILE: leaseFile },
+      cases: [caseEntry(1, { taskDesc: "email <secret:reg_email>" })],
+      statuses: { "trace-1": { status: "completed" } }
+    });
+    const report = await run({
+      secrets: [
+        { alias: "reg_email", value: "qa+202@example.com", kind: "account" },
+        { alias: "reg_email_confirm", value: "qa+202@example.com", kind: "account" }
+      ]
+    });
+    assert.equal(report.passed, 1);
+    const state = JSON.parse(fs.readFileSync(leaseFile, "utf8"));
+    assert.equal(state.leases.length, 1, "same value must be leased once");
+    assert.ok(
+      state.leases.some((lease) => lease.value === "qa+203@example.com"),
+      "lease must use the sequenced value"
+    );
+    assert.equal(
+      state.leases.some((lease) => lease.value === "qa+202@example.com"),
+      false,
+      "lease must not use the pre-sequence value"
+    );
+  } finally {
+    fs.rmSync(leaseDir, { recursive: true, force: true });
+  }
+});
+
+test("suite runner: uploads execution evidence for passed cases", async () => {
+  const store = new MemoryStore();
+  const uploads = [];
+  const { runtime, run } = await setup({
+    store,
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  runtime.store.uploadTaskEvidence = async (input) => {
+    uploads.push(input);
+    return { saved: [] };
+  };
+  await run({ regressionTaskId: "task-1", pollTimeoutMs: 200 });
+  assert.equal(uploads.length, 1);
+  assert.deepEqual(uploads[0].files.map((file) => file.name), ["execution-evidence.json"]);
+});
+
+test("suite runner: center data lease is used before the local file", async () => {
+  const store = new MemoryStore();
+  const allocated = [];
+  const released = [];
+  const { runtime, run } = await setup({
+    store,
+    cases: [caseEntry(1, { taskDesc: "email <secret:reg_email>" })],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  runtime.store.allocateDataLease = async (input) => {
+    allocated.push(input);
+    return {
+      id: "center-lease-1",
+      resource: input.resource,
+      value: input.value,
+      taskId: input.taskId,
+      provider: "center",
+      riskLevel: "low",
+      cooldownMs: 0,
+      leasedAt: "2026-11-16T00:00:00.000Z",
+      releasedAt: null,
+      cooldownUntil: null
+    };
+  };
+  runtime.store.releaseDataLease = async (input) => {
+    released.push(input);
+    return {
+      id: input.leaseId,
+      resource: "email",
+      value: "qa+203@example.com",
+      taskId: input.taskId,
+      provider: "center",
+      riskLevel: "low",
+      cooldownMs: 0,
+      leasedAt: "2026-11-16T00:00:00.000Z",
+      releasedAt: "2026-11-16T00:00:01.000Z",
+      cooldownUntil: null
+    };
+  };
+  const report = await run({
+    regressionTaskId: "task-1",
+    secrets: [
+      { alias: "reg_email", value: "qa+202@example.com", kind: "account" },
+      { alias: "reg_email_confirm", value: "qa+202@example.com", kind: "account" }
+    ]
+  });
+  assert.equal(report.passed, 1);
+  assert.equal(allocated.length, 1);
+  assert.equal(allocated[0].value, "qa+203@example.com");
+  assert.equal(released.length, 1);
+  assert.equal(released[0].leaseId, "center-lease-1");
+});
+
+test("suite runner: evidence upload failure writes an audit event", async () => {
+  const store = new MemoryStore();
+  const { runtime, run } = await setup({
+    store,
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  runtime.store.uploadTaskEvidence = async () => {
+    throw new Error("upload boom");
+  };
+  const report = await run({ regressionTaskId: "task-1", pollTimeoutMs: 200 });
+  assert.equal(report.passed, 1);
+  const audit = await store.listAudit(runtime.project.rootDir, { domain: "evidence" });
+  assert.ok(
+    audit.some(
+      (event) => event.action === "upload-failed" && event.result === "failed"
+    )
+  );
+});
+
+test("suite runner: awaits evidence upload before the run completes", async () => {
+  const store = new MemoryStore();
+  let uploadStarted = false;
+  let releaseUpload;
+  const gate = new Promise((resolve) => {
+    releaseUpload = resolve;
+  });
+  const { runtime, run } = await setup({
+    store,
+    cases: [caseEntry(1)],
+    statuses: { "trace-1": { status: "completed" } }
+  });
+  runtime.store.uploadTaskEvidence = async () => {
+    uploadStarted = true;
+    await gate;
+    return { saved: [] };
+  };
+  let runResolved = false;
+  const runPromise = run({ regressionTaskId: "task-1", pollTimeoutMs: 200 }).then((report) => {
+    runResolved = true;
+    return report;
+  });
+  const deadline = Date.now() + 2000;
+  while (!uploadStarted && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(uploadStarted, true, "upload was not called");
+  assert.equal(runResolved, false, "run finished before upload settled");
+  releaseUpload();
+  const report = await runPromise;
+  assert.equal(report.passed, 1);
 });
 
 test("suite runner: CRITICAL ERROR in stderr fails fast instead of waiting for timeout", async () => {

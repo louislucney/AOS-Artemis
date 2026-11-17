@@ -2876,7 +2876,11 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
     entry.platforms.android
       ? `android=${escapeHtml(entry.platforms.android.status)}${entry.platforms.android.stepsAvailable ? "" : "（无步骤）"}`
       : "—",
-    entry.comparable ? "可比" : "不可比",
+    entry.comparable
+      ? entry.limitations.length > 0
+        ? `可比（受限：${escapeHtml(entry.limitations.join("、"))}）`
+        : "可比"
+      : "不可比",
     entry.reasons.length === 0 ? "—" : escapeHtml(entry.reasons.join("、"))
   ]);
   const warnings = detail.warnings
@@ -3160,19 +3164,30 @@ function renderTaskPage(view: { rootPath: string; hostId: string | null; detail:
                 escapeHtml(detail.systemDialogParity.android.buttons.join(" / ") || "—")
               ]
         ],
-        "两端均未捕获系统弹窗"
+        "未捕获系统弹窗（不判定一致）"
       ),
-      `<p class="muted">${detail.systemDialogParity.comparable ? "两端弹窗内容一致" : `不可比：${detail.systemDialogParity.reasons.join("、")}`}</p>`,
+      `<p class="muted">${
+        detail.systemDialogParity.comparable
+          ? "两端弹窗内容一致"
+          : detail.systemDialogParity.reasons.includes("no-dialog-evidence")
+            ? "未捕获弹窗证据，不判定一致"
+            : `不可比：${detail.systemDialogParity.reasons.join("、")}`
+      }</p>`,
       "</section>",
       '<section id="execution-plan">',
       "<h2>执行计划</h2>",
       renderTable(
-        ["平台", "引擎", "复位", "数据策略", "步骤证据", "截图"],
+        ["平台", "引擎", "复位", "数据策略", "步数预算", "步骤证据", "截图"],
         (detail.executionPlan?.plans ?? []).map((plan) => [
           escapeHtml(plan.platform),
           escapeHtml(plan.engine),
           escapeHtml(plan.reset.mode),
           escapeHtml(plan.data.policy),
+          (() => {
+            if (plan.budget == null || plan.engine !== "proxy") return "—";
+            const value = plan.budget.maxSteps ?? plan.budget.maxStepsEffective;
+            return value == null ? "未知" : escapeHtml(String(value));
+          })(),
           plan.evidence.steps ? "是" : "否",
           plan.evidence.screenshots ? "是" : "否"
         ]),

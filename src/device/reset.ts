@@ -9,6 +9,7 @@ import {
   type ExecResult,
   type ResolvedAdb
 } from "./adb.js";
+import { resolveResetPolicy } from "./reset-policy.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MIN_TIMEOUT_MS = 1_000;
@@ -24,12 +25,21 @@ export type AppResetReason =
   | "force-stop-failed"
   | "launch-failed"
   | "app-internal-reset-failed"
+  | "fresh-failed"
   | "ios-unsupported";
 
 export interface AppResetRequest {
   packageName: string;
   serial?: string | null;
 }
+
+export type AppResetMode = "fresh" | "app-internal-reset" | "reuse" | "none";
+export type AppResetCapability =
+  | "debug-menu"
+  | "deep-link"
+  | "test-api"
+  | "full-reset"
+  | "unsupported";
 
 export interface AppResetOutcome {
   ok: boolean;
@@ -38,6 +48,11 @@ export interface AppResetOutcome {
   serial: string | null;
   adb: ResolvedAdb;
   commands: string[][];
+  /** 复位语义：当前实现产出 reuse / app-internal-reset；fresh/none 保留给后续策略。 */
+  mode?: AppResetMode;
+  capability?: AppResetCapability;
+  supported?: boolean;
+  degraded?: boolean;
 }
 
 export interface AppResetOptions {
@@ -97,9 +112,24 @@ export async function resetApp(
   const base = serial ? ["-s", serial] : [];
   const packageName = request.packageName?.trim() ?? "";
   const commands: string[][] = [];
+  const resetUrl = (env.AOS_ANDROID_RESET_URL ?? "").trim();
+  const policy = resolveResetPolicy(env);
+  const effective = policy ?? (resetUrl === "" ? "reuse" : "app-internal-reset");
+  const meta = {
+    mode: effective,
+    capability:
+      effective === "fresh"
+        ? ("full-reset" as const)
+        : effective === "app-internal-reset"
+          ? ("deep-link" as const)
+          : ("unsupported" as const),
+    supported: effective === "app-internal-reset" ? resetUrl !== "" : true,
+    degraded: false
+  };
 
   if (!APP_PACKAGE_PATTERN.test(packageName)) {
     return {
+      ...meta,
       ok: false,
       reason: "invalid-package",
       message: `非法应用包名：${request.packageName}`,
@@ -108,16 +138,47 @@ export async function resetApp(
       commands
     };
   }
+  if (effective === "none") {
+    return { ...meta, ok: true, serial, adb, commands };
+  }
+  if (effective === "app-internal-reset" && resetUrl === "") {
+    return {
+      ...meta,
+      ok: false,
+      reason: "app-internal-reset-failed",
+      message: "AOS_RESET_POLICY=app-internal-reset 需要 AOS_ANDROID_RESET_URL",
+      serial,
+      adb,
+      commands
+    };
+  }
   if (!adb.path) {
-    return { ok: false, reason: "adb-not-found", message: "未找到 adb", serial, adb, commands };
+    return { ...meta, ok: false, reason: "adb-not-found", message: "未找到 adb", serial, adb, commands };
   }
 
   const timeoutMs = resolveTimeoutMs(env);
+  if (effective === "fresh") {
+    const clear = [...base, "shell", "pm", "clear", packageName];
+    commands.push(clear);
+    const clearResult = await run(exec, adb.path, clear, timeoutMs);
+    if (clearResult.error || clearResult.code !== 0) {
+      return {
+        ...meta,
+        ok: false,
+        reason: "fresh-failed",
+        message: `pm clear 失败：${messageOf(clearResult)}`,
+        serial,
+        adb,
+        commands
+      };
+    }
+  }
   const forceStop = [...base, "shell", "am", "force-stop", packageName];
   commands.push(forceStop);
   const stopResult = await run(exec, adb.path, forceStop, timeoutMs);
   if (stopResult.error || stopResult.code !== 0) {
     return {
+      ...meta,
       ok: false,
       reason: failureReason(stopResult, "force-stop-failed"),
       message: messageOf(stopResult),
@@ -141,6 +202,7 @@ export async function resetApp(
   const launchResult = await run(exec, adb.path, launch, timeoutMs);
   if (launchResult.error || launchResult.code !== 0) {
     return {
+      ...meta,
       ok: false,
       reason: failureReason(launchResult, "launch-failed"),
       message: messageOf(launchResult),
@@ -169,8 +231,7 @@ export async function resetApp(
     await run(exec, adb.path, closeDialogs, timeoutMs).catch(() => undefined);
   }
 
-  const resetUrl = (env.AOS_ANDROID_RESET_URL ?? "").trim();
-  if (resetUrl !== "") {
+  if (effective === "app-internal-reset") {
     const open = [
       ...base,
       "shell",
@@ -186,6 +247,7 @@ export async function resetApp(
     const openResult = await run(exec, adb.path, open, timeoutMs);
     if (openResult.error || openResult.code !== 0) {
       return {
+        ...meta,
         ok: false,
         reason: "app-internal-reset-failed",
         message: `应用内建复位入口打开失败：${messageOf(openResult)}`,
@@ -199,6 +261,7 @@ export async function resetApp(
     const relaunchResult = await run(exec, adb.path, launch, timeoutMs);
     if (relaunchResult.error || relaunchResult.code !== 0) {
       return {
+        ...meta,
         ok: false,
         reason: "app-internal-reset-failed",
         message: `应用内建复位后重新启动失败：${messageOf(relaunchResult)}`,
@@ -209,5 +272,5 @@ export async function resetApp(
     }
   }
 
-  return { ok: true, serial, adb, commands };
+  return { ...meta, ok: true, serial, adb, commands };
 }

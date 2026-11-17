@@ -7,7 +7,7 @@
 **Status:** ready-for-agent
 
 - [x] `sudo appium driver run xcuitest tunnel-creation` 建立或确认复用隧道（记录是否必需、输出形态、是否常驻）
-- [x] 对 iPhone 12（00008101-000359440C69001E）以 `com.apple.Preferences` 建立 WDA 会话，成功拿到 screenshot 与 page source
+- [x] 对 iPhone 12（00008101-0000000000000000）以 `com.apple.Preferences` 建立 WDA 会话，成功拿到 screenshot 与 page source
 - [x] tap / swipe 成功；**键盘链路（H3）**：点输入框 → 等键盘可见 → 输入成功（注意：`mobile: typeText` 未实现，改走 `/keys`）；记录键盘可见轮询方式
 - [x] `mobile: terminateApp` + `activateApp` 成功；`useNewWDA=false` 下重复建会话不触发重编译
 - [x] **冷启动计时（H1）**：复用会话建立 ~1s（两次实测 1s/0s）；首次全量构建为分钟级（未精确定时）

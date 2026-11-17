@@ -16,7 +16,7 @@
 - 项目：`ESSO-GU`
 - 证据：`ESSO-GU/.artemis/remote-evidence/<taskId>/<traceId>/status.json`
 - 日期：2026-11-13 周五
-- 设备：iOS 真机 `00008101-000359440C69001E`
+- 设备：iOS 真机 `00008101-…（已脱敏）`
 - 工具：
 
 ```bash

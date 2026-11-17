@@ -27,7 +27,7 @@ test("readIosInstalledAppVersion: devicectl JSON 读取版本", async () => {
     );
   };
   const read = await readIosInstalledAppVersion({
-    udid: "00008101-000359440C69001E",
+    udid: "00008101-0000000000000000",
     bundleId: "com.example.app",
     env: {},
     exec

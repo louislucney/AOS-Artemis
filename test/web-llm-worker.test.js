@@ -264,6 +264,13 @@ test("createWebJob: 本地注册项目（无 web_projects 行）可创建 pendin
   assert.ok(created.pendingReason);
   assert.equal(created.task.status, "pending");
   assert.ok(created.task.jobSpec);
+  const plan = JSON.parse(
+    await readFile(
+      join(rootPath, ".artemis", "design", "task-plans", `${created.task.id}.json`),
+      "utf8"
+    )
+  );
+  assert.equal(plan.taskId, created.task.id);
 });
 
 test("persistLlmCasePlan: Excel 生成的 taskDesc 落盘可追溯", async () => {

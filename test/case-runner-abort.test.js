@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { executeCase } from "../dist/figma/case-runner.js";
 
-const IOS_UDID = "00008101-000359440C69001E";
+const IOS_UDID = "00008101-0000000000000000";
 
 function proxyCase() {
   return {

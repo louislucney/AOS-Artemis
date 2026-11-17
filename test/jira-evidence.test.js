@@ -13,7 +13,7 @@ const JIRA_DOTENV = [
   "JIRA_API_TOKEN=token_123456"
 ].join("\n");
 
-const DEVICE_UDID = "00008101-000359440C69001E";
+const DEVICE_UDID = "00008101-0000000000000000";
 
 function stubFetch(handler) {
   const original = globalThis.fetch;

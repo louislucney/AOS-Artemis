@@ -18,6 +18,14 @@ import { buildRemoteSuiteRuntime } from "../dist/cli-runtime.js";
 import { SuiteStoreClient } from "../dist/runner/control/suite-client.js";
 import { rewriteDeepSeekStructuredOutput } from "../dist/runner/control/llm-proxy.js";
 import { createHybridSuiteStore } from "../dist/runner/control/suite-store.js";
+import { SuiteControlService } from "../dist/runner/control/suite-service.js";
+import {
+  buildTaskExecutionPlan,
+  readTaskExecutionPlan,
+  writeTaskExecutionPlan
+} from "../dist/figma/task-execution-plan.js";
+import { readSystemDialogs } from "../dist/figma/system-dialog-store.js";
+import { DataLeaseError } from "../dist/figma/data-lease.js";
 import { storeWebAsset } from "../dist/web/assets.js";
 import { baseConfig, makeTempProject } from "./helpers.js";
 
@@ -116,6 +124,52 @@ async function runRecord(rootPath, taskId) {
   };
 }
 
+test("suite control: task bundle carries the dispatch plan", async () => {
+  const rootPath = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "plan", hostId: HOST });
+  const task = await store.createRegressionTask({
+    rootPath,
+    refs: [],
+    platforms: ["android"],
+    baseline: "latest",
+    targetHostId: HOST
+  });
+  writeTaskExecutionPlan(
+    rootPath,
+    buildTaskExecutionPlan({
+      taskId: task.id,
+      hostId: HOST,
+      platforms: task.platforms,
+      env: {},
+      createdAt: "2026-11-16T00:00:00.000Z"
+    })
+  );
+  const service = new SuiteControlService(store, HOST);
+  const bundle = await service.getTaskBundle({ rootPath, taskId: task.id });
+  assert.equal(bundle?.taskPlan?.taskId, task.id);
+  assert.deepEqual(bundle?.taskPlan?.platforms, ["android"]);
+});
+
+test("suite control: createTask writes a dispatch plan for the new task", async () => {
+  const rootPath = makeTempProject({ config: baseConfig() });
+  const store = new MemoryStore();
+  await store.upsertProject({ rootPath, name: "plan", hostId: HOST });
+  const service = new SuiteControlService(store, HOST);
+  const task = await service.createTask({
+    input: {
+      rootPath,
+      refs: [],
+      platforms: ["android"],
+      baseline: "latest",
+      targetHostId: HOST
+    }
+  });
+  const plan = readTaskExecutionPlan(rootPath, task.id);
+  assert.equal(plan?.taskId, task.id);
+  assert.deepEqual(plan?.platforms, ["android"]);
+});
+
 test("suite control: hybrid store 通过 HTTP 资源读写任务/case set/run/租约", async () => {
   const central = await makeCentral();
   const workspaceRoot = await makeWorkspace();
@@ -139,6 +193,46 @@ test("suite control: hybrid store 通过 HTTP 资源读写任务/case set/run/�
       assert.equal(bundle?.project?.id, central.project.id);
       assert.deepEqual(await hybrid.listCaseSets(central.rootPath), []);
       assert.deepEqual(await hybrid.listSuiteRuns(central.rootPath), []);
+      await hybrid.recordSystemDialog?.({
+        rootPath: central.rootPath,
+        taskId: central.task.id,
+        dialog: {
+          platform: "android",
+          status: "dialog",
+          title: "Update",
+          message: null,
+          buttons: ["OK"],
+          at: "2026-11-16T00:00:00.000Z"
+        }
+      });
+      assert.equal(readSystemDialogs(central.rootPath, central.task.id)[0]?.title, "Update");
+
+      const lease = await hybrid.allocateDataLease?.({
+        rootPath: central.rootPath,
+        taskId: central.task.id,
+        resource: "phone",
+        value: "1000000",
+        cooldownMs: 0
+      });
+      assert.equal(lease?.value, "1000000");
+      assert.equal(lease?.taskId, central.task.id);
+      await assert.rejects(
+        () =>
+          hybrid.allocateDataLease?.({
+            rootPath: central.rootPath,
+            taskId: central.task.id,
+            resource: "phone",
+            value: "1000000",
+            cooldownMs: 0
+          }),
+        (error) => error instanceof DataLeaseError && error.code === "busy"
+      );
+      const releasedLease = await hybrid.releaseDataLease?.({
+        rootPath: central.rootPath,
+        taskId: central.task.id,
+        leaseId: lease.id
+      });
+      assert.ok(releasedLease?.releasedAt);
 
       const runner = await hybrid.upsertRunner({
         rootPath: central.rootPath,

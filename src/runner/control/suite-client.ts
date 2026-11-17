@@ -1,4 +1,12 @@
 import type { ProjectStore, TaskEvidenceUpload } from "../../db/types.js";
+import {
+  DataLeaseError,
+  type DataLeaseRecord,
+  type DataLeaseErrorCode,
+  type DataResource,
+  type DataRiskLevel
+} from "../../figma/data-lease.js";
+import type { StoredSystemDialog } from "../../figma/system-dialog-store.js";
 import { leaseTokenFor } from "./lease-token.js";
 
 export interface SuiteStoreClientOptions {
@@ -318,10 +326,67 @@ export class SuiteStoreClient {
 
   async uploadTaskEvidence(
     input: TaskEvidenceUpload
-  ): Promise<{ saved: string[] }> {
+  ): Promise<{ saved: string[]; skipped?: string[] }> {
     return await this.request(
       "POST",
       `/tasks/${encodeURIComponent(input.taskId)}/evidence`,
+      this.rewriteRoot(input)
+    );
+  }
+
+  private leaseError(error: unknown): never {
+    if (error instanceof SuiteStoreHttpError) {
+      const code = error.code.startsWith("data-lease-")
+        ? (error.code.slice("data-lease-".length) as DataLeaseErrorCode)
+        : null;
+      if (
+        code === "busy" ||
+        code === "cooldown" ||
+        code === "not-found" ||
+        code === "already-released"
+      ) {
+        throw new DataLeaseError(code, error.message);
+      }
+    }
+    throw error;
+  }
+
+  async allocateDataLease(input: {
+    rootPath: string;
+    taskId: string;
+    resource: DataResource;
+    value: string;
+    provider?: string;
+    riskLevel?: DataRiskLevel;
+    cooldownMs?: number;
+  }): Promise<DataLeaseRecord> {
+    try {
+      return await this.request("POST", "/data-leases/allocate", this.rewriteRoot(input));
+    } catch (error) {
+      this.leaseError(error);
+    }
+  }
+
+  async releaseDataLease(input: {
+    rootPath: string;
+    taskId: string;
+    leaseId: string;
+  }): Promise<DataLeaseRecord> {
+    try {
+      return await this.request("POST", "/data-leases/release", this.rewriteRoot(input));
+    } catch (error) {
+      this.leaseError(error);
+    }
+  }
+
+  async recordSystemDialog(input: {
+    rootPath: string;
+    taskId: string;
+    dialog: StoredSystemDialog;
+  }): Promise<{ saved: boolean }> {
+    return await this.request(
+      "POST",
+      `/tasks/${encodeURIComponent(input.taskId)}/system-dialog`,
       this.rewriteRoot(input)
     );
   }

@@ -157,6 +157,50 @@ test("runner evidence: accepts native structured evidence", async () => {
   }
 });
 
+test("runner evidence: trims the batch instead of rejecting the whole package", async () => {
+  const { rootPath, task, handle, restore } = await makeServer();
+  try {
+    const files = [
+      {
+        name: "execution-evidence.json",
+        contentBase64: Buffer.from('{"schemaVersion":1}', "utf8").toString("base64")
+      },
+      ...Array.from({ length: 5 }, (_, index) => ({
+        name: `evidence-shot-${index + 1}.png`,
+        contentBase64: Buffer.alloc(250 * 1024, index + 1).toString("base64")
+      }))
+    ];
+    const response = await fetch(
+      `http://127.0.0.1:${handle.port}/panel/api/runners/suite/tasks/${task.id}/evidence`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "x-aos-host-id": HOST,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          rootPath,
+          taskId: task.id,
+          caseId: "case-1",
+          traceId: "trace-budget",
+          files
+        })
+      }
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(payload));
+    assert.ok(payload.value.saved.some((name) => name.endsWith("execution-evidence.json")));
+    assert.ok(payload.value.skipped.includes("evidence-shot-5.png"));
+    const dir = path.join(rootPath, ".artemis", "remote-evidence", task.id, "trace-budget");
+    assert.ok(fs.existsSync(path.join(dir, "execution-evidence.json")));
+    assert.equal(fs.existsSync(path.join(dir, "evidence-shot-5.png")), false);
+  } finally {
+    await handle.close();
+    restore();
+  }
+});
+
 test("runner evidence: rejects disallowed names", async () => {
   const { rootPath, task, handle, restore } = await makeServer();
   try {

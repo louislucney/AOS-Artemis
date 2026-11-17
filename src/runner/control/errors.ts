@@ -5,7 +5,11 @@ export type RunnerControlErrorCode =
   | "session-lost"
   | "instance-mismatch"
   | "invalid-state"
-  | "gateway-port-conflict";
+  | "gateway-port-conflict"
+  | "data-lease-busy"
+  | "data-lease-cooldown"
+  | "data-lease-not-found"
+  | "data-lease-already-released";
 
 export class RunnerControlError extends Error {
   readonly code: RunnerControlErrorCode;

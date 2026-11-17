@@ -181,7 +181,7 @@ test("captureLiveScreenshot(ios): 注入的 iOS 截图源生效且不调用代�
 test("captureLiveScreenshot(ios): 真机 WDA PNG 标记 lossless=true", async () => {
   const capture = await captureLiveScreenshot(
     { proxy: { callTool: async () => ({ content: [] }) } },
-    "00008101-000359440C69001E",
+    "00008101-0000000000000000",
     {
       platform: "ios",
       captureWdaPng: async () => ({ ok: true, value: PNG_BYTES })
