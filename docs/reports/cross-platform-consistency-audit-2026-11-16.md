@@ -159,7 +159,7 @@
 
 ### P3 工程债与合规
 
-- **P3-7 静默异常模式**：已新增 `npm run audit:catches` + `scripts/silent-catch-baseline.json`；新增空 catch/`.catch(() => undefined)` 超基线即 exit 1，存量按基线保留（234 处）。关键路径已单独加信号：
+- **P3-7 静默异常模式**：已新增 `npm run audit:catches` + `scripts/silent-catch-baseline.json`（v2：按文件计数 + 内容哈希）；新增或同类替换超基线即 exit 1，存量按基线保留（272 处，含 `.catch(() => null)`）。关键路径已单独加信号：
   - 证据上传 `src/figma/case-runner.ts:477`
   - plan 旁车写入 `src/panel/actions.ts:2134`
   - 进度上报（`src/suite-command.ts` 多处 `progress.report(...).catch(() => undefined)`）
@@ -316,7 +316,7 @@
 
 ### P3-7（已处理）
 
-- 新增 `scripts/audit-silent-catches.mjs` 与 `scripts/silent-catch-baseline.json`（存量 234 处）；`npm run audit:catches` 对新增空 catch/`.catch(() => undefined)` 超基线 exit 1；`npm run verify` 已纳入。
+- 新增 `scripts/audit-silent-catches.mjs` 与 `scripts/silent-catch-baseline.json` v2（存量 272 处，按文件计数 + 内容哈希）；去注释/字符串后匹配，新增或同类替换空 catch/`.catch(() => undefined|null)` 超基线 exit 1；`npm run verify` 已纳入。
 - 关键路径已加信号：证据上传失败写审计、系统弹窗同步失败写 `logWarn`。
 - 仍保留存量静默 catch（多为清理/降级的有意为之），按基线约束。
 

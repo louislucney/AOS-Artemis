@@ -1,118 +1,439 @@
 {
-  "version": 1,
-  "generatedAt": "2026-11-17T15:16:20.718Z",
-  "note": "存量静默 catch 基线；新增超基线请改代码或显式更新（--update-baseline）",
-  "counts": {
-    "src/artemis/android-trace.ts": 1,
-    "src/artemis/artifacts.ts": 1,
-    "src/artemis/assembly.ts": 1,
-    "src/artemis/evidence.ts": 1,
-    "src/artemis/proxy.ts": 2,
-    "src/artifacts/index.ts": 1,
-    "src/auth/users.ts": 1,
-    "src/cli-runtime.ts": 6,
-    "src/commands.ts": 2,
-    "src/console/dispatch.ts": 3,
-    "src/console/shell.ts": 8,
-    "src/crash/ios-device.ts": 1,
-    "src/crash/store.ts": 1,
-    "src/db/file.ts": 6,
-    "src/db/postgres.ts": 4,
-    "src/design/reading/frames.ts": 2,
-    "src/design/reading/probe-command.ts": 1,
-    "src/design/reading/probe.ts": 1,
-    "src/design/reading/run.ts": 1,
-    "src/design/screens.ts": 2,
-    "src/device/adb.ts": 2,
-    "src/device/android-actions.ts": 1,
-    "src/device/app-artifacts.ts": 1,
-    "src/device/device-hosts.ts": 1,
-    "src/device/install.ts": 2,
-    "src/device/ios-log.ts": 2,
-    "src/device/ios-reset.ts": 2,
-    "src/device/ios.ts": 2,
-    "src/device/reset.ts": 2,
-    "src/diff/pen-source.ts": 1,
-    "src/diff/screen-map.ts": 1,
-    "src/diff/tool.ts": 1,
-    "src/figma/brief.ts": 2,
-    "src/figma/case-runner.ts": 7,
-    "src/figma/data-lease.ts": 4,
-    "src/figma/evidence-files.ts": 2,
-    "src/figma/features.ts": 1,
-    "src/figma/flows.ts": 1,
-    "src/figma/gaps.ts": 1,
-    "src/figma/import.ts": 1,
-    "src/figma/render.ts": 2,
-    "src/figma/retention.ts": 1,
-    "src/figma/run-manifest.ts": 2,
-    "src/figma/run-report.ts": 1,
-    "src/figma/task-execution-plan.ts": 1,
-    "src/figma/task-sidecar-retention.ts": 2,
-    "src/figma/test-gen.ts": 3,
-    "src/host/identity.ts": 1,
-    "src/host-command.ts": 1,
-    "src/http-server.ts": 1,
-    "src/ios/app-version.ts": 1,
-    "src/ios/appium/server.ts": 3,
-    "src/ios/appium/session.ts": 3,
-    "src/ios/run-loop.ts": 1,
-    "src/ios/structured-runner.ts": 1,
-    "src/jobs/async.ts": 1,
-    "src/ledger/auto-import.ts": 1,
-    "src/llm/pool/stream.ts": 1,
-    "src/log.ts": 4,
-    "src/open/job-store.ts": 1,
-    "src/open/jobs.ts": 2,
-    "src/open/pipeline.ts": 3,
-    "src/open/server.ts": 3,
-    "src/panel/actions.ts": 11,
-    "src/panel/artifact-route.ts": 2,
-    "src/panel/overview.ts": 4,
-    "src/panel/web.ts": 4,
-    "src/panel-command.ts": 1,
-    "src/pen/agent.ts": 2,
-    "src/pen/apply.ts": 2,
-    "src/pen/assets.ts": 1,
-    "src/pen/bounds.ts": 1,
-    "src/pen/cli.ts": 1,
-    "src/pen/export.ts": 1,
-    "src/pen/screens.ts": 1,
-    "src/pen/split.ts": 1,
-    "src/runner/agent.ts": 3,
-    "src/runner/control/suite-client.ts": 1,
-    "src/runner/control/suite-service.ts": 2,
-    "src/runner/progress.ts": 1,
-    "src/runner/schedules.ts": 1,
-    "src/runtime-host.ts": 5,
-    "src/runtime.ts": 2,
-    "src/suite-command.ts": 23,
-    "src/tasks/ledger.ts": 1,
-    "src/tasks/secret-sequence.ts": 1,
-    "src/tasks/sweeper.ts": 1,
-    "src/tools/device-image.ts": 1,
-    "src/tools/llm.ts": 2,
-    "src/tools/native-tools/ledger.ts": 1,
-    "src/tools/native-tools/tasks.ts": 1,
-    "src/ui/contract.ts": 2,
-    "src/usage-command.ts": 1,
-    "src/util.ts": 2,
-    "src/web/assertion-column.ts": 1,
-    "src/web/assets.ts": 1,
-    "src/web/jobs.ts": 3,
-    "src/web/llm/artemis-case.ts": 1,
-    "src/web/llm/cli.ts": 3,
-    "src/web/llm/ios-case.ts": 1,
-    "src/web/llm/reference.ts": 1,
-    "src/web/llm/secrets.ts": 2,
-    "src/web/lock.ts": 2,
-    "src/web/pen-reference.ts": 1,
-    "src/web/platform-result.ts": 1,
-    "src/web/project-service.ts": 3,
-    "src/web/results.ts": 1,
-    "src/web/workbook.ts": 1,
-    "src/web/writeback.ts": 1,
-    "src/workflow/design-to-test.ts": 1,
-    "src/workflow/excel-import.ts": 4
+  "version": 2,
+  "generatedAt": "2026-11-17T16:21:25.921Z",
+  "note": "存量静默 catch 基线（按文件计数 + 内容哈希）；新增或替换请改代码或显式 --update-baseline",
+  "files": {
+    "src/artemis/android-trace.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/artemis/artifacts.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/artemis/assembly.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/artemis/evidence.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/artemis/proxy.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/artifacts/index.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/auth/users.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/cli-runtime.ts": {
+      "count": 6,
+      "hash": "1358706e891d27a9deba6bb15b87dc3a921f9c6f85953ab411144ecaaba97df0"
+    },
+    "src/console/dispatch.ts": {
+      "count": 8,
+      "hash": "2b1858a77c1efb9d818adc4e2b1c350507ba2df88c722198ddaf11eb9c71e974"
+    },
+    "src/crash/ios-device.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/crash/store.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/db/file.ts": {
+      "count": 6,
+      "hash": "674e3e07d7d2650280820ff2e5fcd6b42618ea8b62acbc5559162260d8da9c66"
+    },
+    "src/db/postgres.ts": {
+      "count": 4,
+      "hash": "a16de093382c62d457cc82e59932d41dbc2ec10e0f4940ece8016cca9cb77070"
+    },
+    "src/design/reading/frames.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/design/reading/probe-command.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/design/reading/probe.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/design/reading/run.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/design/screens.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/device/adb.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/device/app-artifacts.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/device/device-hosts.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/device/install.ts": {
+      "count": 2,
+      "hash": "fe3fd7b09030070bd1f2f392276e070541fa7677f307aac2a3365624837af36e"
+    },
+    "src/device/ios-reset.ts": {
+      "count": 2,
+      "hash": "1001ece609fcb0b0eba6735c904d114021ecdb2fac3283462cf289531d5c3a5e"
+    },
+    "src/device/ios.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/device/reset.ts": {
+      "count": 2,
+      "hash": "fe3fd7b09030070bd1f2f392276e070541fa7677f307aac2a3365624837af36e"
+    },
+    "src/diff/pen-source.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/diff/screen-map.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/diff/tool.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/events/ingress.ts": {
+      "count": 2,
+      "hash": "cc54e34da887c04ccd925b97f4d88637f36f1c69e54a289774647fdb57239390"
+    },
+    "src/figma/brief.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/figma/case-runner.ts": {
+      "count": 8,
+      "hash": "43c0f95d88b45a4acef973291e9ab48a10527eabf9c80e8c21d0c39a268c6952"
+    },
+    "src/figma/data-lease.ts": {
+      "count": 4,
+      "hash": "a16de093382c62d457cc82e59932d41dbc2ec10e0f4940ece8016cca9cb77070"
+    },
+    "src/figma/evidence-files.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/figma/flows.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/figma/gaps.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/figma/import.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/figma/render.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/figma/retention.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/figma/run-manifest.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/figma/task-execution-plan.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/figma/task-sidecar-retention.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/figma/test-gen.ts": {
+      "count": 3,
+      "hash": "d37dee537bbba91e0d9e0b0f6370d4daf21aae798fc793c9481e4d83f94e45fa"
+    },
+    "src/host/identity.ts": {
+      "count": 1,
+      "hash": "2c75bb3e578a7f41a4f3f5235d121f99b864e9023031d89c25af76c2f0bd18e9"
+    },
+    "src/host-command.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/http-server.ts": {
+      "count": 2,
+      "hash": "7ee7cab17eae8078a8076d6fe55b0c9bcd382d7224031ffe4e13a0d297ec2d16"
+    },
+    "src/ios/app-version.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/ios/appium/server.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/ios/appium/session.ts": {
+      "count": 3,
+      "hash": "d37dee537bbba91e0d9e0b0f6370d4daf21aae798fc793c9481e4d83f94e45fa"
+    },
+    "src/ios/run-loop.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/ios/structured-runner.ts": {
+      "count": 1,
+      "hash": "2c75bb3e578a7f41a4f3f5235d121f99b864e9023031d89c25af76c2f0bd18e9"
+    },
+    "src/jobs/async.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/ledger/auto-import.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/llm/pool/stream.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/log.ts": {
+      "count": 4,
+      "hash": "a16de093382c62d457cc82e59932d41dbc2ec10e0f4940ece8016cca9cb77070"
+    },
+    "src/open/job-store.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/open/jobs.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/open/pipeline.ts": {
+      "count": 3,
+      "hash": "d37dee537bbba91e0d9e0b0f6370d4daf21aae798fc793c9481e4d83f94e45fa"
+    },
+    "src/open/server.ts": {
+      "count": 3,
+      "hash": "d37dee537bbba91e0d9e0b0f6370d4daf21aae798fc793c9481e4d83f94e45fa"
+    },
+    "src/panel/actions.ts": {
+      "count": 16,
+      "hash": "b125c9033355b029a531e31c17473e9c7e5f89732c19f38b0b35ed10b0841919"
+    },
+    "src/panel/artifact-route.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/panel/overview.ts": {
+      "count": 5,
+      "hash": "5dd5fd7fc4bd017095d9d15c71d6121fe2ba6a4d03a8cdd0845901e473d519cd"
+    },
+    "src/panel/web.ts": {
+      "count": 14,
+      "hash": "8b02ab25b8e463ea5f18eee40d8de7aec8950d1c39a26334c9ca8d9246ee02b2"
+    },
+    "src/panel-command.ts": {
+      "count": 3,
+      "hash": "85613e8be56d6c06db30002487f7c4db915c99f0d47058c66a06d752c1fa1a57"
+    },
+    "src/pen/apply.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/pen/assets.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/pen/bounds.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/pen/cli.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/pen/export.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/pen/screens.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/pen/split.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/runner/agent.ts": {
+      "count": 9,
+      "hash": "269cdf85b4533a22d3052113369a093a53c3e535176e7a1344cdf6141683f64c"
+    },
+    "src/runner/control/suite-client.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/runner/control/suite-service.ts": {
+      "count": 4,
+      "hash": "2fa47d6e2d280135c0678e320cf47f38534f533084d4dda00ab73457eee7ba18"
+    },
+    "src/runner/inventory.ts": {
+      "count": 1,
+      "hash": "6c6734c63488ff15c55d8b8356e587d2de57001b20b3e62576eb114095604226"
+    },
+    "src/runner/progress.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/runner/schedules.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/runtime-host.ts": {
+      "count": 5,
+      "hash": "6ae1ad81e47431e737086f6f76e29696672f49eee96f88f6b067b544a37602dd"
+    },
+    "src/runtime.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/suite-command.ts": {
+      "count": 37,
+      "hash": "0c8b660936281231f50f3ab2a2bad7df8df992f994b51cc451d6d022f21518b6"
+    },
+    "src/tasks/ledger.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/tasks/secret-sequence.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/tasks/sweeper.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/tools/device-image.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/tools/llm.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/tools/native-tools/ledger.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/tools/native-tools/tasks.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/ui/contract.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/usage/tokens.ts": {
+      "count": 1,
+      "hash": "6c6734c63488ff15c55d8b8356e587d2de57001b20b3e62576eb114095604226"
+    },
+    "src/usage/web.ts": {
+      "count": 1,
+      "hash": "6c6734c63488ff15c55d8b8356e587d2de57001b20b3e62576eb114095604226"
+    },
+    "src/usage-command.ts": {
+      "count": 1,
+      "hash": "2c75bb3e578a7f41a4f3f5235d121f99b864e9023031d89c25af76c2f0bd18e9"
+    },
+    "src/util.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/web/assertion-column.ts": {
+      "count": 1,
+      "hash": "2c75bb3e578a7f41a4f3f5235d121f99b864e9023031d89c25af76c2f0bd18e9"
+    },
+    "src/web/assets.ts": {
+      "count": 2,
+      "hash": "7ee7cab17eae8078a8076d6fe55b0c9bcd382d7224031ffe4e13a0d297ec2d16"
+    },
+    "src/web/jobs.ts": {
+      "count": 4,
+      "hash": "4570c69cec92e5fb695f91fc2edc5ba59e2347316cac06e626532116cca4f4ea"
+    },
+    "src/web/llm/artemis-case.ts": {
+      "count": 1,
+      "hash": "2c75bb3e578a7f41a4f3f5235d121f99b864e9023031d89c25af76c2f0bd18e9"
+    },
+    "src/web/llm/cli.ts": {
+      "count": 6,
+      "hash": "64788e1c044ab8dafb925244e6b5189ec3a61288f16327c54a46e412018e0e0a"
+    },
+    "src/web/llm/heartbeat.ts": {
+      "count": 1,
+      "hash": "6c6734c63488ff15c55d8b8356e587d2de57001b20b3e62576eb114095604226"
+    },
+    "src/web/llm/ios-case.ts": {
+      "count": 1,
+      "hash": "2c75bb3e578a7f41a4f3f5235d121f99b864e9023031d89c25af76c2f0bd18e9"
+    },
+    "src/web/llm/reference.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/web/llm/secrets.ts": {
+      "count": 2,
+      "hash": "acf1f444d0ba3535534ed7c00acd6d9fa2cafe0452e06e98013a47fc24d4030c"
+    },
+    "src/web/lock.ts": {
+      "count": 2,
+      "hash": "fe3fd7b09030070bd1f2f392276e070541fa7677f307aac2a3365624837af36e"
+    },
+    "src/web/platform-result.ts": {
+      "count": 1,
+      "hash": "2c75bb3e578a7f41a4f3f5235d121f99b864e9023031d89c25af76c2f0bd18e9"
+    },
+    "src/web/project-service.ts": {
+      "count": 3,
+      "hash": "d37dee537bbba91e0d9e0b0f6370d4daf21aae798fc793c9481e4d83f94e45fa"
+    },
+    "src/web/results.ts": {
+      "count": 2,
+      "hash": "7ee7cab17eae8078a8076d6fe55b0c9bcd382d7224031ffe4e13a0d297ec2d16"
+    },
+    "src/web/workbook.ts": {
+      "count": 1,
+      "hash": "0aac0bf59fdfb8bc5c95e60c2973bc98bebff2fe5827c96bcf3adae91afc5af8"
+    },
+    "src/web/writeback.ts": {
+      "count": 1,
+      "hash": "2c75bb3e578a7f41a4f3f5235d121f99b864e9023031d89c25af76c2f0bd18e9"
+    },
+    "src/workflow/design-to-test.ts": {
+      "count": 2,
+      "hash": "7ee7cab17eae8078a8076d6fe55b0c9bcd382d7224031ffe4e13a0d297ec2d16"
+    },
+    "src/workflow/excel-import.ts": {
+      "count": 4,
+      "hash": "a16de093382c62d457cc82e59932d41dbc2ec10e0f4940ece8016cca9cb77070"
+    }
   }
 }

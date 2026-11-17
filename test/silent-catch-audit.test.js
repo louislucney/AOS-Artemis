@@ -22,16 +22,14 @@ function run(root, extra = []) {
   }
 }
 
-test("silent catch audit: 基线内通过，新增超基线失败，更新后恢复", (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-silent-catch-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const src = path.join(root, "src");
-  fs.mkdirSync(src, { recursive: true });
+function writeSource(file, catchExpression) {
   fs.writeFileSync(
-    path.join(src, "a.ts"),
+    file,
     [
+      "// catch {}",
+      'const sample = "catch {}";',
       "async function a() {",
-      "  await run().catch(() => undefined);",
+      `  await run().catch(() => ${catchExpression});`,
       "  try { one(); } catch {}",
       "  try { two(); } catch { /* best effort */ }",
       "  try { three(); } catch { recover(); }",
@@ -39,6 +37,15 @@ test("silent catch audit: 基线内通过，新增超基线失败，更新后恢
       ""
     ].join("\n")
   );
+}
+
+test("silent catch audit: 去注释/字符串、哈希基线、替换也失败", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aos-silent-catch-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const src = path.join(root, "src");
+  fs.mkdirSync(src, { recursive: true });
+  const aFile = path.join(src, "a.ts");
+  writeSource(aFile, "undefined");
 
   const missing = run(root, ["--json"]);
   assert.equal(missing.code, 2, "missing baseline exits 2");
@@ -47,11 +54,22 @@ test("silent catch audit: 基线内通过，新增超基线失败，更新后恢
   const baseline = JSON.parse(
     fs.readFileSync(path.join(root, "scripts", "silent-catch-baseline.json"), "utf8")
   );
-  assert.equal(baseline.counts["src/a.ts"], 3);
+  assert.equal(baseline.files["src/a.ts"].count, 3);
 
   const clean = run(root, ["--json"]);
   assert.equal(clean.code, 0);
   assert.equal(JSON.parse(clean.stdout).total, 3);
+
+  writeSource(aFile, "null");
+  const changed = run(root, ["--json"]);
+  assert.equal(changed.code, 1);
+  const changedPayload = JSON.parse(changed.stdout);
+  assert.deepEqual(changedPayload.violations, [
+    { file: "src/a.ts", count: 3, baseline: 3, reason: "content-changed" }
+  ]);
+
+  assert.equal(run(root, ["--update-baseline"]).code, 0);
+  assert.equal(run(root, ["--json"]).code, 0);
 
   fs.writeFileSync(
     path.join(src, "b.ts"),
@@ -61,7 +79,9 @@ test("silent catch audit: 基线内通过，新增超基线失败，更新后恢
   assert.equal(violation.code, 1);
   const payload = JSON.parse(violation.stdout);
   assert.equal(payload.ok, false);
-  assert.deepEqual(payload.violations, [{ file: "src/b.ts", count: 1, baseline: 0 }]);
+  assert.deepEqual(payload.violations, [
+    { file: "src/b.ts", count: 1, baseline: 0, reason: "new-file" }
+  ]);
 
   assert.equal(run(root, ["--update-baseline"]).code, 0);
   assert.equal(run(root, ["--json"]).code, 0);
