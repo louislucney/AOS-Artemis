@@ -367,11 +367,17 @@ test("console actions: 服务端重解析（case-set/keyword 不信客户端 ref
   const sets = await store.listCaseSets(rootPath);
 
   const bySet = await handlePanelActionRequest(
-    request("/panel/api/tasks", { project: rootPath, source: "case-set", ref: sets[0].id }),
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: sets[0].id,
+      resetPolicy: "none"
+    }),
     deps
   );
   assert.equal(bySet.status, 200);
   const task = JSON.parse(bySet.body).task;
+  assert.equal(task.resetPolicy, "none");
   assert.deepEqual(task.refs, [{ caseSetId: sets[0].id, featureKey: "f-1" }], "refs 由服务端解析");
   const taskPlan = JSON.parse(
     await readFile(join(rootPath, ".artemis", "design", "task-plans", `${task.id}.json`), "utf8")
@@ -383,6 +389,17 @@ test("console actions: 服务端重解析（case-set/keyword 不信客户端 ref
     deps
   );
   assert.equal(stale.status, 400);
+
+  const badReset = await handlePanelActionRequest(
+    request("/panel/api/tasks", {
+      project: rootPath,
+      source: "case-set",
+      ref: sets[0].id,
+      resetPolicy: "bogus"
+    }),
+    deps
+  );
+  assert.equal(badReset.status, 400);
 
   const byKeyword = await handlePanelActionRequest(
     request("/panel/api/tasks", { project: rootPath, source: "keyword", keyword: "登录" }),

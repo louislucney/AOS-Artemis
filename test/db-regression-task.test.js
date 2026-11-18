@@ -35,6 +35,25 @@ test("regression task: materialsAssetId 往返（Memory + PG）", async () => {
   }
 });
 
+test("regression task: resetPolicy 往返并可 patch（Memory + PG）", async () => {
+  for (const store of [new MemoryStore(), await makePgStore()]) {
+    await store.upsertProject({ rootPath: "/w/p1", name: "p1" });
+    const created = await store.createRegressionTask({
+      ...input("/w/p1"),
+      resetPolicy: "fresh"
+    });
+    assert.equal(created.resetPolicy, "fresh");
+    const loaded = await store.getRegressionTask("/w/p1", created.id);
+    assert.equal(loaded.resetPolicy, "fresh");
+    assert.equal(
+      await store.updateRegressionTask("/w/p1", created.id, { resetPolicy: "none" }),
+      true
+    );
+    const updated = await store.getRegressionTask("/w/p1", created.id);
+    assert.equal(updated.resetPolicy, "none");
+  }
+});
+
 test("regression task: iOS 不下发 IPA 的版本字段往返（Memory + PG）", async () => {
   for (const store of [new MemoryStore(), await makePgStore()]) {
     await store.upsertProject({ rootPath: "/w/p1", name: "p1" });

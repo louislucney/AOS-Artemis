@@ -322,7 +322,7 @@
 
 ### 验证
 
-- `npm test`：**3456 通过 / 0 失败**；`npm run lint`：**0 error / 2 warning**；`npm run audit:catches`：无新增；`npm run test:types` 通过。
+- `npm test`：**3457 通过 / 0 失败**；`npm run lint`：**0 error / 2 warning**；`npm run audit:catches`：无新增；`npm run test:types` 通过。
 - `npm run verify`：**全绿**（含 `bundle:mcp-runner` + `check:runner-bundle`）：win32-x64、darwin-arm64、win32-x64 offline 均通过契约检查（包哈希随重建变化，不在此固定）。
 - 未做跨机真机冒烟（§6 检查点仍待执行）。
 
