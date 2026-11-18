@@ -1040,6 +1040,7 @@ export function renderDispatchPage(view: DispatchView): string {
   const paramsBody = [
     `<fieldset class="c-fieldset"><legend>目标端</legend>${platformChecks}</fieldset>`,
     `<p><label>基线 <select name="baseline" aria-label="基线"><option value="latest"${preview.baseline === "latest" ? " selected" : ""}>latest（与本用例集最近批次对比）</option><option value="none"${preview.baseline === "none" ? " selected" : ""}>none（不对比）</option></select></label> · 设备在执行机执行时确定（<code>suite run --device</code>）</p>`,
+    `<p><label>复位策略 <select name="resetPolicy" aria-label="复位策略"><option value="">项目默认</option><option value="reuse">reuse</option><option value="app-internal-reset">app-internal-reset</option><option value="fresh">fresh（Android；iOS unsupported）</option><option value="none">none</option></select></label> · 任务级覆盖项目 <code>AOS_RESET_POLICY</code>；iOS fresh 会显式失败。</p>`,
     iosInstallField,
     appAssetField,
     appPackageField,
@@ -1284,6 +1285,7 @@ go.addEventListener('click',function(){
     else{payload.ref=(form.querySelector('select[name="ref"]')||{value:''}).value||'';}
     payload.platforms=Array.prototype.slice.call(form.querySelectorAll('input[name="platforms"]:checked')).map(function(i){return i.value;});
     payload.baseline=(form.querySelector('select[name="baseline"]')||{value:'latest'}).value;
+    payload.resetPolicy=(form.querySelector('select[name="resetPolicy"]')||{value:''}).value;
     payload.appAssetId=appAssetId;
     payload.materialsAssetId=materialsAssetId;
     payload.appPackage=appPackage;
