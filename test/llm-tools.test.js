@@ -363,6 +363,12 @@ test("aos_status: reports project, store, child and setup state", async () => {
 
   const payload = parseToolResult(await aosStatus(runtime));
   assert.equal(payload.activeProfile, "gemini");
+  assert.equal(payload.validation.errors.length, 0);
+  assert.equal(
+    payload.validation.warnings.some((issue) => issue.code === "llm.profiles.empty"),
+    false,
+    "store/env LLM entries suppress the empty config-profiles warning"
+  );
   assert.equal(payload.project.name, path.basename(dir));
   assert.equal(payload.store.kind, "memory");
   assert.equal(payload.store.degraded, true);

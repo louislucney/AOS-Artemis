@@ -55,7 +55,10 @@ export async function llmList(runtime: Runtime): Promise<CallToolResult> {
   const reportByEntry = new Map(reports.map((report) => [report.entry, report]));
 
   const warnings: string[] = [];
-  for (const issue of runtime.project.validation.warnings) warnings.push(issue.message);
+  for (const issue of runtime.project.validation.warnings) {
+    if (issue.code === "llm.profiles.empty" && entries.length > 0) continue;
+    warnings.push(issue.message);
+  }
   if (setup.required) warnings.push(setup.message);
 
   const poolTokens = new Map<string, LlmPoolTokenRecord>();
@@ -376,6 +379,15 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
   const project = runtime.projectSummary();
   const host = await hostStatusView(runtime);
   const stack = runtime.stackDetections();
+  const validation =
+    entries.length > 0
+      ? {
+          ...runtime.project.validation,
+          warnings: runtime.project.validation.warnings.filter(
+            (issue) => issue.code !== "llm.profiles.empty"
+          )
+        }
+      : runtime.project.validation;
 
   return jsonResult({
     ok: true,
@@ -416,7 +428,7 @@ export async function aosStatus(runtime: Runtime): Promise<CallToolResult> {
       autoRepair: runtime.modelAutoRepairEnabled()
     },
     setupRequired: setup.required,
-    validation: runtime.project.validation,
+    validation,
     artemis: {
       repo: runtime.project.config.artemis.repo,
       configDir: runtime.configDirAbs,
