@@ -1,6 +1,6 @@
 {
   "name": "mobile-testing-mcp",
-  "version": "0.3.33",
+  "version": "0.3.34",
   "description": "Unified MCP service for mobile testing: Figma design context + ARTEMIS Android and iOS device automation with project-scoped LLM profiles and switching.",
   "type": "module",
   "license": "MIT",
