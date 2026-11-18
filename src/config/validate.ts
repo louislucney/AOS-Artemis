@@ -90,7 +90,11 @@ export function validateConfig(config: AosConfig, resolver: ValueResolver): Vali
 
   const names = Object.keys(config.llm.profiles);
   if (names.length === 0) {
-    errors.push({ level: "error", code: "llm.profiles.empty", message: "llm.profiles 为空：至少配置一个 LLM 档案。" });
+    warnings.push({
+      level: "warning",
+      code: "llm.profiles.empty",
+      message: "llm.profiles 为空：若已通过 PostgreSQL/env 配置 LLM 可忽略。"
+    });
   }
   if (config.llm.defaultProfile && !names.includes(config.llm.defaultProfile)) {
     errors.push({

@@ -72,10 +72,10 @@ test("hasGoogleKey checks both candidate env names", () => {
   assert.equal(hasGoogleKey(viaGoogle), true);
 });
 
-test("validateConfig: empty profiles is an error", () => {
+test("validateConfig: empty profiles is a warning (store/env may provide LLM)", () => {
   const result = validateConfig(bareConfig({}), makeResolver({}, {}));
-  assert.equal(result.errors.length, 1);
-  assert.equal(result.errors[0].code, "llm.profiles.empty");
+  assert.equal(result.errors.length, 0);
+  assert.ok(result.warnings.some((issue) => issue.code === "llm.profiles.empty"));
 });
 
 test("validateConfig: unknown defaultProfile is an error", () => {
