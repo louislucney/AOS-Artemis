@@ -114,6 +114,8 @@ export interface ExecutionParityRecord {
   stepsAvailable: boolean;
   /** 该 case 实际复位结果；null/未提供表示旧证据或未执行复位。 */
   resetOk?: boolean | null;
+  /** suite_runs 中的失败原因；用于只读的跨端 UI 差异提示。 */
+  failureReason?: string | null;
 }
 
 export interface ExecutionParityResult {
@@ -183,6 +185,13 @@ export function compareExecutionParity(records: readonly ExecutionParityRecord[]
     }
     if (entries.some((entry) => entry.resetOk === false)) reasons.push("reset-failed");
     if (entries.some((entry) => !entry.stepsAvailable)) reasons.push("steps-unavailable");
+    if (
+      platforms.ios !== undefined &&
+      platforms.android !== undefined &&
+      entries.every((entry) => entry.failureReason?.includes("case-target-missing"))
+    ) {
+      limitations.push("ui-divergence-inconclusive");
+    }
     out.push({
       caseId,
       comparable: reasons.length === 0,

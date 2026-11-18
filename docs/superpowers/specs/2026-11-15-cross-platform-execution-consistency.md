@@ -526,7 +526,7 @@ reset: {
 - 任一条件不同 → `not-comparable`，**不进入产品缺陷统计**。
 - 不要求 `ios.status == android.status`；通过率差异仍需人工/统计观察。
 - 已提供 `src/figma/execution-plan.ts` 的纯函数 parity 评估，并接入 `suite parity --task <id>`（默认 report-only，显式 `--fail-on-not-comparable` / `--fail-on-diff` / `--fail-on-dialog-diff` 可门禁；弹窗内容按 title/message/buttons 跨端比较，无捕获记录返回 `no-dialog-evidence`、两端 clear 才判一致；步数预算差异报 `budget-mismatch`）与面板任务页；任务报告仍未接入。
-- `ui-divergence` 必须由截图/AX 证据支撑：两端失败均为 `case-target-missing`，但截图/AX 显示控件实际存在/可见，才能归为“用例未适配跨端 UI”（`case-defect`）；缺证据时标 `inconclusive`，不能猜。
+- `ui-divergence` 必须由截图/AX 证据支撑：两端失败均为 `case-target-missing`，但截图/AX 显示控件实际存在/可见，才能归为“用例未适配跨端 UI”（`case-defect`）；缺证据时标 `inconclusive`，不能猜。当前已加 report-only `ui-divergence-inconclusive` 受限项（两端失败原因都含 `case-target-missing`），不改变失败域。
 - 原始控件差异（Picker、Permission Dialog、Navigation Bar 等）应由 adapter 归一化或 target 层适配，不直接判产品缺陷。
 
 ## 12. 失败语义
@@ -655,6 +655,6 @@ Phase 1 的每一步都可独立回滚；第 1 步不改变执行结果，只改
 - **P1**：`suite parity --task` 文本模式忽略 `--fail-on-*`（只有 `--json` 生效）；弹窗无捕获记录时返回 `comparable=true`，跨机弹窗旁车也不同步。
 - **P2**：parity 只比较 reset/policy/aliases/steps，预算与引擎维度缺失（iOS 30 步 vs Android 不限仍可能 `comparable=true`）；data lease 租到递增前的值且默认关闭；证据整包 1MB 上限可能静默丢弃；`fresh/none/capability/degraded`、`ui-divergence`、报告 parity 未落地。
 - **待办优先级**：plan 跨机 → 终态证据上传 → parity 返回码/语义 → lease 与弹窗同步 → 文档与门禁集成测试。
-- **2026-11-16 修复**：P0-1（plan 随 bundle/缺失重建/创建入口）、P0-2（终态 evidence 上传 + 预算裁剪）、P1-1（文本模式 fail 门禁）已修复；P1-2 部分修复（无证据不判一致、clear 记录、跨机同步已接；iOS 心跳待做）；P2-1 已处理（步数预算已纳入；引擎差异按设计不比较）；`npm test` 3457 绿；静默 catch 审计无新增。
+- **2026-11-16 修复**：P0-1（plan 随 bundle/缺失重建/创建入口）、P0-2（终态 evidence 上传 + 预算裁剪）、P1-1（文本模式 fail 门禁）已修复；P1-2 部分修复（无证据不判一致、clear 记录、跨机同步已接；iOS 心跳待做）；P2-1 已处理（步数预算已纳入；引擎差异按设计不比较）；`npm test` 3458 绿；静默 catch 审计无新增。
 - **2026-11-17 追加**：P2-2 本地锁 + 中心原子租约、P2-3 上传失败审计、P2-4 项目级+任务级 reset policy（Android fresh/none；iOS fresh unsupported）、P2-5 任务报告 parity、P3-1/3/4/6/7/8 已处理；**P0-3 决策 A**（接受公开历史暴露 + 账号处置，不重写历史；清单见 `docs/reports/p0-3-account-disposal-checklist.md`）。剩余项决策见审计报告 §11。
 

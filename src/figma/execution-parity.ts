@@ -62,7 +62,8 @@ export function evaluateTaskExecutionParity(
         status: parityStatus(entry.status),
         plan: evidence?.plan ?? null,
         stepsAvailable: evidence?.stepsAvailable ?? false,
-        resetOk: evidence?.resetOk ?? null
+        resetOk: evidence?.resetOk ?? null,
+        failureReason: entry.failureReason ?? null
       });
     }
   }

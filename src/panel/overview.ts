@@ -1579,7 +1579,8 @@ export async function buildPanelTaskDetail(
         status,
         plan: planAndSteps.plan,
         stepsAvailable: planAndSteps.stepsAvailable,
-        resetOk: planAndSteps.resetOk
+        resetOk: planAndSteps.resetOk,
+        failureReason: entry.failureReason ?? null
       });
     }
   }

@@ -231,6 +231,33 @@ test("execution parity: reset 失败/不支持/degraded 不可比", () => {
   assert.ok(degraded[0].reasons.includes("reset-degraded"));
 });
 
+test("execution parity: 两端 case-target-missing → ui-divergence-inconclusive 受限", () => {
+  const ios = plan("ios", "proxy", {});
+  const android = plan("android", "proxy", {});
+  const result = compareExecutionParity([
+    {
+      caseId: "c-ui",
+      platform: "ios",
+      status: "failed",
+      plan: ios,
+      stepsAvailable: true,
+      resetOk: true,
+      failureReason: "case-target-missing: Go"
+    },
+    {
+      caseId: "c-ui",
+      platform: "android",
+      status: "failed",
+      plan: android,
+      stepsAvailable: true,
+      resetOk: true,
+      failureReason: "case-target-missing: Go"
+    }
+  ]);
+  assert.equal(result[0].comparable, true);
+  assert.ok(result[0].limitations.includes("ui-divergence-inconclusive"));
+});
+
 test("execution parity: 数据别名不同不可比", () => {
   const ios = buildExecutionPlan({
     platform: "ios",

@@ -34,7 +34,7 @@
 | P2-2 | P2 | data lease 租到递增前的值；无锁；默认关 | 已修复：递增后值 + 本地锁 + 中心原子租约 |
 | P2-3 | P2 | 证据整包 1MB 上限可能静默丢弃 | 已修复：裁剪+日志+审计事件 |
 | P2-4 | P2 | 复位四态/能力/degraded 未落地，失败不进 parity | 已修复：项目级+任务级 policy；Android fresh/none；iOS fresh unsupported |
-| P2-5 | P2 | `ui-divergence`/报告 parity/plan 截图与引擎标注缺失 | 部分修复：截图/引擎/报告 parity 已修；ui-divergence/per-case plan 决策延后（§11） |
+| P2-5 | P2 | `ui-divergence`/报告 parity/plan 截图与引擎标注缺失 | 部分修复：截图/引擎/报告 parity/`ui-divergence-inconclusive` 已加；证据门禁分类与 per-case plan 延后（§11） |
 | P2-6 | P2 | spec §14 验收仍含已 descope 的预算/数据 lease，与 §15 冲突 | 已回写基线（v0.3） |
 | P3-1 | P3 | `.env.example` 缺新增变量 | 已补（2026-11-16） |
 | P3-2 | P3 | 回归报告含真实 UAT 邮箱/手机号 | **升级为 P0-3** |
@@ -301,7 +301,8 @@
 - parity 证据读取合并到 `src/figma/execution-evidence.ts`；任务详情按项目配置解析 traces 目录，读取失败才回退默认路径。
 - 任务报告：`buildTaskRunReport` 计算 `executionParity`/`systemDialogParity`，JSON 返回，xlsx 增加「跨端一致性」sheet（用例行 + 弹窗行）；`suite parity` 与报告共用 `src/figma/execution-parity.ts`。
 - 测试：`task-execution-plan`（ios-llm/截图开关）、`execution-plan`（ios-llm 解析 + resetOk）、`run-report`（JSON + sheet/弹窗行）。
-- 仍待做：`ui-divergence` 分类、per-case×device plan。
+- 两端都 `case-target-missing` 时增加 **`ui-divergence-inconclusive` 受限项**（report-only，不判产品缺陷）；真正 `ui-divergence` 分类仍需截图/AX 证据。
+- 仍待做：证据门禁的 `ui-divergence` 分类、per-case×device plan。
 
 ### P3-4（已修复）
 
@@ -322,7 +323,7 @@
 
 ### 验证
 
-- `npm test`：**3457 通过 / 0 失败**；`npm run lint`：**0 error / 2 warning**；`npm run audit:catches`：无新增；`npm run test:types` 通过。
+- `npm test`：**3458 通过 / 0 失败**；`npm run lint`：**0 error / 2 warning**；`npm run audit:catches`：无新增；`npm run test:types` 通过。
 - `npm run verify`：**全绿**（含 `bundle:mcp-runner` + `check:runner-bundle`）：win32-x64、darwin-arm64、win32-x64 offline 均通过契约检查（包哈希随重建变化，不在此固定）。
 - 未做跨机真机冒烟（§6 检查点仍待执行）。
 
@@ -341,7 +342,7 @@
 | 项 | 决策 | 理由 | 下一步 |
 |---|---|---|---|
 | P1-2 iOS 心跳 `systemDialog` | **接受限制（Android-only）** | iOS 弹窗读取需要活跃 WDA/idb 会话；30s 心跳创建会话会与任务执行争抢设备，风险高于收益。Android `uiautomator dump` 成本低，保留。 | 面板 `host-alert` 门禁明确 Android-only；如需 iOS 心跳，另做低频/按需探测。 |
-| P2-5 `ui-divergence` 分类 | **延后** | 需要跨用例证据（截图/AX 证明控件存在）与产品判断；当前 parity 已能报告 `case-target-missing`，启发式分类容易误判。 | 等真实跨端样本与证据模型，再定 `ui-divergence`/`inconclusive` 规则。 |
+| P2-5 `ui-divergence` 分类 | **部分实现** | 已加 `ui-divergence-inconclusive` 受限项（两端都 `case-target-missing`，report-only）；真正的证据门禁分类需截图/AX 证明控件存在。 | 等真实跨端样本与证据模型，再定 `ui-divergence` 规则。 |
 | P2-5 per-case×device plan | **延后** | `execution-evidence.json` 已按 case 记录实际 plan；任务级 plan 是派发时快照，再加 per-case×device 文件没有消费者。 | 如未来需要按 case 预算/数据门禁，再扩 plan schema。 |
 | P2-4 任务级 reset override | **已实现（2026-11-18）** | 项目级无法覆盖同项目多策略；任务级 `resetPolicy` 已贯通 DB/CLI/API/面板表单/plan/执行上下文。 | 无。 |
 | P3-5 跨机真机冒烟 | **外部依赖** | 需要中心 + 远程 runner + iOS/Android 真机与签名环境，CI 无法替代。 | 按 §6 检查点执行：第 1、2 步后做“一过一败”冒烟。 |
